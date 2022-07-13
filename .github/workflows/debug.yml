@@ -37,4 +37,4 @@ jobs:
           go mod init build
           go get -v github.com/sagernet/sing-tun@$version
           popd
-          go build -v ./...
+          go build -v .

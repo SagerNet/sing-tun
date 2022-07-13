@@ -2,7 +2,7 @@
 
 Simple transparent proxy library.
 
-Currently only for linux.
+Currently only for linux and windows.
 
 ## License
 

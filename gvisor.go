@@ -3,6 +3,11 @@ package tun
 import (
 	"context"
 
+	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/bufio"
+	E "github.com/sagernet/sing/common/exceptions"
+	M "github.com/sagernet/sing/common/metadata"
+
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -13,34 +18,29 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
-
-	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/bufio"
-	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
 )
 
 const defaultNIC tcpip.NICID = 1
 
 type GVisorTun struct {
 	ctx     context.Context
-	tunFd   uintptr
+	tun     Tun
 	tunMtu  uint32
 	handler Handler
 	stack   *stack.Stack
 }
 
-func NewGVisor(ctx context.Context, tunFd uintptr, tunMtu uint32, handler Handler) *GVisorTun {
+func NewGVisor(ctx context.Context, tun Tun, tunMtu uint32, handler Handler) *GVisorTun {
 	return &GVisorTun{
 		ctx:     ctx,
-		tunFd:   tunFd,
+		tun:     tun,
 		tunMtu:  tunMtu,
 		handler: handler,
 	}
 }
 
 func (t *GVisorTun) Start() error {
-	linkEndpoint, err := NewEndpoint(t.tunFd, t.tunMtu)
+	linkEndpoint, err := t.tun.NewEndpoint()
 	if err != nil {
 		return err
 	}
