@@ -2,8 +2,16 @@
 
 package tun
 
-import "os"
+import (
+	"os"
 
-func NewMonitor() (InterfaceMonitor, error) {
+	E "github.com/sagernet/sing/common/exceptions"
+)
+
+func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, error) {
+	return nil, os.ErrInvalid
+}
+
+func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, callback DefaultInterfaceUpdateCallback) (DefaultInterfaceMonitor, error) {
 	return nil, os.ErrInvalid
 }

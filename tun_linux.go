@@ -45,6 +45,29 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 	return nativeTun, nil
 }
 
+func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
+	var routes []netlink.Route
+	if t.inet4Address.IsValid() {
+		routes = append(routes, netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv4zero,
+				Mask: net.CIDRMask(0, 32),
+			},
+			LinkIndex: tunLink.Attrs().Index,
+		})
+	}
+	if t.inet6Address.IsValid() {
+		routes = append(routes, netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv6zero,
+				Mask: net.CIDRMask(0, 128),
+			},
+			LinkIndex: tunLink.Attrs().Index,
+		})
+	}
+	return routes
+}
+
 func (t *NativeTun) configure() error {
 	tunLink, err := netlink.LinkByName(t.name)
 	if err != nil {
@@ -77,26 +100,8 @@ func (t *NativeTun) configure() error {
 	}
 
 	if t.autoRoute {
-		if t.inet4Address.IsValid() {
-			err = netlink.RouteAdd(&netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv4zero,
-					Mask: net.CIDRMask(0, 32),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-			})
-			if err != nil {
-				return err
-			}
-		}
-		if t.inet6Address.IsValid() {
-			err = netlink.RouteAdd(&netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv6zero,
-					Mask: net.CIDRMask(0, 128),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-			})
+		for _, route := range t.routes(tunLink) {
+			err = netlink.RouteAdd(&route)
 			if err != nil {
 				return err
 			}
@@ -133,26 +138,8 @@ func (t *NativeTun) Close() error {
 		return err
 	}
 	if t.autoRoute {
-		if t.inet4Address.IsValid() {
-			err = netlink.RouteDel(&netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv4zero,
-					Mask: net.CIDRMask(0, 32),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-			})
-			if err != nil {
-				return err
-			}
-		}
-		if t.inet6Address.IsValid() {
-			err = netlink.RouteDel(&netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv6zero,
-					Mask: net.CIDRMask(0, 128),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-			})
+		for _, route := range t.routes(tunLink) {
+			err = netlink.RouteDel(&route)
 			if err != nil {
 				return err
 			}
