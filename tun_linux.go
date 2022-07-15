@@ -1,16 +1,13 @@
 package tun
 
 import (
-	"math"
 	"net"
 	"net/netip"
-	"runtime"
-	"syscall"
 
-	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -18,11 +15,11 @@ import (
 
 type NativeTun struct {
 	name         string
+	fd           int
 	inet4Address netip.Prefix
 	inet6Address netip.Prefix
 	mtu          uint32
 	autoRoute    bool
-	fdList       []int
 }
 
 func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) (Tun, error) {
@@ -30,49 +27,31 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 	if err != nil {
 		return nil, err
 	}
+	tunLink, err := netlink.LinkByName(name)
+	if err != nil {
+		return nil, E.Errors(err, unix.Close(tunFd))
+	}
 	nativeTun := &NativeTun{
 		name:         name,
-		fdList:       []int{tunFd},
+		fd:           tunFd,
 		mtu:          mtu,
 		inet4Address: inet4Address,
 		inet6Address: inet6Address,
 		autoRoute:    autoRoute,
 	}
-	err = nativeTun.configure()
+	err = nativeTun.configure(tunLink)
 	if err != nil {
-		return nil, E.Errors(err, syscall.Close(tunFd))
+		return nil, E.Errors(err, unix.Close(tunFd))
 	}
 	return nativeTun, nil
 }
 
-func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
-	var routes []netlink.Route
-	if t.inet4Address.IsValid() {
-		routes = append(routes, netlink.Route{
-			Dst: &net.IPNet{
-				IP:   net.IPv4zero,
-				Mask: net.CIDRMask(0, 32),
-			},
-			LinkIndex: tunLink.Attrs().Index,
-		})
-	}
-	if t.inet6Address.IsValid() {
-		routes = append(routes, netlink.Route{
-			Dst: &net.IPNet{
-				IP:   net.IPv6zero,
-				Mask: net.CIDRMask(0, 128),
-			},
-			LinkIndex: tunLink.Attrs().Index,
-		})
-	}
-	return routes
-}
-
-func (t *NativeTun) configure() error {
-	tunLink, err := netlink.LinkByName(t.name)
+func (t *NativeTun) configure(tunLink netlink.Link) error {
+	err := netlink.LinkSetMTU(tunLink, int(t.mtu))
 	if err != nil {
 		return err
 	}
+
 	if t.inet4Address.IsValid() {
 		addr4, _ := netlink.ParseAddr(t.inet4Address.String())
 		err = netlink.AddrAdd(tunLink, addr4)
@@ -89,61 +68,198 @@ func (t *NativeTun) configure() error {
 		}
 	}
 
-	err = netlink.LinkSetMTU(tunLink, int(t.mtu))
-	if err != nil {
-		return err
-	}
-
 	err = netlink.LinkSetUp(tunLink)
 	if err != nil {
 		return err
 	}
 
 	if t.autoRoute {
-		for _, route := range t.routes(tunLink) {
-			err = netlink.RouteAdd(&route)
-			if err != nil {
-				return err
-			}
+		err = t.setRoute(tunLink)
+		if err != nil {
+			_ = t.unsetRoute0(tunLink)
+			return err
 		}
 	}
 	return nil
 }
 
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	var packetDispatchMode fdbased.PacketDispatchMode
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		packetDispatchMode = fdbased.PacketMMap
-	} else {
-		packetDispatchMode = fdbased.RecvMMsg
-	}
-	dupFdSize := int(math.Max(float64(runtime.NumCPU()/2), 1)) - 1
-	for i := 0; i < dupFdSize; i++ {
-		dupFd, err := syscall.Dup(t.fdList[0])
-		if err != nil {
-			return nil, err
-		}
-		t.fdList = append(t.fdList, dupFd)
-	}
 	return fdbased.New(&fdbased.Options{
-		FDs:                t.fdList,
-		MTU:                t.mtu,
-		PacketDispatchMode: packetDispatchMode,
+		FDs: []int{t.fd},
+		MTU: t.mtu,
 	})
 }
 
 func (t *NativeTun) Close() error {
+	var errors []error
+	if t.autoRoute {
+		errors = append(errors, t.unsetRoute())
+	}
+	errors = append(errors, unix.Close(t.fd))
+	return E.Errors(errors...)
+}
+
+const tunTableIndex = 2022
+
+func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
+	var routes []netlink.Route
+	if t.inet4Address.IsValid() {
+		routes = append(routes, netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv4zero,
+				Mask: net.CIDRMask(0, 32),
+			},
+			LinkIndex: tunLink.Attrs().Index,
+			Table:     tunTableIndex,
+		})
+	}
+	if t.inet6Address.IsValid() {
+		routes = append(routes, netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv6zero,
+				Mask: net.CIDRMask(0, 128),
+			},
+			LinkIndex: tunLink.Attrs().Index,
+			Table:     tunTableIndex,
+		})
+	}
+	return routes
+}
+
+func (t *NativeTun) rules() []*Rule {
+	var rules []*Rule
+
+	priority := 9000
+
+	it := NewRule()
+	it.Priority = priority
+	it.Invert = true
+	it.UIDRange = &RuleUIDRange{Start: 0, End: 0xFFFFFFFF - 1}
+	it.Goto = 9100
+	rules = append(rules, it)
+	priority++
+
+	if t.inet4Address.IsValid() {
+		it = NewRule()
+		it.Priority = priority
+		it.Dst = t.inet4Address.Masked()
+		it.Table = tunTableIndex
+		rules = append(rules, it)
+		priority++
+
+		it = NewRule()
+		it.Priority = priority
+		it.IPProtocol = unix.IPPROTO_ICMP
+		it.Goto = 9100
+		rules = append(rules, it)
+		priority++
+	}
+
+	if t.inet6Address.IsValid() {
+		it = NewRule()
+		it.Priority = priority
+		it.Dst = t.inet6Address.Masked()
+		it.Table = tunTableIndex
+		rules = append(rules, it)
+		priority++
+
+		it = NewRule()
+		it.Priority = priority
+		it.IPProtocol = unix.IPPROTO_ICMPV6
+		it.Goto = 9100
+		rules = append(rules, it)
+		priority++
+	}
+
+	it = NewRule()
+	it.Priority = priority
+	it.Invert = true
+	it.DstPortRange = &RulePortRange{Start: 53, End: 53}
+	it.Table = unix.RT_TABLE_MAIN
+	it.SuppressPrefixLength = 0
+	rules = append(rules, it)
+	priority++
+
+	it = NewRule()
+	it.Priority = priority
+	it.Invert = true
+	it.IifName = "lo"
+	it.Table = tunTableIndex
+	rules = append(rules, it)
+	priority++
+
+	it = NewRule()
+	it.Priority = priority
+	it.IifName = "lo"
+	it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+	it.Table = tunTableIndex
+	rules = append(rules, it)
+	priority++
+
+	if t.inet4Address.IsValid() {
+		it = NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = t.inet4Address.Masked()
+		it.Table = tunTableIndex
+		rules = append(rules, it)
+		priority++
+	}
+
+	if t.inet6Address.IsValid() {
+		it = NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = t.inet6Address.Masked()
+		it.Table = tunTableIndex
+		rules = append(rules, it)
+		priority++
+	}
+
+	it = NewRule()
+	it.Priority = 9100
+	rules = append(rules, it)
+
+	return rules
+}
+
+func (t *NativeTun) setRoute(tunLink netlink.Link) error {
+	for i, route := range t.routes(tunLink) {
+		err := netlink.RouteAdd(&route)
+		if err != nil {
+			return E.Cause(err, "add route ", i)
+		}
+	}
+	for i, rule := range t.rules() {
+		err := RuleAdd(rule)
+		if err != nil {
+			return E.Cause(err, "add rule ", i, "/", len(t.rules()))
+		}
+	}
+	return nil
+}
+
+func (t *NativeTun) unsetRoute() error {
 	tunLink, err := netlink.LinkByName(t.name)
 	if err != nil {
 		return err
 	}
-	if t.autoRoute {
-		for _, route := range t.routes(tunLink) {
-			err = netlink.RouteDel(&route)
-			if err != nil {
-				return err
-			}
+	return t.unsetRoute0(tunLink)
+}
+
+func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
+	var errors []error
+	for _, route := range t.routes(tunLink) {
+		err := netlink.RouteDel(&route)
+		if err != nil {
+			errors = append(errors, err)
 		}
 	}
-	return E.Errors(common.Map(t.fdList, syscall.Close)...)
+	for _, rule := range t.rules() {
+		err := RuleDel(rule)
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+	return E.Errors(errors...)
 }

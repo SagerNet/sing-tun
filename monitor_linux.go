@@ -2,7 +2,6 @@ package tun
 
 import (
 	"context"
-	"net"
 	"os"
 	"sync"
 
@@ -120,41 +119,6 @@ func (m *defaultInterfaceMonitor) Start() error {
 func (m *defaultInterfaceMonitor) Close() error {
 	m.networkMonitor.UnregisterCallback(m.element)
 	return nil
-}
-
-func (m *defaultInterfaceMonitor) checkUpdate() error {
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
-	if err != nil {
-		return err
-	}
-	for _, route := range routes {
-		var link netlink.Link
-		link, err = netlink.LinkByIndex(route.LinkIndex)
-		if err != nil {
-			return err
-		}
-
-		if link.Attrs().Flags&net.FlagUp == 0 {
-			continue
-		}
-
-		if link.Type() == "tuntap" {
-			continue
-		}
-
-		oldInterface := m.defaultInterfaceName
-		oldIndex := m.defaultInterfaceIndex
-
-		m.defaultInterfaceName = link.Attrs().Name
-		m.defaultInterfaceIndex = link.Attrs().Index
-
-		if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
-			return nil
-		}
-		m.callback()
-		return nil
-	}
-	return E.New("no route to internet")
 }
 
 func (m *defaultInterfaceMonitor) DefaultInterfaceName() string {
