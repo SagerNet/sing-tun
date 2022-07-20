@@ -74,6 +74,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	}
 
 	if t.autoRoute {
+		_ = t.unsetRoute0(tunLink)
 		err = t.setRoute(tunLink)
 		if err != nil {
 			_ = t.unsetRoute0(tunLink)
