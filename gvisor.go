@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"time"
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
@@ -90,6 +91,10 @@ func (t *GVisorTun) Start() error {
 		}
 		r.Complete(false)
 		endpoint.SocketOptions().SetKeepAlive(true)
+		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveIdle)
+		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveInterval)
 		tcpConn := gonet.NewTCPConn(&wq, endpoint)
 		lAddr := tcpConn.RemoteAddr()
 		rAddr := tcpConn.LocalAddr()
@@ -101,7 +106,10 @@ func (t *GVisorTun) Start() error {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			t.handler.NewConnection(t.ctx, tcpConn, metadata)
+			hErr := t.handler.NewConnection(t.ctx, tcpConn, metadata)
+			if hErr != nil {
+				endpoint.Abort()
+			}
 		}()
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, buffer *stack.PacketBuffer) bool {
@@ -117,14 +125,17 @@ func (t *GVisorTun) Start() error {
 		lAddr := udpConn.RemoteAddr()
 		rAddr := udpConn.LocalAddr()
 		if lAddr == nil || rAddr == nil {
-			udpConn.Close()
+			endpoint.Abort()
 			return
 		}
 		go func() {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			t.handler.NewPacketConnection(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(udpConn), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+			hErr := t.handler.NewPacketConnection(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(udpConn), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+			if hErr != nil {
+				endpoint.Abort()
+			}
 		}()
 	})
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
