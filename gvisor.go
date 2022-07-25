@@ -18,6 +18,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+	"time"
 )
 
 const defaultNIC tcpip.NICID = 1
@@ -90,6 +91,10 @@ func (t *GVisorTun) Start() error {
 		}
 		r.Complete(false)
 		endpoint.SocketOptions().SetKeepAlive(true)
+		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveIdle)
+		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveInterval)
 		tcpConn := gonet.NewTCPConn(&wq, endpoint)
 		lAddr := tcpConn.RemoteAddr()
 		rAddr := tcpConn.LocalAddr()
