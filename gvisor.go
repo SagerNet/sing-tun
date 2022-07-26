@@ -24,19 +24,30 @@ import (
 const defaultNIC tcpip.NICID = 1
 
 type GVisorTun struct {
-	ctx     context.Context
-	tun     Tun
-	tunMtu  uint32
-	handler Handler
-	stack   *stack.Stack
+	ctx                           context.Context
+	tun                           Tun
+	tunMtu                        uint32
+	endpointIndependentNat        bool
+	endpointIndependentNatTimeout int64
+	handler                       Handler
+	stack                         *stack.Stack
 }
 
-func NewGVisor(ctx context.Context, tun Tun, tunMtu uint32, handler Handler) *GVisorTun {
+func NewGVisor(
+	ctx context.Context,
+	tun Tun,
+	tunMtu uint32,
+	endpointIndependentNat bool,
+	endpointIndependentNatTimeout int64,
+	handler Handler,
+) *GVisorTun {
 	return &GVisorTun{
-		ctx:     ctx,
-		tun:     tun,
-		tunMtu:  tunMtu,
-		handler: handler,
+		ctx:                           ctx,
+		tun:                           tun,
+		tunMtu:                        tunMtu,
+		endpointIndependentNat:        endpointIndependentNat,
+		endpointIndependentNatTimeout: endpointIndependentNatTimeout,
+		handler:                       handler,
 	}
 }
 
@@ -82,7 +93,8 @@ func (t *GVisorTun) Start() error {
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
 	mOpt := tcpip.TCPModerateReceiveBufferOption(true)
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &mOpt)
-	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
+
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
 		var wq waiter.Queue
 		endpoint, err := r.CreateEndpoint(&wq)
 		if err != nil {
@@ -111,34 +123,36 @@ func (t *GVisorTun) Start() error {
 				endpoint.Abort()
 			}
 		}()
-	})
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, buffer *stack.PacketBuffer) bool {
-		return tcpForwarder.HandlePacket(id, buffer)
-	})
-	udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
-		var wq waiter.Queue
-		endpoint, err := request.CreateEndpoint(&wq)
-		if err != nil {
-			return
-		}
-		udpConn := gonet.NewUDPConn(ipStack, &wq, endpoint)
-		lAddr := udpConn.RemoteAddr()
-		rAddr := udpConn.LocalAddr()
-		if lAddr == nil || rAddr == nil {
-			endpoint.Abort()
-			return
-		}
-		go func() {
-			var metadata M.Metadata
-			metadata.Source = M.SocksaddrFromNet(lAddr)
-			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewPacketConnection(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(udpConn), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
-			if hErr != nil {
-				endpoint.Abort()
+	}).HandlePacket)
+
+	if !t.endpointIndependentNat {
+		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
+			var wq waiter.Queue
+			endpoint, err := request.CreateEndpoint(&wq)
+			if err != nil {
+				return
 			}
-		}()
-	})
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+			udpConn := gonet.NewUDPConn(ipStack, &wq, endpoint)
+			lAddr := udpConn.RemoteAddr()
+			rAddr := udpConn.LocalAddr()
+			if lAddr == nil || rAddr == nil {
+				endpoint.Abort()
+				return
+			}
+			go func() {
+				var metadata M.Metadata
+				metadata.Source = M.SocksaddrFromNet(lAddr)
+				metadata.Destination = M.SocksaddrFromNet(rAddr)
+				hErr := t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(udpConn), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+				if hErr != nil {
+					endpoint.Abort()
+				}
+			}()
+		}).HandlePacket)
+	} else {
+		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.endpointIndependentNatTimeout).HandlePacket)
+	}
+
 	t.stack = ipStack
 	return nil
 }
