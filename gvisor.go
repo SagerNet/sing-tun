@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -96,7 +95,16 @@ func (t *GVisorTun) Start() error {
 
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
 		var wq waiter.Queue
+		handshakeCtx, cancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-t.ctx.Done():
+				wq.Notify(wq.Events())
+			case <-handshakeCtx.Done():
+			}
+		}()
 		endpoint, err := r.CreateEndpoint(&wq)
+		cancel()
 		if err != nil {
 			r.Complete(true)
 			return
@@ -118,10 +126,8 @@ func (t *GVisorTun) Start() error {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
-			if hErr != nil {
-				endpoint.Abort()
-			}
+			t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
+			endpoint.Abort()
 		}()
 	}).HandlePacket)
 
@@ -143,10 +149,8 @@ func (t *GVisorTun) Start() error {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				hErr := t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
-				if hErr != nil {
-					endpoint.Abort()
-				}
+				t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+				endpoint.Abort()
 			}()
 		}).HandlePacket)
 	} else {
@@ -158,7 +162,9 @@ func (t *GVisorTun) Start() error {
 }
 
 func (t *GVisorTun) Close() error {
-	return common.Close(
-		common.PtrOrNil(t.stack),
-	)
+	t.stack.Close()
+	for _, endpoint := range t.stack.CleanupEndpoints() {
+		endpoint.Abort()
+	}
+	return nil
 }

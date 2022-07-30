@@ -1,7 +1,7 @@
 github.com/google/btree v1.0.1 h1:gK4Kx5IaGY9CD5sPJ36FHiBJ6ZXl0kilRiiCj+jdYp4=
 github.com/google/btree v1.0.1/go.mod h1:xXMiIv4Fb/0kKde4SpL7qlzvu5cMJDRkFDxJfI9uaxA=
-github.com/sagernet/sing v0.0.0-20220729120910-4376f188c512 h1:dCWDE55LpZu//W02FccNbGObZFlv1N2NS0yUdf2i4Mc=
-github.com/sagernet/sing v0.0.0-20220729120910-4376f188c512/go.mod h1:GbtQfZSpmtD3cXeD1qX2LCMwY8dH+bnnInDTqd92IsM=
+github.com/sagernet/sing v0.0.0-20220730061053-a21e329a2698 h1:wjoF4/FOwze8cN2/EvQyyuq1tzXjxNViPIoqQ7CNIb8=
+github.com/sagernet/sing v0.0.0-20220730061053-a21e329a2698/go.mod h1:GbtQfZSpmtD3cXeD1qX2LCMwY8dH+bnnInDTqd92IsM=
 github.com/vishvananda/netlink v1.1.0 h1:1iyaYNBLmP6L0220aDnYQpo1QEV4t4hJ+xEEhhJH8j0=
 github.com/vishvananda/netlink v1.1.0/go.mod h1:cTgwzPIzzgDAYoQrMm0EdrjRUBkTqKYppBueQtXaqoE=
 github.com/vishvananda/netns v0.0.0-20191106174202-0a2b9b5464df/go.mod h1:JP3t17pCcGlemwknint6hfoeCVQrEMVwxRLRjXpq+BU=
