@@ -7,7 +7,6 @@ import (
 	"net/netip"
 
 	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
@@ -75,7 +74,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 		false,
 	)
 	if err != nil {
-		return E.New(err)
+		return wrapStackError(err)
 	}
 	defer route.Release()
 
@@ -113,7 +112,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 
 	if err != nil {
 		route.Stats().UDP.PacketSendErrors.Increment()
-		return E.New(err)
+		return wrapStackError(err)
 	}
 
 	route.Stats().UDP.PacketsSent.Increment()

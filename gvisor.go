@@ -70,7 +70,7 @@ func (t *GVisorTun) Start() error {
 	})
 	tErr := ipStack.CreateNIC(defaultNIC, linkEndpoint)
 	if tErr != nil {
-		return E.New("create nic: ", tErr)
+		return E.New("create nic: ", wrapStackError(tErr))
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
@@ -118,7 +118,7 @@ func (t *GVisorTun) Start() error {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewConnection(t.ctx, tcpConn, metadata)
+			hErr := t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
 			if hErr != nil {
 				endpoint.Abort()
 			}
@@ -143,7 +143,7 @@ func (t *GVisorTun) Start() error {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				hErr := t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(udpConn), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+				hErr := t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
 				if hErr != nil {
 					endpoint.Abort()
 				}
