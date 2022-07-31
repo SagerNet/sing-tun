@@ -63,9 +63,6 @@ func (m *networkUpdateMonitor) Start() error {
 	if err != nil {
 		return err
 	}
-	if err != nil {
-		return err
-	}
 	go m.loopUpdate()
 	return nil
 }

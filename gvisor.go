@@ -30,6 +30,7 @@ type GVisorTun struct {
 	endpointIndependentNatTimeout int64
 	handler                       Handler
 	stack                         *stack.Stack
+	endpoint                      stack.LinkEndpoint
 }
 
 func NewGVisor(
@@ -158,10 +159,12 @@ func (t *GVisorTun) Start() error {
 	}
 
 	t.stack = ipStack
+	t.endpoint = linkEndpoint
 	return nil
 }
 
 func (t *GVisorTun) Close() error {
+	t.endpoint.Attach(nil)
 	t.stack.Close()
 	for _, endpoint := range t.stack.CleanupEndpoints() {
 		endpoint.Abort()
