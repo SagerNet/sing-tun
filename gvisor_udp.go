@@ -56,6 +56,9 @@ type UDPBackWriter struct {
 	sourcePort uint16
 }
 
+func (w *UDPBackWriter) WriteIsThreadUnsafe() {
+}
+
 func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
 
@@ -81,6 +84,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		ReserveHeaderBytes: header.UDPMinimumSize + int(route.MaxHeaderLength()),
 		Payload:            gBuffer.NewWithData(buffer.Bytes()),
+		OnRelease:          buffer.Release,
 	})
 	defer packet.DecRef()
 
