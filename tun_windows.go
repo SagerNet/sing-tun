@@ -310,21 +310,22 @@ func (e *WintunEndpoint) dispatchLoop() {
 	defer common.KeepAlive(_buffer)
 	buffer := common.Dup(_buffer)
 	defer buffer.Release()
+	data := buffer.FreeBytes()
 	for {
-		n, err := e.tun.Read(buffer.FreeBytes())
+		n, err := e.tun.Read(data)
 		if err != nil {
 			break
 		}
-		var view gBuffer.View
-		view.Append(buffer.To(n))
+		packet := make([]byte, n)
+		copy(packet, data[:n])
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           view,
+			Payload:           gBuffer.NewWithData(packet),
 			IsForwardedPacket: true,
 		})
-		defer pkt.DecRef()
 		var p tcpip.NetworkProtocolNumber
 		ipHeader, ok := pkt.Data().PullUp(1)
 		if !ok {
+			pkt.DecRef()
 			continue
 		}
 		switch header.IPVersion(ipHeader) {
@@ -336,6 +337,7 @@ func (e *WintunEndpoint) dispatchLoop() {
 			continue
 		}
 		e.dispatcher.DeliverNetworkPacket(p, pkt)
+		pkt.DecRef()
 	}
 }
 
