@@ -127,8 +127,10 @@ func (t *GVisorTun) Start() error {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
-			endpoint.Abort()
+			hErr := t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
+			if hErr != nil {
+				endpoint.Abort()
+			}
 		}()
 	}).HandlePacket)
 
@@ -150,8 +152,10 @@ func (t *GVisorTun) Start() error {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
-				endpoint.Abort()
+				hErr := t.handler.NewPacketConnection(ContextWithNeedTimeout(t.ctx, true), bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), metadata)
+				if hErr != nil {
+					endpoint.Abort()
+				}
 			}()
 		}).HandlePacket)
 	} else {
