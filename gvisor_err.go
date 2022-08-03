@@ -48,9 +48,9 @@ func (c *gUDPConn) Write(b []byte) (n int, err error) {
 
 func wrapStackError(err tcpip.Error) error {
 	switch err.(type) {
-	case *tcpip.ErrClosedForSend:
-		return net.ErrClosed
-	case *tcpip.ErrClosedForReceive:
+	case *tcpip.ErrClosedForSend,
+		*tcpip.ErrClosedForReceive,
+		*tcpip.ErrAborted:
 		return net.ErrClosed
 	}
 	return wrapStackError(err)
@@ -59,9 +59,9 @@ func wrapStackError(err tcpip.Error) error {
 func wrapError(err error) error {
 	if opErr, isOpErr := err.(*net.OpError); isOpErr {
 		switch opErr.Err.Error() {
-		case "endpoint is closed for send":
-			return net.ErrClosed
-		case "endpoint is closed for receive":
+		case "endpoint is closed for send",
+			"endpoint is closed for receive",
+			"operation aborted":
 			return net.ErrClosed
 		}
 	}
