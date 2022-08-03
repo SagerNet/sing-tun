@@ -316,11 +316,12 @@ func (e *WintunEndpoint) dispatchLoop() {
 		if err != nil {
 			break
 		}
-		packet := make([]byte, n)
-		copy(packet, data[:n])
+		packet := buf.NewSize(n)
+		common.Must1(packet.Write(data[:n]))
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           gBuffer.NewWithData(packet),
+			Payload:           gBuffer.NewWithData(packet.Bytes()),
 			IsForwardedPacket: true,
+			OnRelease:         packet.Release,
 		})
 		var p tcpip.NetworkProtocolNumber
 		ipHeader, ok := pkt.Data().PullUp(1)
