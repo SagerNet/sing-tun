@@ -4,9 +4,9 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
 
-	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
@@ -127,61 +127,61 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	return routes
 }
 
-func (t *NativeTun) rules() []*Rule {
-	var rules []*Rule
+func (t *NativeTun) rules() []*netlink.Rule {
+	var rules []*netlink.Rule
 
 	priority := 9000
 
-	it := NewRule()
+	it := netlink.NewRule()
 	it.Priority = priority
 	it.Invert = true
-	it.UIDRange = &RuleUIDRange{Start: 0, End: 0xFFFFFFFF - 1}
+	it.UIDRange = netlink.NewRuleUIDRange(0, 0xFFFFFFFF-1)
 	it.Goto = 9100
 	rules = append(rules, it)
 	priority++
 
 	if t.inet4Address.IsValid() {
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
 		it.Dst = t.inet4Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
 
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
-		it.IPProtocol = unix.IPPROTO_ICMP
+		it.IPProto = unix.IPPROTO_ICMP
 		it.Goto = 9100
 		rules = append(rules, it)
 		priority++
 	}
 
 	if t.inet6Address.IsValid() {
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
 		it.Dst = t.inet6Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
 
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
-		it.IPProtocol = unix.IPPROTO_ICMPV6
+		it.IPProto = unix.IPPROTO_ICMPV6
 		it.Goto = 9100
 		rules = append(rules, it)
 		priority++
 	}
 
-	it = NewRule()
+	it = netlink.NewRule()
 	it.Priority = priority
 	it.Invert = true
-	it.DstPortRange = &RulePortRange{Start: 53, End: 53}
+	it.Dport = netlink.NewRulePortRange(53, 53)
 	it.Table = unix.RT_TABLE_MAIN
-	it.SuppressPrefixLength = 0
+	it.SuppressPrefixlen = 0
 	rules = append(rules, it)
 	priority++
 
-	it = NewRule()
+	it = netlink.NewRule()
 	it.Priority = priority
 	it.Invert = true
 	it.IifName = "lo"
@@ -189,7 +189,7 @@ func (t *NativeTun) rules() []*Rule {
 	rules = append(rules, it)
 	priority++
 
-	it = NewRule()
+	it = netlink.NewRule()
 	it.Priority = priority
 	it.IifName = "lo"
 	it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
@@ -198,7 +198,7 @@ func (t *NativeTun) rules() []*Rule {
 	priority++
 
 	if t.inet4Address.IsValid() {
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
 		it.Src = t.inet4Address.Masked()
@@ -208,7 +208,7 @@ func (t *NativeTun) rules() []*Rule {
 	}
 
 	if t.inet6Address.IsValid() {
-		it = NewRule()
+		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
 		it.Src = t.inet6Address.Masked()
@@ -217,7 +217,7 @@ func (t *NativeTun) rules() []*Rule {
 		priority++
 	}
 
-	it = NewRule()
+	it = netlink.NewRule()
 	it.Priority = 9100
 	rules = append(rules, it)
 
@@ -232,7 +232,7 @@ func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 		}
 	}
 	for i, rule := range t.rules() {
-		err := RuleAdd(rule)
+		err := netlink.RuleAdd(rule)
 		if err != nil {
 			return E.Cause(err, "add rule ", i, "/", len(t.rules()))
 		}
@@ -257,7 +257,7 @@ func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
 		}
 	}
 	for _, rule := range t.rules() {
-		err := RuleDel(rule)
+		err := netlink.RuleDel(rule)
 		if err != nil {
 			errors = append(errors, err)
 		}

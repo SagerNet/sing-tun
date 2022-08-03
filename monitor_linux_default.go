@@ -3,9 +3,9 @@
 package tun
 
 import (
+	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
 
-	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 

@@ -5,10 +5,9 @@ import (
 	"os"
 	"sync"
 
+	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/x/list"
-
-	"github.com/vishvananda/netlink"
 )
 
 type networkUpdateMonitor struct {

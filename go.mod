@@ -3,9 +3,9 @@ module github.com/sagernet/sing-tun
 go 1.18
 
 require (
+	github.com/sagernet/netlink v0.0.0-20220803045538-bdac49abf805
 	github.com/sagernet/sing v0.0.0-20220730061053-a21e329a2698
-	github.com/vishvananda/netlink v1.1.0
-	golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10
+	golang.org/x/sys v0.0.0-20220731174439-a90be440212d
 	gvisor.dev/gvisor v0.0.0-20220711011657-cecae2f4234d
 )
 
