@@ -12,6 +12,6 @@ func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, erro
 	return nil, os.ErrInvalid
 }
 
-func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, callback DefaultInterfaceUpdateCallback) (DefaultInterfaceMonitor, error) {
+func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor) (DefaultInterfaceMonitor, error) {
 	return nil, os.ErrInvalid
 }

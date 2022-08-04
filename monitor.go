@@ -9,7 +9,7 @@ var ErrNoRoute = E.New("no route to internet")
 
 type (
 	NetworkUpdateCallback          = func() error
-	DefaultInterfaceUpdateCallback = func()
+	DefaultInterfaceUpdateCallback = func() error
 )
 
 type NetworkUpdateMonitor interface {
@@ -17,6 +17,7 @@ type NetworkUpdateMonitor interface {
 	Close() error
 	RegisterCallback(callback NetworkUpdateCallback) *list.Element[NetworkUpdateCallback]
 	UnregisterCallback(element *list.Element[NetworkUpdateCallback])
+	E.Handler
 }
 
 type DefaultInterfaceMonitor interface {
@@ -24,4 +25,6 @@ type DefaultInterfaceMonitor interface {
 	Close() error
 	DefaultInterfaceName() string
 	DefaultInterfaceIndex() int
+	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
+	UnregisterCallback(element *list.Element[DefaultInterfaceUpdateCallback])
 }
