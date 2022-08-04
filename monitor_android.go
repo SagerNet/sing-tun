@@ -2,7 +2,6 @@ package tun
 
 import (
 	"github.com/sagernet/netlink"
-	E "github.com/sagernet/sing/common/exceptions"
 )
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
@@ -19,7 +18,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	}
 
 	if defaultTableIndex == 0 {
-		return E.New("no route to internet")
+		return ErrNoRoute
 	}
 
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: defaultTableIndex}, netlink.RT_FILTER_TABLE)
@@ -47,5 +46,5 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return nil
 	}
 
-	return E.New("no route in the system table")
+	return ErrNoRoute
 }

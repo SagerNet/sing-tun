@@ -4,8 +4,9 @@ go 1.18
 
 require (
 	github.com/sagernet/netlink v0.0.0-20220803045538-bdac49abf805
-	github.com/sagernet/sing v0.0.0-20220730061053-a21e329a2698
-	golang.org/x/sys v0.0.0-20220731174439-a90be440212d
+	github.com/sagernet/sing v0.0.0-20220801112236-1bb95f9661fc
+	golang.org/x/net v0.0.0-20220802222814-0bcc04d9c69b
+	golang.org/x/sys v0.0.0-20220803195053-6e608f9ce704
 	gvisor.dev/gvisor v0.0.0-20220711011657-cecae2f4234d
 )
 
