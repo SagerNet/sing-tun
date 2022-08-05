@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"syscall"
 
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -13,7 +14,6 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
-	"syscall"
 )
 
 type networkUpdateMonitor struct {
@@ -47,7 +47,7 @@ func (m *networkUpdateMonitor) Start() error {
 func (m *networkUpdateMonitor) loopUpdate() {
 	rawConn, err := m.routeSocket.SyscallConn()
 	if err != nil {
-		m.errorHandler.NewError(context.Background(), err)
+		m.errorHandler.NewError(context.Background(), E.Cause(err, "create raw route connection"))
 		return
 	}
 	for {
@@ -66,7 +66,7 @@ func (m *networkUpdateMonitor) loopUpdate() {
 		m.emit()
 	}
 	if err != syscall.EAGAIN {
-		m.errorHandler.NewError(context.Background(), err)
+		m.errorHandler.NewError(context.Background(), E.Cause(err, "read route message"))
 	}
 }
 

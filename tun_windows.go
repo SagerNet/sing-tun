@@ -308,7 +308,7 @@ func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *WintunEndpoint) dispatchLoop() {
-	_buffer := buf.StackNewPacket()
+	_buffer := buf.StackNewSize(int(e.tun.mtu))
 	defer common.KeepAlive(_buffer)
 	buffer := common.Dup(_buffer)
 	defer buffer.Release()
@@ -339,7 +339,12 @@ func (e *WintunEndpoint) dispatchLoop() {
 		default:
 			continue
 		}
-		e.dispatcher.DeliverNetworkPacket(p, pkt)
+		dispatcher := e.dispatcher
+		if dispatcher == nil {
+			pkt.DecRef()
+			return
+		}
+		dispatcher.DeliverNetworkPacket(p, pkt)
 		pkt.DecRef()
 	}
 }
