@@ -20,7 +20,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/windows"
-	gBuffer "gvisor.dev/gvisor/pkg/buffer"
+	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -318,33 +318,27 @@ func (e *WintunEndpoint) dispatchLoop() {
 		if err != nil {
 			break
 		}
-		packet := buf.NewSize(n)
-		common.Must1(packet.Write(data[:n]))
-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           gBuffer.NewWithData(packet.Bytes()),
-			IsForwardedPacket: true,
-			OnRelease:         packet.Release,
-		})
-		var p tcpip.NetworkProtocolNumber
-		ipHeader, ok := pkt.Data().PullUp(1)
-		if !ok {
-			pkt.DecRef()
-			continue
-		}
-		switch header.IPVersion(ipHeader) {
+		packet := data[:n]
+		var networkProtocol tcpip.NetworkProtocolNumber
+		switch header.IPVersion(packet) {
 		case header.IPv4Version:
-			p = header.IPv4ProtocolNumber
+			networkProtocol = header.IPv4ProtocolNumber
 		case header.IPv6Version:
-			p = header.IPv6ProtocolNumber
+			networkProtocol = header.IPv6ProtocolNumber
 		default:
+			e.tun.Write([][]byte{packet})
 			continue
 		}
+		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload:           bufferv2.MakeWithData(packet),
+			IsForwardedPacket: true,
+		})
 		dispatcher := e.dispatcher
 		if dispatcher == nil {
 			pkt.DecRef()
 			return
 		}
-		dispatcher.DeliverNetworkPacket(p, pkt)
+		dispatcher.DeliverNetworkPacket(networkProtocol, pkt)
 		pkt.DecRef()
 	}
 }
@@ -366,7 +360,7 @@ func (e *WintunEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 func (e *WintunEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
-		_, err := e.tun.Write(packet.Slices())
+		_, err := e.tun.Write(packet.AsSlices())
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}

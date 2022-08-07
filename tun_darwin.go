@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
-	gBuffer "gvisor.dev/gvisor/pkg/buffer"
+	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -109,42 +109,36 @@ func (e *DarwinEndpoint) dispatchLoop() {
 		if err != nil {
 			break
 		}
-		packet := buf.NewSize(n - 4)
-		common.Must1(packet.Write(data[4:n]))
-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           gBuffer.NewWithData(packet.Bytes()),
-			IsForwardedPacket: true,
-			OnRelease:         packet.Release,
-		})
-		var p tcpip.NetworkProtocolNumber
-		ipHeader, ok := pkt.Data().PullUp(1)
-		if !ok {
-			pkt.DecRef()
-			continue
-		}
-		switch header.IPVersion(ipHeader) {
+		packet := data[4:n]
+		var networkProtocol tcpip.NetworkProtocolNumber
+		switch header.IPVersion(packet) {
 		case header.IPv4Version:
-			p = header.IPv4ProtocolNumber
-			if header.IPv4(packet.Bytes()).DestinationAddress() == e.tun.inet4Address {
-				_, err = e.tun.tunFile.Write(data[:n])
+			networkProtocol = header.IPv4ProtocolNumber
+			if header.IPv4(packet).DestinationAddress() == e.tun.inet4Address {
+				e.tun.tunFile.Write(data[:n])
 				continue
 			}
 		case header.IPv6Version:
-			p = header.IPv6ProtocolNumber
-			if header.IPv6(packet.Bytes()).DestinationAddress() == e.tun.inet6Address {
-				_, err = e.tun.tunFile.Write(data[:n])
+			networkProtocol = header.IPv6ProtocolNumber
+			if header.IPv6(packet).DestinationAddress() == e.tun.inet6Address {
+				e.tun.tunFile.Write(data[:n])
 				continue
 			}
 		default:
+			e.tun.tunFile.Write(data[:n])
 			continue
 		}
-
+		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload:           bufferv2.MakeWithData(data[4:n]),
+			IsForwardedPacket: true,
+		})
+		pkt.NetworkProtocolNumber = networkProtocol
 		dispatcher := e.dispatcher
 		if dispatcher == nil {
 			pkt.DecRef()
 			return
 		}
-		dispatcher.DeliverNetworkPacket(p, pkt)
+		dispatcher.DeliverNetworkPacket(networkProtocol, pkt)
 		pkt.DecRef()
 	}
 }
@@ -163,22 +157,22 @@ func (e *DarwinEndpoint) ARPHardwareType() header.ARPHardwareType {
 func (e *DarwinEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 }
 
+var (
+	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
+	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
+)
+
 func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
-	_packetHeader := buf.StackNewSize(4)
-	defer common.KeepAlive(_packetHeader)
-	packetHeader := common.Dup(_packetHeader)
-	defer packetHeader.Release()
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
-		packetHeader.FullReset()
-		packetHeader.WriteZeroN(3)
+		var packetHeader []byte
 		switch packet.NetworkProtocolNumber {
 		case header.IPv4ProtocolNumber:
-			packetHeader.WriteByte(unix.AF_INET)
+			packetHeader = packetHeader4[:]
 		case header.IPv6ProtocolNumber:
-			packetHeader.WriteByte(unix.AF_INET6)
+			packetHeader = packetHeader6[:]
 		}
-		_, err := rw.WriteV(e.tun.tunFd, append([][]byte{packetHeader.Bytes()}, packet.Slices()...))
+		_, err := rw.WriteV(e.tun.tunFd, append([][]byte{packetHeader}, packet.AsSlices()...))
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}

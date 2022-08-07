@@ -13,7 +13,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
 
-	gBuffer "gvisor.dev/gvisor/pkg/buffer"
+	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -43,7 +43,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 	f.udpNat.NewPacket(
 		f.ctx,
 		upstreamMetadata.Source.AddrPort(),
-		buf.As(pkt.Data().AsRange().AsView()),
+		buf.As(pkt.Data().AsRange().ToSlice()),
 		upstreamMetadata,
 		func(natConn N.PacketConn) N.PacketWriter {
 			return &UDPBackWriter{f.stack, id.RemoteAddress, id.RemotePort}
@@ -56,9 +56,6 @@ type UDPBackWriter struct {
 	stack      *stack.Stack
 	source     tcpip.Address
 	sourcePort uint16
-}
-
-func (w *UDPBackWriter) WriteIsThreadUnsafe() {
 }
 
 func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
@@ -85,8 +82,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 
 	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		ReserveHeaderBytes: header.UDPMinimumSize + int(route.MaxHeaderLength()),
-		Payload:            gBuffer.NewWithData(buffer.Bytes()),
-		OnRelease:          buffer.Release,
+		Payload:            bufferv2.MakeWithData(buffer.Bytes()),
 	})
 	defer packet.DecRef()
 
