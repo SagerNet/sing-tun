@@ -3,6 +3,8 @@ package tun
 import (
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"unsafe"
 
 	"github.com/sagernet/netlink"
@@ -14,7 +16,8 @@ import (
 
 type NativeTun struct {
 	name         string
-	fd           int
+	tunFd        int
+	tunFile      *os.File
 	inet4Address netip.Prefix
 	inet6Address netip.Prefix
 	mtu          uint32
@@ -32,17 +35,27 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 	}
 	nativeTun := &NativeTun{
 		name:         name,
-		fd:           tunFd,
+		tunFd:        tunFd,
+		tunFile:      os.NewFile(uintptr(tunFd), "tun"),
 		mtu:          mtu,
 		inet4Address: inet4Address,
 		inet6Address: inet6Address,
 		autoRoute:    autoRoute,
 	}
+	runtime.SetFinalizer(nativeTun.tunFile, nil)
 	err = nativeTun.configure(tunLink)
 	if err != nil {
 		return nil, E.Errors(err, unix.Close(tunFd))
 	}
 	return nativeTun, nil
+}
+
+func (t *NativeTun) Read(p []byte) (n int, err error) {
+	return t.tunFile.Read(p)
+}
+
+func (t *NativeTun) Write(p []byte) (n int, err error) {
+	return t.tunFile.Write(p)
 }
 
 var controlPath string
@@ -131,8 +144,7 @@ func (t *NativeTun) Close() error {
 	if t.autoRoute {
 		errors = append(errors, t.unsetRoute())
 	}
-	errors = append(errors, unix.Close(t.fd))
-	return E.Errors(errors...)
+	return E.Errors(append(errors, t.tunFile.Close())...)
 }
 
 const tunTableIndex = 2022

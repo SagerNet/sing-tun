@@ -7,7 +7,6 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/rw"
 
-	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -112,11 +111,6 @@ func (e *DarwinEndpoint) ARPHardwareType() header.ARPHardwareType {
 
 func (e *DarwinEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 }
-
-var (
-	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
-	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
-)
 
 func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int

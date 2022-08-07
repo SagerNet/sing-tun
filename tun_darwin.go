@@ -5,12 +5,15 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/rw"
 
+	"golang.org/x/net/ipv4"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
@@ -41,13 +44,45 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 		return nil, err
 	}
 
-	return &NativeTun{
+	nativeTun := &NativeTun{
 		tunFd:        uintptr(tunFd),
 		tunFile:      os.NewFile(uintptr(tunFd), "utun"),
 		inet4Address: string(inet4Address.Addr().AsSlice()),
 		inet6Address: string(inet6Address.Addr().AsSlice()),
 		mtu:          mtu,
-	}, nil
+	}
+	runtime.SetFinalizer(nativeTun.tunFile, nil)
+	return nativeTun, nil
+}
+
+func (t *NativeTun) Read(p []byte) (n int, err error) {
+	/*n, err = t.tunFile.Read(p)
+	if n < 4 {
+		return 0, err
+	}
+
+	copy(p[:], p[4:])
+	return n - 4, err*/
+	return t.tunFile.Write(p)
+}
+
+var (
+	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
+	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
+)
+
+func (t *NativeTun) Write(p []byte) (n int, err error) {
+	var packetHeader []byte
+	if p[0]>>4 == ipv4.Version {
+		packetHeader = packetHeader4[:]
+	} else {
+		packetHeader = packetHeader6[:]
+	}
+	_, err = rw.WriteV(t.tunFd, [][]byte{packetHeader, p})
+	if err == nil {
+		n = len(p)
+	}
+	return
 }
 
 func (t *NativeTun) Close() error {

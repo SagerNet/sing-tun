@@ -31,7 +31,7 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, u
 		ctx:     ctx,
 		stack:   stack,
 		handler: handler,
-		udpNat:  udpnat.New[netip.AddrPort](udpTimeout, nopErrorHandler{handler}),
+		udpNat:  udpnat.New[netip.AddrPort](udpTimeout, handler),
 	}
 }
 
@@ -119,11 +119,4 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 
 	route.Stats().UDP.PacketsSent.Increment()
 	return nil
-}
-
-type nopErrorHandler struct {
-	Handler
-}
-
-func (h nopErrorHandler) NewError(ctx context.Context, err error) {
 }

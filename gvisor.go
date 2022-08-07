@@ -25,14 +25,19 @@ import (
 const defaultNIC tcpip.NICID = 1
 
 type GVisor struct {
-	ctx                           context.Context
-	tun                           GVisorTun
-	tunMtu                        uint32
-	endpointIndependentNat        bool
-	endpointIndependentNatTimeout int64
-	handler                       Handler
-	stack                         *stack.Stack
-	endpoint                      stack.LinkEndpoint
+	ctx                    context.Context
+	tun                    GVisorTun
+	tunMtu                 uint32
+	endpointIndependentNat bool
+	udpTimeout             int64
+	handler                Handler
+	stack                  *stack.Stack
+	endpoint               stack.LinkEndpoint
+}
+
+type GVisorTun interface {
+	Tun
+	NewEndpoint() (stack.LinkEndpoint, error)
 }
 
 func NewGVisor(
@@ -40,7 +45,7 @@ func NewGVisor(
 	tun Tun,
 	tunMtu uint32,
 	endpointIndependentNat bool,
-	endpointIndependentNatTimeout int64,
+	udpTimeout int64,
 	handler Handler,
 ) (Stack, error) {
 	gTun, isGTun := tun.(GVisorTun)
@@ -49,12 +54,12 @@ func NewGVisor(
 	}
 
 	return &GVisor{
-		ctx:                           ctx,
-		tun:                           gTun,
-		tunMtu:                        tunMtu,
-		endpointIndependentNat:        endpointIndependentNat,
-		endpointIndependentNatTimeout: endpointIndependentNatTimeout,
-		handler:                       handler,
+		ctx:                    ctx,
+		tun:                    gTun,
+		tunMtu:                 tunMtu,
+		endpointIndependentNat: endpointIndependentNat,
+		udpTimeout:             udpTimeout,
+		handler:                handler,
 	}, nil
 }
 
@@ -166,7 +171,7 @@ func (t *GVisor) Start() error {
 			}()
 		}).HandlePacket)
 	} else {
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.endpointIndependentNatTimeout).HandlePacket)
+		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
 	}
 
 	t.stack = ipStack

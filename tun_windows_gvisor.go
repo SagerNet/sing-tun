@@ -77,7 +77,7 @@ func (e *WintunEndpoint) dispatchLoop() {
 		case header.IPv6Version:
 			networkProtocol = header.IPv6ProtocolNumber
 		default:
-			e.tun.Write([][]byte{packet})
+			e.tun.Write(packet)
 			continue
 		}
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
@@ -111,7 +111,7 @@ func (e *WintunEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 func (e *WintunEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
-		_, err := e.tun.Write(packet.AsSlices())
+		_, err := e.tun.write(packet.AsSlices())
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}

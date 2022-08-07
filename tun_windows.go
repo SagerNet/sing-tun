@@ -172,7 +172,29 @@ retry:
 	}
 }
 
-func (t *NativeTun) Write(packetElementList [][]byte) (n int, err error) {
+func (t *NativeTun) Write(p []byte) (n int, err error) {
+	t.running.Add(1)
+	defer t.running.Done()
+	if atomic.LoadInt32(&t.close) == 1 {
+		return 0, os.ErrClosed
+	}
+	t.rate.update(uint64(len(p)))
+	packet, err := t.session.AllocateSendPacket(len(p))
+	copy(packet, p)
+	if err == nil {
+		t.session.SendPacket(packet)
+		return len(p), nil
+	}
+	switch err {
+	case windows.ERROR_HANDLE_EOF:
+		return 0, os.ErrClosed
+	case windows.ERROR_BUFFER_OVERFLOW:
+		return 0, nil // Dropping when ring is full.
+	}
+	return 0, fmt.Errorf("write failed: %w", err)
+}
+
+func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 	t.running.Add(1)
 	defer t.running.Done()
 	if atomic.LoadInt32(&t.close) == 1 {
