@@ -3,6 +3,7 @@ module github.com/sagernet/sing-tun
 go 1.18
 
 require (
+	github.com/eycorsican/go-tun2socks v1.16.11
 	github.com/sagernet/netlink v0.0.0-20220803045538-bdac49abf805
 	github.com/sagernet/sing v0.0.0-20220801112236-1bb95f9661fc
 	golang.org/x/net v0.0.0-20220805013720-a33c5aa5df48

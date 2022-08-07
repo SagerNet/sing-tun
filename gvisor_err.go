@@ -1,4 +1,4 @@
-//go:build !no_gvisor
+//go:build !(no_gvisor || !(linux || windows || darwin))
 
 package tun
 

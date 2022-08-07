@@ -1,4 +1,4 @@
-//go:build !no_gvisor
+//go:build !(no_gvisor || !(linux || windows || darwin))
 
 package tun
 
@@ -24,9 +24,9 @@ import (
 
 const defaultNIC tcpip.NICID = 1
 
-type GVisorTun struct {
+type GVisor struct {
 	ctx                           context.Context
-	tun                           Tun
+	tun                           GVisorTun
 	tunMtu                        uint32
 	endpointIndependentNat        bool
 	endpointIndependentNatTimeout int64
@@ -42,18 +42,23 @@ func NewGVisor(
 	endpointIndependentNat bool,
 	endpointIndependentNatTimeout int64,
 	handler Handler,
-) *GVisorTun {
-	return &GVisorTun{
+) (Stack, error) {
+	gTun, isGTun := tun.(GVisorTun)
+	if !isGTun {
+		return nil, ErrGVisorUnsupported
+	}
+
+	return &GVisor{
 		ctx:                           ctx,
-		tun:                           tun,
+		tun:                           gTun,
 		tunMtu:                        tunMtu,
 		endpointIndependentNat:        endpointIndependentNat,
 		endpointIndependentNatTimeout: endpointIndependentNatTimeout,
 		handler:                       handler,
-	}
+	}, nil
 }
 
-func (t *GVisorTun) Start() error {
+func (t *GVisor) Start() error {
 	linkEndpoint, err := t.tun.NewEndpoint()
 	if err != nil {
 		return err
@@ -169,7 +174,7 @@ func (t *GVisorTun) Start() error {
 	return nil
 }
 
-func (t *GVisorTun) Close() error {
+func (t *GVisor) Close() error {
 	t.endpoint.Attach(nil)
 	t.stack.Close()
 	for _, endpoint := range t.stack.CleanupEndpoints() {

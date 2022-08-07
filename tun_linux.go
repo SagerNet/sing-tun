@@ -1,5 +1,3 @@
-//go:build !no_gvisor
-
 package tun
 
 import (
@@ -12,8 +10,6 @@ import (
 	"github.com/sagernet/sing/common/rw"
 
 	"golang.org/x/sys/unix"
-	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 type NativeTun struct {
@@ -128,13 +124,6 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		}
 	}
 	return nil
-}
-
-func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	return fdbased.New(&fdbased.Options{
-		FDs: []int{t.fd},
-		MTU: t.mtu,
-	})
 }
 
 func (t *NativeTun) Close() error {

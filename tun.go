@@ -1,11 +1,7 @@
-//go:build !no_gvisor
-
 package tun
 
 import (
 	N "github.com/sagernet/sing/common/network"
-
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 type Handler interface {
@@ -14,6 +10,5 @@ type Handler interface {
 }
 
 type Tun interface {
-	NewEndpoint() (stack.LinkEndpoint, error)
 	Close() error
 }

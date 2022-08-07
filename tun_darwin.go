@@ -9,23 +9,17 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/rw"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
-	"gvisor.dev/gvisor/pkg/bufferv2"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/header"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 type NativeTun struct {
 	tunFd        uintptr
 	tunFile      *os.File
-	inet4Address tcpip.Address
-	inet6Address tcpip.Address
+	inet4Address string
+	inet6Address string
 	mtu          uint32
 }
 
@@ -50,135 +44,14 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 	return &NativeTun{
 		tunFd:        uintptr(tunFd),
 		tunFile:      os.NewFile(uintptr(tunFd), "utun"),
-		inet4Address: tcpip.Address(inet4Address.Addr().AsSlice()),
-		inet6Address: tcpip.Address(inet6Address.Addr().AsSlice()),
+		inet4Address: string(inet4Address.Addr().AsSlice()),
+		inet6Address: string(inet6Address.Addr().AsSlice()),
 		mtu:          mtu,
 	}, nil
 }
 
-func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	return &DarwinEndpoint{tun: t}, nil
-}
-
 func (t *NativeTun) Close() error {
 	return t.tunFile.Close()
-}
-
-var _ stack.LinkEndpoint = (*DarwinEndpoint)(nil)
-
-type DarwinEndpoint struct {
-	tun        *NativeTun
-	dispatcher stack.NetworkDispatcher
-}
-
-func (e *DarwinEndpoint) MTU() uint32 {
-	return e.tun.mtu
-}
-
-func (e *DarwinEndpoint) MaxHeaderLength() uint16 {
-	return 0
-}
-
-func (e *DarwinEndpoint) LinkAddress() tcpip.LinkAddress {
-	return ""
-}
-
-func (e *DarwinEndpoint) Capabilities() stack.LinkEndpointCapabilities {
-	return stack.CapabilityNone
-}
-
-func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
-	if dispatcher == nil && e.dispatcher != nil {
-		e.dispatcher = nil
-		return
-	}
-	if dispatcher != nil && e.dispatcher == nil {
-		e.dispatcher = dispatcher
-		go e.dispatchLoop()
-	}
-}
-
-func (e *DarwinEndpoint) dispatchLoop() {
-	_buffer := buf.StackNewSize(int(e.tun.mtu) + 4)
-	defer common.KeepAlive(_buffer)
-	buffer := common.Dup(_buffer)
-	defer buffer.Release()
-	data := buffer.FreeBytes()
-	for {
-		n, err := e.tun.tunFile.Read(data)
-		if err != nil {
-			break
-		}
-		packet := data[4:n]
-		var networkProtocol tcpip.NetworkProtocolNumber
-		switch header.IPVersion(packet) {
-		case header.IPv4Version:
-			networkProtocol = header.IPv4ProtocolNumber
-			if header.IPv4(packet).DestinationAddress() == e.tun.inet4Address {
-				e.tun.tunFile.Write(data[:n])
-				continue
-			}
-		case header.IPv6Version:
-			networkProtocol = header.IPv6ProtocolNumber
-			if header.IPv6(packet).DestinationAddress() == e.tun.inet6Address {
-				e.tun.tunFile.Write(data[:n])
-				continue
-			}
-		default:
-			e.tun.tunFile.Write(data[:n])
-			continue
-		}
-		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           bufferv2.MakeWithData(data[4:n]),
-			IsForwardedPacket: true,
-		})
-		pkt.NetworkProtocolNumber = networkProtocol
-		dispatcher := e.dispatcher
-		if dispatcher == nil {
-			pkt.DecRef()
-			return
-		}
-		dispatcher.DeliverNetworkPacket(networkProtocol, pkt)
-		pkt.DecRef()
-	}
-}
-
-func (e *DarwinEndpoint) IsAttached() bool {
-	return e.dispatcher != nil
-}
-
-func (e *DarwinEndpoint) Wait() {
-}
-
-func (e *DarwinEndpoint) ARPHardwareType() header.ARPHardwareType {
-	return header.ARPHardwareNone
-}
-
-func (e *DarwinEndpoint) AddHeader(buffer *stack.PacketBuffer) {
-}
-
-var (
-	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
-	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
-)
-
-func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
-	var n int
-	for _, packet := range packetBufferList.AsSlice() {
-		var packetHeader []byte
-		switch packet.NetworkProtocolNumber {
-		case header.IPv4ProtocolNumber:
-			packetHeader = packetHeader4[:]
-		case header.IPv6ProtocolNumber:
-			packetHeader = packetHeader6[:]
-		}
-		_, err := rw.WriteV(e.tun.tunFd, append([][]byte{packetHeader}, packet.AsSlices()...))
-		if err != nil {
-			return n, &tcpip.ErrAborted{}
-		}
-		n++
-	}
-	return n, nil
 }
 
 const utunControlName = "com.apple.net.utun_control"
