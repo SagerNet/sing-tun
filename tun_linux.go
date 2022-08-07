@@ -5,13 +5,14 @@ package tun
 import (
 	"net"
 	"net/netip"
+	"unsafe"
 
 	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/rw"
 
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
-	"gvisor.dev/gvisor/pkg/tcpip/link/tun"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
@@ -25,7 +26,7 @@ type NativeTun struct {
 }
 
 func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) (Tun, error) {
-	tunFd, err := tun.Open(name)
+	tunFd, err := open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -48,9 +49,52 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 	return nativeTun, nil
 }
 
+var controlPath string
+
+func init() {
+	const defaultTunPath = "/dev/net/tun"
+	const androidTunPath = "/dev/tun"
+	if rw.FileExists(androidTunPath) {
+		controlPath = androidTunPath
+	} else {
+		controlPath = defaultTunPath
+	}
+}
+
+func open(name string) (int, error) {
+	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
+	if err != nil {
+		return -1, err
+	}
+
+	var ifr struct {
+		name  [16]byte
+		flags uint16
+		_     [22]byte
+	}
+
+	copy(ifr.name[:], name)
+	ifr.flags = unix.IFF_TUN | unix.IFF_NO_PI
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))
+	if errno != 0 {
+		unix.Close(fd)
+		return -1, errno
+	}
+
+	if err = unix.SetNonblock(fd, true); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+
+	return fd, nil
+}
+
 func (t *NativeTun) configure(tunLink netlink.Link) error {
 	err := netlink.LinkSetMTU(tunLink, int(t.mtu))
-	if err != nil {
+	if err == unix.EPERM {
+		// unprivileged
+		return nil
+	} else if err != nil {
 		return err
 	}
 
