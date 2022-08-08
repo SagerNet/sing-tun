@@ -3,9 +3,6 @@
 package tun
 
 import (
-	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/buf"
-
 	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -59,29 +56,32 @@ func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *WintunEndpoint) dispatchLoop() {
-	_buffer := buf.StackNewSize(int(e.tun.mtu))
-	defer common.KeepAlive(_buffer)
-	buffer := common.Dup(_buffer)
-	defer buffer.Release()
-	data := buffer.FreeBytes()
 	for {
-		n, err := e.tun.Read(data)
+		var buffer bufferv2.Buffer
+		err := e.tun.ReadFunc(func(b []byte) {
+			buffer = bufferv2.MakeWithData(b)
+		})
 		if err != nil {
 			break
 		}
-		packet := data[:n]
+		ihl, ok := buffer.PullUp(0, 1)
+		if !ok {
+			buffer.Release()
+			continue
+		}
 		var networkProtocol tcpip.NetworkProtocolNumber
-		switch header.IPVersion(packet) {
+		switch header.IPVersion(ihl.AsSlice()) {
 		case header.IPv4Version:
 			networkProtocol = header.IPv4ProtocolNumber
 		case header.IPv6Version:
 			networkProtocol = header.IPv6ProtocolNumber
 		default:
-			e.tun.Write(packet)
+			e.tun.Write(buffer.Flatten())
+			buffer.Release()
 			continue
 		}
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           bufferv2.MakeWithData(packet),
+			Payload:           buffer,
 			IsForwardedPacket: true,
 		})
 		dispatcher := e.dispatcher

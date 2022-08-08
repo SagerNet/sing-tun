@@ -136,26 +136,33 @@ func (t *NativeTun) configure() error {
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
+	err = t.ReadFunc(func(b []byte) {
+		n = copy(p, b)
+	})
+	return
+}
+
+func (t *NativeTun) ReadFunc(block func(b []byte)) error {
 	t.running.Add(1)
 	defer t.running.Done()
 retry:
 	if atomic.LoadInt32(&t.close) == 1 {
-		return 0, os.ErrClosed
+		return os.ErrClosed
 	}
 	start := nanotime()
 	shouldSpin := atomic.LoadUint64(&t.rate.current) >= spinloopRateThreshold && uint64(start-atomic.LoadInt64(&t.rate.nextStartTime)) <= rateMeasurementGranularity*2
 	for {
 		if atomic.LoadInt32(&t.close) == 1 {
-			return 0, os.ErrClosed
+			return os.ErrClosed
 		}
 		packet, err := t.session.ReceivePacket()
 		switch err {
 		case nil:
 			packetSize := len(packet)
-			n = copy(p, packet)
+			block(packet)
 			t.session.ReleaseReceivePacket(packet)
 			t.rate.update(uint64(packetSize))
-			return n, nil
+			return nil
 		case windows.ERROR_NO_MORE_ITEMS:
 			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
 				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
@@ -164,11 +171,11 @@ retry:
 			procyield(1)
 			continue
 		case windows.ERROR_HANDLE_EOF:
-			return 0, os.ErrClosed
+			return os.ErrClosed
 		case windows.ERROR_INVALID_DATA:
-			return 0, errors.New("send ring corrupt")
+			return errors.New("send ring corrupt")
 		}
-		return 0, fmt.Errorf("read failed: %w", err)
+		return fmt.Errorf("read failed: %w", err)
 	}
 }
 
