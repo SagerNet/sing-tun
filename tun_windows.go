@@ -21,33 +21,34 @@ import (
 var TunnelType = "sing-tun"
 
 type NativeTun struct {
-	adapter      *wintun.Adapter
-	inet4Address netip.Prefix
-	inet6Address netip.Prefix
-	mtu          uint32
-	autoRoute    bool
-	session      wintun.Session
-	readWait     windows.Handle
-	rate         rateJuggler
-	running      sync.WaitGroup
-	closeOnce    sync.Once
-	close        int32
+	adapter   *wintun.Adapter
+	options   Options
+	session   wintun.Session
+	readWait  windows.Handle
+	rate      rateJuggler
+	running   sync.WaitGroup
+	closeOnce sync.Once
+	close     int32
 }
 
-func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) (Tun, error) {
-	adapter, err := wintun.CreateAdapter(name, TunnelType, generateGUIDByDeviceName(name))
+func Open(options Options) (WinTun, error) {
+	adapter, err := wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
 	if err != nil {
 		return nil, err
 	}
 	nativeTun := &NativeTun{
-		adapter:      adapter,
-		inet4Address: inet4Address,
-		inet6Address: inet6Address,
-		mtu:          mtu,
-		autoRoute:    autoRoute,
+		adapter: adapter,
+		options: options,
 	}
+	session, err := adapter.StartSession(0x800000)
+	if err != nil {
+		return nil, err
+	}
+	nativeTun.session = session
+	nativeTun.readWait = session.ReadWaitEvent()
 	err = nativeTun.configure()
 	if err != nil {
+		session.End()
 		adapter.Close()
 		return nil, err
 	}
@@ -56,41 +57,41 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 
 func (t *NativeTun) configure() error {
 	luid := winipcfg.LUID(t.adapter.LUID())
-	if t.inet4Address.IsValid() {
-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), []netip.Prefix{t.inet4Address})
+	if t.options.Inet4Address.IsValid() {
+		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), []netip.Prefix{t.options.Inet4Address})
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
 	}
-	if t.inet6Address.IsValid() {
-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), []netip.Prefix{t.inet6Address})
+	if t.options.Inet6Address.IsValid() {
+		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), []netip.Prefix{t.options.Inet6Address})
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
 	}
-	err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.inet4Address.Addr().Next()}, nil)
+	err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address.Addr().Next()}, nil)
 	if err != nil {
 		return E.Cause(err, "set ipv4 dns")
 	}
-	err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.inet6Address.Addr().Next()}, nil)
+	err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address.Addr().Next()}, nil)
 	if err != nil {
 		return E.Cause(err, "set ipv6 dns")
 	}
-	if t.autoRoute {
-		if t.inet4Address.IsValid() {
+	if t.options.AutoRoute {
+		if t.options.Inet4Address.IsValid() {
 			err = luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv4 route")
 			}
 		}
-		if t.inet6Address.IsValid() {
+		if t.options.Inet6Address.IsValid() {
 			err = luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv6 route")
 			}
 		}
 	}
-	if t.inet4Address.IsValid() {
+	if t.options.Inet4Address.IsValid() {
 		var inetIf *winipcfg.MibIPInterfaceRow
 		inetIf, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
 		if err != nil {
@@ -101,8 +102,8 @@ func (t *NativeTun) configure() error {
 		inetIf.DadTransmits = 0
 		inetIf.ManagedAddressConfigurationSupported = false
 		inetIf.OtherStatefulConfigurationSupported = false
-		inetIf.NLMTU = t.mtu
-		if t.autoRoute {
+		inetIf.NLMTU = t.options.MTU
+		if t.options.AutoRoute {
 			inetIf.UseAutomaticMetric = false
 			inetIf.Metric = 0
 		}
@@ -111,7 +112,7 @@ func (t *NativeTun) configure() error {
 			return E.Cause(err, "set ipv4 options")
 		}
 	}
-	if t.inet6Address.IsValid() {
+	if t.options.Inet6Address.IsValid() {
 		var inet6If *winipcfg.MibIPInterfaceRow
 		inet6If, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET6))
 		if err != nil {
@@ -121,8 +122,8 @@ func (t *NativeTun) configure() error {
 		inet6If.DadTransmits = 0
 		inet6If.ManagedAddressConfigurationSupported = false
 		inet6If.OtherStatefulConfigurationSupported = false
-		inet6If.NLMTU = t.mtu
-		if t.autoRoute {
+		inet6If.NLMTU = t.options.MTU
+		if t.options.AutoRoute {
 			inet6If.UseAutomaticMetric = false
 			inet6If.Metric = 0
 		}
@@ -136,10 +137,42 @@ func (t *NativeTun) configure() error {
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	err = t.ReadFunc(func(b []byte) {
-		n = copy(p, b)
-	})
-	return
+	return 0, os.ErrInvalid
+}
+
+func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
+	t.running.Add(1)
+	defer t.running.Done()
+retry:
+	if atomic.LoadInt32(&t.close) == 1 {
+		return nil, nil, os.ErrClosed
+	}
+	start := nanotime()
+	shouldSpin := atomic.LoadUint64(&t.rate.current) >= spinloopRateThreshold && uint64(start-atomic.LoadInt64(&t.rate.nextStartTime)) <= rateMeasurementGranularity*2
+	for {
+		if atomic.LoadInt32(&t.close) == 1 {
+			return nil, nil, os.ErrClosed
+		}
+		packet, err := t.session.ReceivePacket()
+		switch err {
+		case nil:
+			packetSize := len(packet)
+			t.rate.update(uint64(packetSize))
+			return packet, func() { t.session.ReleaseReceivePacket(packet) }, nil
+		case windows.ERROR_NO_MORE_ITEMS:
+			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+				goto retry
+			}
+			procyield(1)
+			continue
+		case windows.ERROR_HANDLE_EOF:
+			return nil, nil, os.ErrClosed
+		case windows.ERROR_INVALID_DATA:
+			return nil, nil, errors.New("send ring corrupt")
+		}
+		return nil, nil, fmt.Errorf("read failed: %w", err)
+	}
 }
 
 func (t *NativeTun) ReadFunc(block func(b []byte)) error {

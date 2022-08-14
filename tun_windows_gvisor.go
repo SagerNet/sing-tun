@@ -12,12 +12,6 @@ import (
 var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	session, err := t.adapter.StartSession(0x800000)
-	if err != nil {
-		return nil, err
-	}
-	t.session = session
-	t.readWait = session.ReadWaitEvent()
 	return &WintunEndpoint{tun: t}, nil
 }
 
@@ -29,7 +23,7 @@ type WintunEndpoint struct {
 }
 
 func (e *WintunEndpoint) MTU() uint32 {
-	return e.tun.mtu
+	return e.tun.options.MTU
 }
 
 func (e *WintunEndpoint) MaxHeaderLength() uint16 {

@@ -5,7 +5,7 @@ package tun
 import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/rw"
+	"github.com/sagernet/sing/common/bufio"
 
 	"gvisor.dev/gvisor/pkg/bufferv2"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -122,7 +122,7 @@ func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (
 		case header.IPv6ProtocolNumber:
 			packetHeader = packetHeader6[:]
 		}
-		_, err := rw.WriteV(e.tun.tunFd, append([][]byte{packetHeader}, packet.AsSlices()...))
+		_, err := bufio.WriteVectorised(e.tun.tunWriter, append([][]byte{packetHeader}, packet.AsSlices()...))
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}

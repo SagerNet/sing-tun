@@ -15,32 +15,24 @@ import (
 )
 
 type NativeTun struct {
-	name         string
-	tunFd        int
-	tunFile      *os.File
-	inet4Address netip.Prefix
-	inet6Address netip.Prefix
-	mtu          uint32
-	autoRoute    bool
+	tunFd   int
+	tunFile *os.File
+	options Options
 }
 
-func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) (Tun, error) {
-	tunFd, err := open(name)
+func Open(options Options) (Tun, error) {
+	tunFd, err := open(options.Name)
 	if err != nil {
 		return nil, err
 	}
-	tunLink, err := netlink.LinkByName(name)
+	tunLink, err := netlink.LinkByName(options.Name)
 	if err != nil {
 		return nil, E.Errors(err, unix.Close(tunFd))
 	}
 	nativeTun := &NativeTun{
-		name:         name,
-		tunFd:        tunFd,
-		tunFile:      os.NewFile(uintptr(tunFd), "tun"),
-		mtu:          mtu,
-		inet4Address: inet4Address,
-		inet6Address: inet6Address,
-		autoRoute:    autoRoute,
+		tunFd:   tunFd,
+		tunFile: os.NewFile(uintptr(tunFd), "tun"),
+		options: options,
 	}
 	runtime.SetFinalizer(nativeTun.tunFile, nil)
 	err = nativeTun.configure(tunLink)
@@ -99,7 +91,7 @@ func open(name string) (int, error) {
 }
 
 func (t *NativeTun) configure(tunLink netlink.Link) error {
-	err := netlink.LinkSetMTU(tunLink, int(t.mtu))
+	err := netlink.LinkSetMTU(tunLink, int(t.options.MTU))
 	if err == unix.EPERM {
 		// unprivileged
 		return nil
@@ -107,16 +99,16 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
-	if t.inet4Address.IsValid() {
-		addr4, _ := netlink.ParseAddr(t.inet4Address.String())
+	if t.options.Inet4Address.IsValid() {
+		addr4, _ := netlink.ParseAddr(t.options.Inet4Address.String())
 		err = netlink.AddrAdd(tunLink, addr4)
 		if err != nil {
 			return err
 		}
 	}
 
-	if t.inet6Address.IsValid() {
-		addr6, _ := netlink.ParseAddr(t.inet6Address.String())
+	if t.options.Inet6Address.IsValid() {
+		addr6, _ := netlink.ParseAddr(t.options.Inet6Address.String())
 		err = netlink.AddrAdd(tunLink, addr6)
 		if err != nil {
 			return err
@@ -128,7 +120,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
-	if t.autoRoute {
+	if t.options.AutoRoute {
 		_ = t.unsetRoute0(tunLink)
 		err = t.setRoute(tunLink)
 		if err != nil {
@@ -141,7 +133,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 
 func (t *NativeTun) Close() error {
 	var errors []error
-	if t.autoRoute {
+	if t.options.AutoRoute {
 		errors = append(errors, t.unsetRoute())
 	}
 	return E.Errors(append(errors, t.tunFile.Close())...)
@@ -151,7 +143,7 @@ const tunTableIndex = 2022
 
 func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	var routes []netlink.Route
-	if t.inet4Address.IsValid() {
+	if t.options.Inet4Address.IsValid() {
 		routes = append(routes, netlink.Route{
 			Dst: &net.IPNet{
 				IP:   net.IPv4zero,
@@ -161,7 +153,7 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 			Table:     tunTableIndex,
 		})
 	}
-	if t.inet6Address.IsValid() {
+	if t.options.Inet6Address.IsValid() {
 		routes = append(routes, netlink.Route{
 			Dst: &net.IPNet{
 				IP:   net.IPv6zero,
@@ -176,21 +168,24 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 
 func (t *NativeTun) rules() []*netlink.Rule {
 	var rules []*netlink.Rule
-
+	var it *netlink.Rule
+	excludeRanges := t.options.ExcludedRanges()
 	priority := 9000
+	nopPriority := priority + 10*(len(excludeRanges)/10+1)
 
-	it := netlink.NewRule()
-	it.Priority = priority
-	it.Invert = true
-	it.UIDRange = netlink.NewRuleUIDRange(0, 0xFFFFFFFF-1)
-	it.Goto = 9100
-	rules = append(rules, it)
-	priority++
-
-	if t.inet4Address.IsValid() {
+	for _, excludeRange := range t.options.ExcludedRanges() {
 		it = netlink.NewRule()
 		it.Priority = priority
-		it.Dst = t.inet4Address.Masked()
+		it.UIDRange = netlink.NewRuleUIDRange(uint32(excludeRange.Start), uint32(excludeRange.End))
+		it.Goto = nopPriority
+		rules = append(rules, it)
+		priority++
+	}
+
+	if t.options.Inet4Address.IsValid() {
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Dst = t.options.Inet4Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
@@ -198,15 +193,15 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IPProto = unix.IPPROTO_ICMP
-		it.Goto = 9100
+		it.Goto = nopPriority
 		rules = append(rules, it)
 		priority++
 	}
 
-	if t.inet6Address.IsValid() {
+	if t.options.Inet6Address.IsValid() {
 		it = netlink.NewRule()
 		it.Priority = priority
-		it.Dst = t.inet6Address.Masked()
+		it.Dst = t.options.Inet6Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
@@ -214,7 +209,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IPProto = unix.IPPROTO_ICMPV6
-		it.Goto = 9100
+		it.Goto = nopPriority
 		rules = append(rules, it)
 		priority++
 	}
@@ -244,28 +239,28 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	rules = append(rules, it)
 	priority++
 
-	if t.inet4Address.IsValid() {
+	if t.options.Inet4Address.IsValid() {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
-		it.Src = t.inet4Address.Masked()
+		it.Src = t.options.Inet4Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
 	}
 
-	if t.inet6Address.IsValid() {
+	if t.options.Inet6Address.IsValid() {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
-		it.Src = t.inet6Address.Masked()
+		it.Src = t.options.Inet6Address.Masked()
 		it.Table = tunTableIndex
 		rules = append(rules, it)
 		priority++
 	}
 
 	it = netlink.NewRule()
-	it.Priority = 9100
+	it.Priority = nopPriority
 	rules = append(rules, it)
 
 	return rules
@@ -288,7 +283,7 @@ func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 }
 
 func (t *NativeTun) unsetRoute() error {
-	tunLink, err := netlink.LinkByName(t.name)
+	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return err
 	}

@@ -54,6 +54,10 @@ func (l *LWIP) Start() error {
 }
 
 func (l *LWIP) loopIn() {
+	if winTun, isWintun := l.tun.(WinTun); isWintun {
+		l.loopInWintun(winTun)
+		return
+	}
 	mtu := int(l.tunMtu)
 	if runtime.GOOS == "darwin" {
 		mtu += 4
@@ -75,6 +79,23 @@ func (l *LWIP) loopIn() {
 			packet = data[:n]
 		}
 		_, err = l.stack.Write(packet)
+		if err != nil {
+			if err.Error() == "stack closed" {
+				return
+			}
+			l.handler.NewError(context.Background(), err)
+		}
+	}
+}
+
+func (l *LWIP) loopInWintun(tun WinTun) {
+	for {
+		packet, release, err := tun.ReadPacket()
+		if err != nil {
+			return
+		}
+		_, err = l.stack.Write(packet)
+		release()
 		if err != nil {
 			if err.Error() == "stack closed" {
 				return

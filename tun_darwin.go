@@ -10,8 +10,9 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/rw"
+	N "github.com/sagernet/sing/common/network"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/route"
@@ -19,18 +20,18 @@ import (
 )
 
 type NativeTun struct {
-	tunFd        uintptr
 	tunFile      *os.File
+	tunWriter    N.VectorisedWriter
+	mtu          uint32
 	inet4Address string
 	inet6Address string
-	mtu          uint32
 }
 
-func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) (Tun, error) {
+func Open(options Options) (Tun, error) {
 	ifIndex := -1
-	_, err := fmt.Sscanf(name, "utun%d", &ifIndex)
+	_, err := fmt.Sscanf(options.Name, "utun%d", &ifIndex)
 	if err != nil {
-		return nil, E.New("bad tun name: ", name)
+		return nil, E.New("bad tun name: ", options.Name)
 	}
 
 	tunFd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, 2)
@@ -38,19 +39,18 @@ func Open(name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu
 		return nil, err
 	}
 
-	err = configure(tunFd, ifIndex, name, inet4Address, inet6Address, mtu, autoRoute)
+	err = configure(tunFd, ifIndex, options.Name, options)
 	if err != nil {
 		unix.Close(tunFd)
 		return nil, err
 	}
-
 	nativeTun := &NativeTun{
-		tunFd:        uintptr(tunFd),
 		tunFile:      os.NewFile(uintptr(tunFd), "utun"),
-		inet4Address: string(inet4Address.Addr().AsSlice()),
-		inet6Address: string(inet6Address.Addr().AsSlice()),
-		mtu:          mtu,
+		mtu:          options.MTU,
+		inet4Address: string(options.Inet4Address.Addr().AsSlice()),
+		inet6Address: string(options.Inet6Address.Addr().AsSlice()),
 	}
+	nativeTun.tunWriter, _ = bufio.CreateVectorisedWriter(nativeTun.tunFile)
 	runtime.SetFinalizer(nativeTun.tunFile, nil)
 	return nativeTun, nil
 }
@@ -63,7 +63,7 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 	copy(p[:], p[4:])
 	return n - 4, err*/
-	return t.tunFile.Write(p)
+	return t.tunFile.Read(p)
 }
 
 var (
@@ -78,7 +78,7 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 	} else {
 		packetHeader = packetHeader6[:]
 	}
-	_, err = rw.WriteV(t.tunFd, [][]byte{packetHeader, p})
+	_, err = bufio.WriteVectorised(t.tunWriter, [][]byte{packetHeader, p})
 	if err == nil {
 		n = len(p)
 	}
@@ -121,7 +121,7 @@ type addrLifetime6 struct {
 	Pltime    uint32
 }
 
-func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, inet6Address netip.Prefix, mtu uint32, autoRoute bool) error {
+func configure(tunFd int, ifIndex int, name string, options Options) error {
 	ctlInfo := &unix.CtlInfo{}
 	copy(ctlInfo.Name[:], utunControlName)
 	err := unix.IoctlCtlInfo(tunFd, ctlInfo)
@@ -145,28 +145,28 @@ func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, i
 	err = useSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, func(socketFd int) error {
 		var ifr unix.IfreqMTU
 		copy(ifr.Name[:], name)
-		ifr.MTU = int32(mtu)
+		ifr.MTU = int32(options.MTU)
 		return unix.IoctlSetIfreqMTU(socketFd, &ifr)
 	})
 	if err != nil {
 		return err
 	}
-	if inet4Address.IsValid() {
+	if options.Inet4Address.IsValid() {
 		ifReq := ifAliasReq{
 			Addr: unix.RawSockaddrInet4{
 				Len:    unix.SizeofSockaddrInet4,
 				Family: unix.AF_INET,
-				Addr:   inet4Address.Addr().As4(),
+				Addr:   options.Inet4Address.Addr().As4(),
 			},
 			Dstaddr: unix.RawSockaddrInet4{
 				Len:    unix.SizeofSockaddrInet4,
 				Family: unix.AF_INET,
-				Addr:   inet4Address.Addr().As4(),
+				Addr:   options.Inet4Address.Addr().As4(),
 			},
 			Mask: unix.RawSockaddrInet4{
 				Len:    unix.SizeofSockaddrInet4,
 				Family: unix.AF_INET,
-				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(inet4Address.Bits(), 32)).String()).As4(),
+				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(options.Inet4Address.Bits(), 32)).String()).As4(),
 			},
 		}
 		copy(ifReq.Name[:], name)
@@ -185,17 +185,17 @@ func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, i
 			return err
 		}
 	}
-	if inet6Address.IsValid() {
+	if options.Inet6Address.IsValid() {
 		ifReq6 := ifAliasReq6{
 			Addr: unix.RawSockaddrInet6{
 				Len:    unix.SizeofSockaddrInet6,
 				Family: unix.AF_INET6,
-				Addr:   inet6Address.Addr().As16(),
+				Addr:   options.Inet6Address.Addr().As16(),
 			},
 			Mask: unix.RawSockaddrInet6{
 				Len:    unix.SizeofSockaddrInet6,
 				Family: unix.AF_INET6,
-				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(inet6Address.Bits(), 128)).String()).As16(),
+				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(options.Inet6Address.Bits(), 128)).String()).As16(),
 			},
 			Flags: IN6_IFF_NODAD | IN6_IFF_SECURED,
 			Lifetime: addrLifetime6{
@@ -203,11 +203,11 @@ func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, i
 				Pltime: ND6_INFINITE_LIFETIME,
 			},
 		}
-		if inet6Address.Bits() == 128 {
+		if options.Inet6Address.Bits() == 128 {
 			ifReq6.Dstaddr = unix.RawSockaddrInet6{
 				Len:    unix.SizeofSockaddrInet6,
 				Family: unix.AF_INET6,
-				Addr:   inet6Address.Addr().Next().As16(),
+				Addr:   options.Inet6Address.Addr().Next().As16(),
 			}
 		}
 		copy(ifReq6.Name[:], name)
@@ -226,8 +226,8 @@ func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, i
 			return err
 		}
 	}
-	if autoRoute {
-		if inet4Address.IsValid() {
+	if options.AutoRoute {
+		if options.Inet4Address.IsValid() {
 			for _, subnet := range []netip.Prefix{
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 0, 0, 0}), 8),
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{2, 0, 0, 0}), 7),
@@ -238,15 +238,15 @@ func configure(tunFd int, ifIndex int, name string, inet4Address netip.Prefix, i
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{64, 0, 0, 0}), 2),
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{128, 0, 0, 0}), 1),
 			} {
-				err = addRoute(subnet, inet4Address.Addr())
+				err = addRoute(subnet, options.Inet4Address.Addr())
 				if err != nil {
 					return err
 				}
 			}
 		}
-		if inet6Address.IsValid() {
+		if options.Inet6Address.IsValid() {
 			subnet := netip.PrefixFrom(netip.AddrFrom16([16]byte{32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), 3)
-			err = addRoute(subnet, inet6Address.Addr())
+			err = addRoute(subnet, options.Inet6Address.Addr())
 			if err != nil {
 				return err
 			}

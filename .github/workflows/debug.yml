@@ -3,6 +3,7 @@ name: Debug build
 on:
   push:
     branches:
+      - main
       - dev
     paths-ignore:
       - '**.md'
@@ -29,7 +30,7 @@ jobs:
         uses: actions/setup-go@v2
         with:
           go-version: ${{ steps.version.outputs.go_version }}
-      - name: Build
+      - name: Add cache to Go proxy
         run: |
           version=`git rev-parse HEAD`
           mkdir build
@@ -37,4 +38,9 @@ jobs:
           go mod init build
           go get -v github.com/sagernet/sing-tun@$version
           popd
-          go build -v .
+        continue-on-error: true
+      - name: Build
+        run: |
+          make test
+          make lint_install
+          make lint
