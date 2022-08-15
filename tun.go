@@ -5,11 +5,9 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
 	N "github.com/sagernet/sing/common/network"
@@ -39,41 +37,10 @@ type Options struct {
 	MTU                uint32
 	AutoRoute          bool
 	IncludeUID         []ranges.Range[uint32]
-	IncludeAndroidUser []int
 	ExcludeUID         []ranges.Range[uint32]
-}
-
-func (o Options) ExcludedRanges() (uidRanges []ranges.Range[uint32]) {
-	var includeAndroidUser []int
-	if runtime.GOOS == "android" {
-		includeAndroidUser = o.IncludeAndroidUser
-	}
-	return buildExcludedRanges(o.IncludeUID, o.ExcludeUID, includeAndroidUser)
-}
-
-const (
-	androidUserRange        = 100000
-	userEnd          uint32 = 0xFFFFFFFF - 1
-)
-
-func buildExcludedRanges(includeRanges []ranges.Range[uint32], excludeRanges []ranges.Range[uint32], includeAndroidUser []int) (uidRanges []ranges.Range[uint32]) {
-	if len(includeRanges) > 0 {
-		uidRanges = includeRanges
-	}
-	if len(includeAndroidUser) > 0 {
-		includeAndroidUser = common.Uniq(includeAndroidUser)
-		sort.Ints(includeAndroidUser)
-		for _, androidUser := range includeAndroidUser {
-			uidRanges = append(uidRanges, ranges.New[uint32](uint32(androidUser)*androidUserRange, uint32(androidUser+1)*androidUserRange-1))
-		}
-	}
-	if len(uidRanges) > 0 {
-		uidRanges = ranges.Exclude(uidRanges, excludeRanges)
-		uidRanges = ranges.Revert(0, userEnd, uidRanges)
-	} else {
-		uidRanges = excludeRanges
-	}
-	return ranges.Merge(uidRanges)
+	IncludeAndroidUser []int
+	IncludePackage     []string
+	ExcludePackage     []string
 }
 
 func DefaultInterfaceName() (tunName string) {

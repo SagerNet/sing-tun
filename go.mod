@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/eycorsican/go-tun2socks v1.16.11
+	github.com/fsnotify/fsnotify v1.5.4
 	github.com/sagernet/netlink v0.0.0-20220803045538-bdac49abf805
 	github.com/sagernet/sing v0.0.0-20220814164830-4f2b872a8cbf
 	golang.org/x/net v0.0.0-20220805013720-a33c5aa5df48
