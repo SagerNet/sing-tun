@@ -176,7 +176,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	for _, excludeRange := range t.options.ExcludedRanges() {
 		it = netlink.NewRule()
 		it.Priority = priority
-		it.UIDRange = netlink.NewRuleUIDRange(uint32(excludeRange.Start), uint32(excludeRange.End))
+		it.UIDRange = netlink.NewRuleUIDRange(excludeRange.Start, excludeRange.End)
 		it.Goto = nopPriority
 		rules = append(rules, it)
 		priority++

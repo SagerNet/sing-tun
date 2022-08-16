@@ -5,10 +5,10 @@ go 1.18
 require (
 	github.com/eycorsican/go-tun2socks v1.16.11
 	github.com/fsnotify/fsnotify v1.5.4
-	github.com/sagernet/netlink v0.0.0-20220803045538-bdac49abf805
-	github.com/sagernet/sing v0.0.0-20220814164830-4f2b872a8cbf
-	golang.org/x/net v0.0.0-20220805013720-a33c5aa5df48
-	golang.org/x/sys v0.0.0-20220804214406-8e32c043e418
+	github.com/sagernet/netlink v0.0.0-20220816152750-7a75378bd31a
+	github.com/sagernet/sing v0.0.0-20220816094748-fb82be7f3f08
+	golang.org/x/net v0.0.0-20220812174116-3211cb980234
+	golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab
 	gvisor.dev/gvisor v0.0.0-20220801010827-addd1f7b3e97
 )
 
