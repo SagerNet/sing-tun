@@ -3,10 +3,10 @@ module github.com/sagernet/sing-tun
 go 1.18
 
 require (
-	github.com/eycorsican/go-tun2socks v1.16.11
 	github.com/fsnotify/fsnotify v1.5.4
+	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/netlink v0.0.0-20220816152750-7a75378bd31a
-	github.com/sagernet/sing v0.0.0-20220816094748-fb82be7f3f08
+	github.com/sagernet/sing v0.0.0-20220817130738-ce854cda8522
 	golang.org/x/net v0.0.0-20220812174116-3211cb980234
 	golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab
 	gvisor.dev/gvisor v0.0.0-20220801010827-addd1f7b3e97

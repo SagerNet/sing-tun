@@ -9,13 +9,12 @@ import (
 	"os"
 	"runtime"
 
+	lwip "github.com/sagernet/go-tun2socks/core"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
-
-	lwip "github.com/eycorsican/go-tun2socks/core"
 )
 
 type LWIP struct {
@@ -114,7 +113,7 @@ func (l *LWIP) Close() error {
 	return l.stack.Close()
 }
 
-func (l *LWIP) Handle(conn net.Conn, target *net.TCPAddr) error {
+func (l *LWIP) Handle(conn net.Conn) error {
 	lAddr := conn.LocalAddr()
 	rAddr := conn.RemoteAddr()
 	if lAddr == nil || rAddr == nil {
@@ -133,14 +132,10 @@ func (l *LWIP) Handle(conn net.Conn, target *net.TCPAddr) error {
 	return nil
 }
 
-func (l *LWIP) Connect(conn lwip.UDPConn, target *net.UDPAddr) error {
-	return nil
-}
-
-func (l *LWIP) ReceiveTo(conn lwip.UDPConn, data []byte, addr *net.UDPAddr) error {
+func (l *LWIP) ReceiveTo(conn lwip.UDPConn, data []byte, addr M.Socksaddr) error {
 	var upstreamMetadata M.Metadata
-	upstreamMetadata.Source = M.SocksaddrFromNet(conn.LocalAddr())
-	upstreamMetadata.Destination = M.SocksaddrFromNet(addr)
+	upstreamMetadata.Source = conn.LocalAddr()
+	upstreamMetadata.Destination = addr
 
 	l.udpNat.NewPacket(
 		l.ctx,
@@ -160,7 +155,7 @@ type LWIPUDPBackWriter struct {
 
 func (w *LWIPUDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
-	return common.Error(w.conn.WriteFrom(buffer.Bytes(), destination.UDPAddr()))
+	return common.Error(w.conn.WriteFrom(buffer.Bytes(), destination))
 }
 
 func (w *LWIPUDPBackWriter) Close() error {

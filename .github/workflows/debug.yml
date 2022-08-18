@@ -41,6 +41,4 @@ jobs:
         continue-on-error: true
       - name: Build
         run: |
-          make test
-          make lint_install
-          make lint
+          go build -v .
