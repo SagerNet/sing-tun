@@ -50,7 +50,11 @@ func Open(options Options) (Tun, error) {
 		inet4Address: string(options.Inet4Address.Addr().AsSlice()),
 		inet6Address: string(options.Inet6Address.Addr().AsSlice()),
 	}
-	nativeTun.tunWriter, _ = bufio.CreateVectorisedWriter(nativeTun.tunFile)
+	var ok bool
+	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
+	if !ok {
+		panic("create vectorised writer")
+	}
 	runtime.SetFinalizer(nativeTun.tunFile, nil)
 	return nativeTun, nil
 }
