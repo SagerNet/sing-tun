@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"io"
@@ -11,6 +12,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/sagernet/abx-go"
 )
 
 type packageManager struct {
@@ -97,18 +99,27 @@ func (m *packageManager) SharedPackageByID(id uint32) (string, bool) {
 }
 
 func (m *packageManager) updatePackages() error {
+	packagesData, err := os.ReadFile("/data/system/packages.xml")
+	if err != nil {
+		return err
+	}
+	var decoder *xml.Decoder
+	reader, ok := abx.NewReader(bytes.NewReader(packagesData))
+	if ok {
+		decoder = xml.NewTokenDecoder(reader)
+	} else {
+		decoder = xml.NewDecoder(bytes.NewReader(packagesData))
+	}
+	return m.decodePackages(decoder)
+}
+
+func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 	idByPackage := make(map[string][]uint32)
 	sharedByPackage := make(map[string]uint32)
 	packageById := make(map[uint32]string)
 	sharedById := make(map[uint32]string)
-	packagesData, err := os.Open("/data/system/packages.xml")
-	if err != nil {
-		return err
-	}
-	decoder := xml.NewDecoder(packagesData)
-	var token xml.Token
 	for {
-		token, err = decoder.Token()
+		token, err := decoder.Token()
 		if err == io.EOF {
 			break
 		} else if err != nil {
