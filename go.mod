@@ -8,8 +8,8 @@ require (
 	github.com/sagernet/netlink v0.0.0-20220816152750-7a75378bd31a
 	github.com/sagernet/sing v0.0.0-20220819003212-2424b1e2fac1
 	golang.org/x/net v0.0.0-20220812174116-3211cb980234
-	golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab
-	gvisor.dev/gvisor v0.0.0-20220801010827-addd1f7b3e97
+	golang.org/x/sys v0.0.0-20220818161305-2296e01440c6
+	gvisor.dev/gvisor v0.0.0-20220812001733-b5c0f23893fb
 )
 
 require (
