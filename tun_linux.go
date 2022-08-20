@@ -171,7 +171,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	var it *netlink.Rule
 	excludeRanges := t.options.ExcludedRanges()
 	priority := 9000
-	nopPriority := priority + 10*(len(excludeRanges)/10+1)
+	nopPriority := priority + 10*(len(excludeRanges)/10+2)
 
 	for _, excludeRange := range t.options.ExcludedRanges() {
 		it = netlink.NewRule()

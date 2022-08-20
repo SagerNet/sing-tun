@@ -6,8 +6,8 @@ github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e h1:5CFRo8FJbCuf5s/
 github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e/go.mod h1:qbt0dWObotCfcjAJJ9AxtFPNSDUfZF+6dCpgKEOBn/g=
 github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61 h1:5+m7c6AkmAylhauulqN/c5dnh8/KssrE9c93TQrXldA=
 github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61/go.mod h1:QUQ4RRHD6hGGHdFMEtR8T2P6GS6R3D/CXKdaYHKKXms=
-github.com/sagernet/netlink v0.0.0-20220816152750-7a75378bd31a h1:iNtsfGMenajBUGZ/1yAzl1v3p+t/7IJ/ilQXq9haRZ8=
-github.com/sagernet/netlink v0.0.0-20220816152750-7a75378bd31a/go.mod h1:xLnfdiJbSp8rNqYEdIW/6eDO4mVoogml14Bh2hSiFpM=
+github.com/sagernet/netlink v0.0.0-20220820041223-3cd8365d17ac h1:I03d2HNy5f3INRZfsvuoLhz0h3qqsDLbKSw0EsYxQxI=
+github.com/sagernet/netlink v0.0.0-20220820041223-3cd8365d17ac/go.mod h1:xLnfdiJbSp8rNqYEdIW/6eDO4mVoogml14Bh2hSiFpM=
 github.com/sagernet/sing v0.0.0-20220817130738-ce854cda8522/go.mod h1:QVsS5L/ZA2Q5UhQwLrn0Trw+msNd/NPGEhBKR/ioWiY=
 github.com/sagernet/sing v0.0.0-20220819003212-2424b1e2fac1 h1:+YC0/ygsJc4Z8qhd7ypsbWgMSm+UWN+QK+PW7I19K4Q=
 github.com/sagernet/sing v0.0.0-20220819003212-2424b1e2fac1/go.mod h1:QVsS5L/ZA2Q5UhQwLrn0Trw+msNd/NPGEhBKR/ioWiY=
