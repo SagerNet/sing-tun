@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/sing/common/x/list"
+	"time"
 )
 
 func (m *networkUpdateMonitor) RegisterCallback(callback NetworkUpdateCallback) *list.Element[NetworkUpdateCallback] {
@@ -57,8 +58,13 @@ func (m *defaultInterfaceMonitor) Start() error {
 	if err != nil {
 		return err
 	}
-	m.element = m.networkMonitor.RegisterCallback(m.checkUpdate)
+	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
+}
+
+func (m *defaultInterfaceMonitor) delayCheckUpdate() error {
+	time.Sleep(time.Second)
+	return m.checkUpdate()
 }
 
 func (m *defaultInterfaceMonitor) Close() error {
