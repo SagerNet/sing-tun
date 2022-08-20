@@ -190,12 +190,15 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		rules = append(rules, it)
 		priority++
 
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IPProto = unix.IPPROTO_ICMP
-		it.Goto = nopPriority
-		rules = append(rules, it)
-		priority++
+		if runtime.GOOS != "android" {
+			// not supported on android, why?
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.IPProto = unix.IPPROTO_ICMP
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority++
+		}
 	}
 
 	if t.options.Inet6Address.IsValid() {
@@ -206,12 +209,14 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		rules = append(rules, it)
 		priority++
 
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IPProto = unix.IPPROTO_ICMPV6
-		it.Goto = nopPriority
-		rules = append(rules, it)
-		priority++
+		if runtime.GOOS != "android" {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.IPProto = unix.IPPROTO_ICMPV6
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority++
+		}
 	}
 
 	it = netlink.NewRule()
