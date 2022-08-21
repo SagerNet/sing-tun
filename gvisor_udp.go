@@ -39,40 +39,45 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 	var upstreamMetadata M.Metadata
 	upstreamMetadata.Source = M.SocksaddrFrom(M.AddrFromIP(net.IP(id.RemoteAddress)), id.RemotePort)
 	upstreamMetadata.Destination = M.SocksaddrFrom(M.AddrFromIP(net.IP(id.LocalAddress)), id.LocalPort)
-
+	var netProto tcpip.NetworkProtocolNumber
+	if upstreamMetadata.Source.IsIPv4() {
+		netProto = header.IPv4ProtocolNumber
+	} else {
+		netProto = header.IPv6ProtocolNumber
+	}
 	f.udpNat.NewPacket(
 		f.ctx,
 		upstreamMetadata.Source.AddrPort(),
 		buf.As(pkt.Data().AsRange().ToSlice()),
 		upstreamMetadata,
 		func(natConn N.PacketConn) N.PacketWriter {
-			return &UDPBackWriter{f.stack, id.RemoteAddress, id.RemotePort}
+			return &UDPBackWriter{f.stack, id.RemoteAddress, id.RemotePort, netProto}
 		},
 	)
 	return true
 }
 
 type UDPBackWriter struct {
-	stack      *stack.Stack
-	source     tcpip.Address
-	sourcePort uint16
+	stack         *stack.Stack
+	source        tcpip.Address
+	sourcePort    uint16
+	sourceNetwork tcpip.NetworkProtocolNumber
 }
 
 func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
 
-	var netProto tcpip.NetworkProtocolNumber
-	if destination.IsIPv4() {
-		netProto = header.IPv4ProtocolNumber
-	} else {
-		netProto = header.IPv6ProtocolNumber
+	if w.sourceNetwork == header.IPv4ProtocolNumber && destination.Addr.Is4In6() {
+		destination = destination.Unwrap()
+	} else if w.sourceNetwork == header.IPv6ProtocolNumber && destination.Addr.Is4() {
+		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
 	}
 
 	route, err := w.stack.FindRoute(
 		defaultNIC,
 		tcpip.Address(destination.Addr.AsSlice()),
 		w.source,
-		netProto,
+		w.sourceNetwork,
 		false,
 	)
 	if err != nil {
@@ -95,7 +100,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 		Length:  pLen,
 	})
 
-	if route.RequiresTXTransportChecksum() && netProto == header.IPv6ProtocolNumber {
+	if route.RequiresTXTransportChecksum() && w.sourceNetwork == header.IPv6ProtocolNumber {
 		xsum := udpHdr.CalculateChecksum(header.ChecksumCombine(
 			route.PseudoHeaderChecksum(header.UDPProtocolNumber, pLen),
 			packet.Data().AsRange().Checksum(),

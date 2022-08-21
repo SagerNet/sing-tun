@@ -8,11 +8,11 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/sagernet/abx-go"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/sagernet/abx-go"
 )
 
 type packageManager struct {

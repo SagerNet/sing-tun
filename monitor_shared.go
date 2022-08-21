@@ -5,9 +5,9 @@ package tun
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing/common/x/list"
-	"time"
 )
 
 func (m *networkUpdateMonitor) RegisterCallback(callback NetworkUpdateCallback) *list.Element[NetworkUpdateCallback] {
