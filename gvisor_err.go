@@ -5,6 +5,7 @@ package tun
 import (
 	"net"
 
+	E "github.com/sagernet/sing/common/exceptions"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
@@ -55,7 +56,7 @@ func wrapStackError(err tcpip.Error) error {
 		*tcpip.ErrAborted:
 		return net.ErrClosed
 	}
-	return wrapStackError(err)
+	return E.New(err.String())
 }
 
 func wrapError(err error) error {
