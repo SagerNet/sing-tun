@@ -68,7 +68,9 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() error {
 }
 
 func (m *defaultInterfaceMonitor) Close() error {
-	m.networkMonitor.UnregisterCallback(m.element)
+	if m.element != nil {
+		m.networkMonitor.UnregisterCallback(m.element)
+	}
 	return nil
 }
 

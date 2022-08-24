@@ -45,10 +45,15 @@ func (m *networkUpdateMonitor) Start() error {
 }
 
 func (m *networkUpdateMonitor) Close() error {
-	return E.Errors(
-		m.routeListener.Unregister(),
-		m.interfaceListener.Unregister(),
-	)
+	if m.routeListener != nil {
+		m.routeListener.Unregister()
+		m.routeListener = nil
+	}
+	if m.interfaceListener != nil {
+		m.interfaceListener.Unregister()
+		m.interfaceListener = nil
+	}
+	return nil
 }
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
