@@ -27,25 +27,26 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return err
 	}
 
-	for _, route := range routes {
-		var link netlink.Link
-		link, err = netlink.LinkByIndex(route.LinkIndex)
-		if err != nil {
-			return err
-		}
+	if len(routes) == 0 {
+		return E.Extend(ErrNoRoute, "no route in default table ", defaultTableIndex)
+	}
 
-		oldInterface := m.defaultInterfaceName
-		oldIndex := m.defaultInterfaceIndex
+	var link netlink.Link
+	link, err = netlink.LinkByIndex(routes[0].LinkIndex)
+	if err != nil {
+		return err
+	}
 
-		m.defaultInterfaceName = link.Attrs().Name
-		m.defaultInterfaceIndex = link.Attrs().Index
+	oldInterface := m.defaultInterfaceName
+	oldIndex := m.defaultInterfaceIndex
 
-		if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
-			return nil
-		}
-		m.emit()
+	m.defaultInterfaceName = link.Attrs().Name
+	m.defaultInterfaceIndex = link.Attrs().Index
+
+	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
 		return nil
 	}
 
-	return E.Extend(ErrNoRoute, "no route in default table ", defaultTableIndex)
+	m.emit()
+	return nil
 }

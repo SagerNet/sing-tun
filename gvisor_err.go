@@ -6,6 +6,7 @@ import (
 	"net"
 
 	E "github.com/sagernet/sing/common/exceptions"
+
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 )
