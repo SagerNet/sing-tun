@@ -167,107 +167,180 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 }
 
 func (t *NativeTun) rules() []*netlink.Rule {
+	var p4, p6 bool
+	var pRule int
+	if t.options.Inet4Address.IsValid() {
+		p4 = true
+		pRule += 1
+	}
+	if t.options.Inet6Address.IsValid() {
+		p6 = true
+		pRule += 1
+	}
+	if pRule == 0 {
+		return []*netlink.Rule{}
+	}
+
 	var rules []*netlink.Rule
 	var it *netlink.Rule
+
 	excludeRanges := t.options.ExcludedRanges()
 	priority := 9000
-	nopPriority := priority + 10*(len(excludeRanges)/10+2)
+	nopPriority := priority + 10
 
-	for _, excludeRange := range t.options.ExcludedRanges() {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.UIDRange = netlink.NewRuleUIDRange(excludeRange.Start, excludeRange.End)
-		it.Goto = nopPriority
-		rules = append(rules, it)
+	for _, excludeRange := range excludeRanges {
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.UIDRange = netlink.NewRuleUIDRange(excludeRange.Start, excludeRange.End)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.UIDRange = netlink.NewRuleUIDRange(excludeRange.Start, excludeRange.End)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+	}
+	if len(excludeRanges) > 0 {
 		priority++
 	}
 
-	if t.options.Inet4Address.IsValid() {
+	if p4 {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.Dst = t.options.Inet4Address.Masked()
 		it.Table = tunTableIndex
+		it.Family = unix.AF_INET
 		rules = append(rules, it)
-		priority++
-
-		if runtime.GOOS != "android" {
-			// not supported on android, why?
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.IPProto = unix.IPPROTO_ICMP
-			it.Goto = nopPriority
-			rules = append(rules, it)
-			priority++
-		}
 	}
-
-	if t.options.Inet6Address.IsValid() {
+	if p6 {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.Dst = t.options.Inet6Address.Masked()
 		it.Table = tunTableIndex
+		it.Family = unix.AF_INET6
 		rules = append(rules, it)
-		priority++
+	}
+	priority++
 
-		if runtime.GOOS != "android" {
+	if runtime.GOOS != "android" {
+		// not supported on android, why?
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.IPProto = unix.IPPROTO_ICMP
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IPProto = unix.IPPROTO_ICMPV6
 			it.Goto = nopPriority
+			it.Family = unix.AF_INET6
 			rules = append(rules, it)
-			priority++
 		}
+		priority++
 	}
 
-	it = netlink.NewRule()
-	it.Priority = priority
-	it.Invert = true
-	it.Dport = netlink.NewRulePortRange(53, 53)
-	it.Table = unix.RT_TABLE_MAIN
-	it.SuppressPrefixlen = 0
-	rules = append(rules, it)
+	if p4 {
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.Dport = netlink.NewRulePortRange(53, 53)
+		it.Table = unix.RT_TABLE_MAIN
+		it.SuppressPrefixlen = 0
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+	}
+	if p6 {
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.Dport = netlink.NewRulePortRange(53, 53)
+		it.Table = unix.RT_TABLE_MAIN
+		it.SuppressPrefixlen = 0
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+	}
 	priority++
 
-	it = netlink.NewRule()
-	it.Priority = priority
-	it.Invert = true
-	it.IifName = "lo"
-	it.Table = tunTableIndex
-	rules = append(rules, it)
-	priority++
+	if p4 {
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.IifName = "lo"
+		it.Table = tunTableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
 
-	it = netlink.NewRule()
-	it.Priority = priority
-	it.IifName = "lo"
-	it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
-	it.Table = tunTableIndex
-	rules = append(rules, it)
-	priority++
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+		it.Table = tunTableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
 
-	if t.options.Inet4Address.IsValid() {
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
 		it.Src = t.options.Inet4Address.Masked()
 		it.Table = tunTableIndex
+		it.Family = unix.AF_INET
 		rules = append(rules, it)
-		priority++
 	}
+	if p6 {
+		// FIXME: this match connections from public address
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Table = tunTableIndex
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
 
-	if t.options.Inet6Address.IsValid() {
+		/*it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.IifName = "lo"
+		it.Table = tunTableIndex
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 128) // not working
+		it.Table = tunTableIndex
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+
 		it = netlink.NewRule()
 		it.Priority = priority
 		it.IifName = "lo"
 		it.Src = t.options.Inet6Address.Masked()
 		it.Table = tunTableIndex
-		rules = append(rules, it)
-		priority++
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)*/
 	}
-
-	it = netlink.NewRule()
-	it.Priority = nopPriority
-	rules = append(rules, it)
-
+	priority++
+	if p4 {
+		it = netlink.NewRule()
+		it.Priority = nopPriority
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+	}
+	if p6 {
+		it = netlink.NewRule()
+		it.Priority = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+	}
 	return rules
 }
 
