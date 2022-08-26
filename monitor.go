@@ -1,6 +1,8 @@
 package tun
 
 import (
+	"net/netip"
+
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/x/list"
 )
@@ -23,8 +25,8 @@ type NetworkUpdateMonitor interface {
 type DefaultInterfaceMonitor interface {
 	Start() error
 	Close() error
-	DefaultInterfaceName() string
-	DefaultInterfaceIndex() int
+	DefaultInterfaceName(destination netip.Addr) string
+	DefaultInterfaceIndex(destination netip.Addr) int
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
 	UnregisterCallback(element *list.Element[DefaultInterfaceUpdateCallback])
 }

@@ -4,9 +4,14 @@ package tun
 
 import (
 	"context"
+	"net"
+	"net/netip"
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing/common"
+	E "github.com/sagernet/sing/common/exceptions"
+	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 )
 
@@ -39,12 +44,19 @@ func (m *networkUpdateMonitor) NewError(ctx context.Context, err error) {
 }
 
 type defaultInterfaceMonitor struct {
+	networkAddresses      []networkAddress
 	defaultInterfaceName  string
 	defaultInterfaceIndex int
 	networkMonitor        NetworkUpdateMonitor
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
+}
+
+type networkAddress struct {
+	interfaceName  string
+	interfaceIndex int
+	addresses      []netip.Prefix
 }
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor) (DefaultInterfaceMonitor, error) {
@@ -64,7 +76,39 @@ func (m *defaultInterfaceMonitor) Start() error {
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() error {
 	time.Sleep(time.Second)
+	err := m.updateInterfaces()
+	if err != nil {
+		m.networkMonitor.NewError(context.Background(), E.Cause(err, "update interfaces"))
+	}
 	return m.checkUpdate()
+}
+
+func (m *defaultInterfaceMonitor) updateInterfaces() error {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	var addresses []networkAddress
+	for _, iif := range interfaces {
+		var netAddresses []net.Addr
+		netAddresses, err = iif.Addrs()
+		if err != nil {
+			return err
+		}
+		var address networkAddress
+		address.interfaceName = iif.Name
+		address.interfaceIndex = iif.Index
+		address.addresses = common.Map(common.FilterIsInstance(netAddresses, func(it net.Addr) (*net.IPNet, bool) {
+			value, loaded := it.(*net.IPNet)
+			return value, loaded
+		}), func(it *net.IPNet) netip.Prefix {
+			bits, _ := it.Mask.Size()
+			return netip.PrefixFrom(M.AddrFromIP(it.IP), bits)
+		})
+		addresses = append(addresses, address)
+	}
+	m.networkAddresses = addresses
+	return nil
 }
 
 func (m *defaultInterfaceMonitor) Close() error {
@@ -74,11 +118,25 @@ func (m *defaultInterfaceMonitor) Close() error {
 	return nil
 }
 
-func (m *defaultInterfaceMonitor) DefaultInterfaceName() string {
+func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) string {
+	for _, address := range m.networkAddresses {
+		for _, prefix := range address.addresses {
+			if prefix.Contains(destination) {
+				return address.interfaceName
+			}
+		}
+	}
 	return m.defaultInterfaceName
 }
 
-func (m *defaultInterfaceMonitor) DefaultInterfaceIndex() int {
+func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) int {
+	for _, address := range m.networkAddresses {
+		for _, prefix := range address.addresses {
+			if prefix.Contains(destination) {
+				return address.interfaceIndex
+			}
+		}
+	}
 	return m.defaultInterfaceIndex
 }
 
