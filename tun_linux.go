@@ -186,6 +186,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 	excludeRanges := t.options.ExcludedRanges()
 	priority := 9000
+	priority6 := priority
 	nopPriority := priority + 10
 
 	for _, excludeRange := range excludeRanges {
@@ -199,7 +200,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 		if p6 {
 			it = netlink.NewRule()
-			it.Priority = priority
+			it.Priority = priority6
 			it.UIDRange = netlink.NewRuleUIDRange(excludeRange.Start, excludeRange.End)
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
@@ -207,29 +208,51 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 	}
 	if len(excludeRanges) > 0 {
-		priority++
+		if p4 {
+			priority++
+		}
+		if p6 {
+			priority6++
+		}
 	}
 
-	if p4 {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.Dst = t.options.Inet4Address.Masked()
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET
-		rules = append(rules, it)
+	if t.options.StrictRoute {
+		if !p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			it.Type = unix.FR_ACT_UNREACHABLE
+			rules = append(rules, it)
+			priority++
+		}
+		if !p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Family = unix.AF_INET6
+			it.Type = unix.FR_ACT_UNREACHABLE
+			rules = append(rules, it)
+			priority6++
+		}
 	}
-	if p6 {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.Dst = t.options.Inet6Address.Masked()
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)
-	}
-	priority++
 
 	if runtime.GOOS != "android" {
-		// not supported on android, why?
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Dst = t.options.Inet4Address.Masked()
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+		}
+		/*if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Dst = t.options.Inet6Address.Masked()
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}*/
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
@@ -237,69 +260,77 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
+			priority++
 		}
 		if p6 {
 			it = netlink.NewRule()
-			it.Priority = priority
+			it.Priority = priority6
 			it.IPProto = unix.IPPROTO_ICMPV6
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
+			priority6++
+		}
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+	}
+
+	if p4 {
+		if t.options.StrictRoute {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		} else {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Invert = true
+			it.IifName = "lo"
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.IifName = "lo"
+			it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.IifName = "lo"
+			it.Src = t.options.Inet4Address.Masked()
+			it.Table = tunTableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
 		}
 		priority++
-	}
-
-	if p4 {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.Invert = true
-		it.Dport = netlink.NewRulePortRange(53, 53)
-		it.Table = unix.RT_TABLE_MAIN
-		it.SuppressPrefixlen = 0
-		it.Family = unix.AF_INET
-		rules = append(rules, it)
-	}
-	if p6 {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.Invert = true
-		it.Dport = netlink.NewRulePortRange(53, 53)
-		it.Table = unix.RT_TABLE_MAIN
-		it.SuppressPrefixlen = 0
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)
-	}
-	priority++
-
-	if p4 {
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.Invert = true
-		it.IifName = "lo"
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET
-		rules = append(rules, it)
-
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IifName = "lo"
-		it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET
-		rules = append(rules, it)
-
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IifName = "lo"
-		it.Src = t.options.Inet4Address.Masked()
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET
-		rules = append(rules, it)
 	}
 	if p6 {
 		// FIXME: this match connections from public address
 		it = netlink.NewRule()
-		it.Priority = priority
+		it.Priority = priority6
 		it.Table = tunTableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
@@ -327,8 +358,8 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		it.Table = tunTableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)*/
+		priority6++
 	}
-	priority++
 	if p4 {
 		it = netlink.NewRule()
 		it.Priority = nopPriority

@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.5.4
 	github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
-	github.com/sagernet/netlink v0.0.0-20220820041223-3cd8365d17ac
+	github.com/sagernet/netlink v0.0.0-20220826133217-3fb4ff92ea17
 	github.com/sagernet/sing v0.0.0-20220819003212-2424b1e2fac1
 	golang.org/x/net v0.0.0-20220812174116-3211cb980234
 	golang.org/x/sys v0.0.0-20220818161305-2296e01440c6
