@@ -5,7 +5,7 @@ import E "github.com/sagernet/sing/common/exceptions"
 type PackageManager interface {
 	Start() error
 	Close() error
-	IDByPackage(packageName string) ([]uint32, bool)
+	IDByPackage(packageName string) (uint32, bool)
 	IDBySharedPackage(sharedPackage string) (uint32, bool)
 	PackageByID(id uint32) (string, bool)
 	SharedPackageByID(id uint32) (string, bool)

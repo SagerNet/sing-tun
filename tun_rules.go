@@ -15,23 +15,33 @@ const (
 )
 
 func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler E.Handler) {
+	var includeUser []uint32
 	if len(o.IncludeAndroidUser) > 0 {
 		o.IncludeAndroidUser = common.Uniq(o.IncludeAndroidUser)
 		sort.Ints(o.IncludeAndroidUser)
+		var userExcludeRange []ranges.Range[uint32]
 		for _, androidUser := range o.IncludeAndroidUser {
-			o.IncludeUID = append(o.IncludeUID, ranges.New[uint32](uint32(androidUser)*androidUserRange, uint32(androidUser+1)*androidUserRange-1))
+			includeUser = append(includeUser, uint32(androidUser))
+			userExcludeRange = append(userExcludeRange, ranges.New[uint32](uint32(androidUser)*androidUserRange, uint32(androidUser+1)*androidUserRange-1))
 		}
+		userExcludeRange = ranges.Revert(0, userEnd, userExcludeRange)
+		o.ExcludeUID = append(o.ExcludeUID, userExcludeRange...)
+	}
+	if len(includeUser) == 0 {
+		includeUser = []uint32{0}
 	}
 	if len(o.IncludePackage) > 0 {
 		o.IncludePackage = common.Uniq(o.IncludePackage)
 		for _, packageName := range o.IncludePackage {
 			if sharedId, loaded := packageManager.IDBySharedPackage(packageName); loaded {
-				o.IncludeUID = append(o.IncludeUID, ranges.NewSingle(sharedId))
+				for _, androidUser := range includeUser {
+					o.IncludeUID = append(o.IncludeUID, ranges.NewSingle(sharedId+androidUser*androidUserRange))
+				}
 				continue
 			}
-			if ids, loaded := packageManager.IDByPackage(packageName); loaded {
-				for _, id := range ids {
-					o.IncludeUID = append(o.IncludeUID, ranges.NewSingle(id))
+			if userId, loaded := packageManager.IDByPackage(packageName); loaded {
+				for _, androidUser := range includeUser {
+					o.IncludeUID = append(o.IncludeUID, ranges.NewSingle(userId+androidUser*androidUserRange))
 				}
 				continue
 			}
@@ -42,12 +52,13 @@ func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler 
 		o.ExcludePackage = common.Uniq(o.ExcludePackage)
 		for _, packageName := range o.ExcludePackage {
 			if sharedId, loaded := packageManager.IDBySharedPackage(packageName); loaded {
-				o.ExcludeUID = append(o.ExcludeUID, ranges.NewSingle(sharedId))
-				continue
+				for _, androidUser := range includeUser {
+					o.ExcludeUID = append(o.ExcludeUID, ranges.NewSingle(sharedId+androidUser*androidUserRange))
+				}
 			}
-			if ids, loaded := packageManager.IDByPackage(packageName); loaded {
-				for _, id := range ids {
-					o.ExcludeUID = append(o.ExcludeUID, ranges.NewSingle(id))
+			if userId, loaded := packageManager.IDByPackage(packageName); loaded {
+				for _, androidUser := range includeUser {
+					o.ExcludeUID = append(o.ExcludeUID, ranges.NewSingle(userId+androidUser*androidUserRange))
 				}
 				continue
 			}

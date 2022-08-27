@@ -18,7 +18,7 @@ import (
 type packageManager struct {
 	callback        PackageManagerCallback
 	watcher         *fsnotify.Watcher
-	idByPackage     map[string][]uint32
+	idByPackage     map[string]uint32
 	sharedByPackage map[string]uint32
 	packageById     map[uint32]string
 	sharedById      map[uint32]string
@@ -78,7 +78,7 @@ func (m *packageManager) Close() error {
 	return common.Close(common.PtrOrNil(m.watcher))
 }
 
-func (m *packageManager) IDByPackage(packageName string) ([]uint32, bool) {
+func (m *packageManager) IDByPackage(packageName string) (uint32, bool) {
 	id, loaded := m.idByPackage[packageName]
 	return id, loaded
 }
@@ -114,7 +114,7 @@ func (m *packageManager) updatePackages() error {
 }
 
 func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
-	idByPackage := make(map[string][]uint32)
+	idByPackage := make(map[string]uint32)
 	sharedByPackage := make(map[string]uint32)
 	packageById := make(map[uint32]string)
 	sharedById := make(map[uint32]string)
@@ -149,7 +149,7 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 			if userID == 0 && name == "" {
 				continue
 			}
-			idByPackage[name] = append(idByPackage[name], uint32(userID))
+			idByPackage[name] = uint32(userID)
 			packageById[uint32(userID)] = name
 		case "shared-user":
 			var name string
