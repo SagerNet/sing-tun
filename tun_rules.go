@@ -2,7 +2,9 @@ package tun
 
 import (
 	"context"
+	"os"
 	"sort"
+	"strconv"
 
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -26,6 +28,19 @@ func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler 
 		}
 		userExcludeRange = ranges.Revert(0, userEnd, userExcludeRange)
 		o.ExcludeUID = append(o.ExcludeUID, userExcludeRange...)
+	}
+	if len(includeUser) == 0 {
+		userDirs, err := os.ReadDir("/data/user")
+		if err == nil {
+			var userId uint64
+			for _, userDir := range userDirs {
+				userId, err = strconv.ParseUint(userDir.Name(), 10, 32)
+				if err != nil {
+					continue
+				}
+				includeUser = append(includeUser, uint32(userId))
+			}
+		}
 	}
 	if len(includeUser) == 0 {
 		includeUser = []uint32{0}
