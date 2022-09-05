@@ -57,41 +57,41 @@ func Open(options Options) (WinTun, error) {
 
 func (t *NativeTun) configure() error {
 	luid := winipcfg.LUID(t.adapter.LUID())
-	if t.options.Inet4Address.IsValid() {
-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), []netip.Prefix{t.options.Inet4Address})
+	if len(t.options.Inet4Address) > 0 {
+		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), t.options.Inet4Address)
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
 	}
-	if t.options.Inet6Address.IsValid() {
-		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), []netip.Prefix{t.options.Inet6Address})
+	if len(t.options.Inet6Address) > 0 {
+		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), t.options.Inet6Address)
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
 	}
-	err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address.Addr().Next()}, nil)
+	err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address[0].Addr().Next()}, nil)
 	if err != nil {
 		return E.Cause(err, "set ipv4 dns")
 	}
-	err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address.Addr().Next()}, nil)
+	err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address[0].Addr().Next()}, nil)
 	if err != nil {
 		return E.Cause(err, "set ipv6 dns")
 	}
 	if t.options.AutoRoute {
-		if t.options.Inet4Address.IsValid() {
+		if len(t.options.Inet4Address) > 0 {
 			err = luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv4 route")
 			}
 		}
-		if t.options.Inet6Address.IsValid() {
+		if len(t.options.Inet6Address) > 0 {
 			err = luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv6 route")
 			}
 		}
 	}
-	if t.options.Inet4Address.IsValid() {
+	if len(t.options.Inet4Address) > 0 {
 		var inetIf *winipcfg.MibIPInterfaceRow
 		inetIf, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
 		if err != nil {
@@ -112,7 +112,7 @@ func (t *NativeTun) configure() error {
 			return E.Cause(err, "set ipv4 options")
 		}
 	}
-	if t.options.Inet6Address.IsValid() {
+	if len(t.options.Inet6Address) > 0 {
 		var inet6If *winipcfg.MibIPInterfaceRow
 		inet6If, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET6))
 		if err != nil {

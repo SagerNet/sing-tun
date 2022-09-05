@@ -101,19 +101,22 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
-	if t.options.Inet4Address.IsValid() {
-		addr4, _ := netlink.ParseAddr(t.options.Inet4Address.String())
-		err = netlink.AddrAdd(tunLink, addr4)
-		if err != nil {
-			return err
+	if len(t.options.Inet4Address) > 0 {
+		for _, address := range t.options.Inet4Address {
+			addr4, _ := netlink.ParseAddr(address.String())
+			err = netlink.AddrAdd(tunLink, addr4)
+			if err != nil {
+				return err
+			}
 		}
 	}
-
-	if t.options.Inet6Address.IsValid() {
-		addr6, _ := netlink.ParseAddr(t.options.Inet6Address.String())
-		err = netlink.AddrAdd(tunLink, addr6)
-		if err != nil {
-			return err
+	if len(t.options.Inet6Address) > 0 {
+		for _, address := range t.options.Inet6Address {
+			addr6, _ := netlink.ParseAddr(address.String())
+			err = netlink.AddrAdd(tunLink, addr6)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -122,14 +125,20 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
+	err = t.setRoute(tunLink)
+	if err != nil {
+		_ = t.unsetRoute0(tunLink)
+		return err
+	}
+
 	if t.options.AutoRoute {
-		err = t.unsetRoute0(tunLink)
+		err = t.unsetRules()
 		if err != nil {
 			return E.Cause(err, "cleanup rules")
 		}
-		err = t.setRoute(tunLink)
+		err = t.setRules()
 		if err != nil {
-			_ = t.unsetRoute0(tunLink)
+			_ = t.unsetRules()
 			return err
 		}
 		if runtime.GOOS == "android" {
@@ -141,8 +150,9 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 
 func (t *NativeTun) Close() error {
 	var errors []error
+	errors = append(errors, t.unsetRoute())
 	if t.options.AutoRoute {
-		errors = append(errors, t.unsetRoute())
+		errors = append(errors, t.unsetRules())
 	}
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
@@ -154,25 +164,57 @@ const tunTableIndex = 2022
 
 func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	var routes []netlink.Route
-	if t.options.Inet4Address.IsValid() {
-		routes = append(routes, netlink.Route{
-			Dst: &net.IPNet{
-				IP:   net.IPv4zero,
-				Mask: net.CIDRMask(0, 32),
-			},
-			LinkIndex: tunLink.Attrs().Index,
-			Table:     tunTableIndex,
-		})
+	if len(t.options.Inet4Address) > 0 {
+		for _, address := range t.options.Inet4Address {
+			if address.Bits() != 32 {
+				continue
+			}
+			routes = append(routes, netlink.Route{
+				Dst: &net.IPNet{
+					IP:   address.Addr().AsSlice(),
+					Mask: net.CIDRMask(address.Bits(), 32),
+				},
+				LinkIndex: tunLink.Attrs().Index,
+				Table:     unix.RT_TABLE_MAIN,
+				Scope:     unix.RT_SCOPE_LINK,
+			})
+		}
+		if t.options.AutoRoute {
+			routes = append(routes, netlink.Route{
+				Dst: &net.IPNet{
+					IP:   net.IPv4zero,
+					Mask: net.CIDRMask(0, 32),
+				},
+				LinkIndex: tunLink.Attrs().Index,
+				Table:     tunTableIndex,
+			})
+		}
 	}
-	if t.options.Inet6Address.IsValid() {
-		routes = append(routes, netlink.Route{
-			Dst: &net.IPNet{
-				IP:   net.IPv6zero,
-				Mask: net.CIDRMask(0, 128),
-			},
-			LinkIndex: tunLink.Attrs().Index,
-			Table:     tunTableIndex,
-		})
+	if len(t.options.Inet6Address) > 0 {
+		for _, address := range t.options.Inet6Address {
+			if address.Bits() != 128 {
+				continue
+			}
+			routes = append(routes, netlink.Route{
+				Dst: &net.IPNet{
+					IP:   address.Addr().AsSlice(),
+					Mask: net.CIDRMask(address.Bits(), 128),
+				},
+				LinkIndex: tunLink.Attrs().Index,
+				Table:     unix.RT_TABLE_MAIN,
+				Scope:     unix.RT_SCOPE_LINK,
+			})
+		}
+		if t.options.AutoRoute {
+			routes = append(routes, netlink.Route{
+				Dst: &net.IPNet{
+					IP:   net.IPv6zero,
+					Mask: net.CIDRMask(0, 128),
+				},
+				LinkIndex: tunLink.Attrs().Index,
+				Table:     tunTableIndex,
+			})
+		}
 	}
 	return routes
 }
@@ -185,11 +227,11 @@ const (
 func (t *NativeTun) rules() []*netlink.Rule {
 	var p4, p6 bool
 	var pRule int
-	if t.options.Inet4Address.IsValid() {
+	if len(t.options.Inet4Address) > 0 {
 		p4 = true
 		pRule += 1
 	}
-	if t.options.Inet6Address.IsValid() {
+	if len(t.options.Inet6Address) > 0 {
 		p6 = true
 		pRule += 1
 	}
@@ -281,12 +323,14 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 	if runtime.GOOS != "android" {
 		if p4 {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Dst = t.options.Inet4Address.Masked()
-			it.Table = tunTableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
+			for _, address := range t.options.Inet4Address {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.Dst = address.Masked()
+				it.Table = tunTableIndex
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+			}
 			priority++
 		}
 		/*if p6 {
@@ -361,13 +405,15 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.IifName = "lo"
-			it.Src = t.options.Inet4Address.Masked()
-			it.Table = tunTableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
+			for _, address := range t.options.Inet4Address {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = "lo"
+				it.Src = address.Masked()
+				it.Table = tunTableIndex
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+			}
 		}
 		priority++
 	}
@@ -426,7 +472,7 @@ func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 			return E.Cause(err, "add route ", i)
 		}
 	}
-	return t.setRules()
+	return nil
 }
 
 func (t *NativeTun) setRules() error {
@@ -451,7 +497,7 @@ func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
 	for _, route := range t.routes(tunLink) {
 		_ = netlink.RouteDel(&route)
 	}
-	return t.unsetRules()
+	return nil
 }
 
 func (t *NativeTun) unsetRules() error {

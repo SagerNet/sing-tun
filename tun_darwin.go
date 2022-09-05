@@ -45,10 +45,14 @@ func Open(options Options) (Tun, error) {
 		return nil, err
 	}
 	nativeTun := &NativeTun{
-		tunFile:      os.NewFile(uintptr(tunFd), "utun"),
-		mtu:          options.MTU,
-		inet4Address: string(options.Inet4Address.Addr().AsSlice()),
-		inet6Address: string(options.Inet6Address.Addr().AsSlice()),
+		tunFile: os.NewFile(uintptr(tunFd), "utun"),
+		mtu:     options.MTU,
+	}
+	if len(options.Inet4Address) > 0 {
+		nativeTun.inet4Address = string(options.Inet4Address[0].Addr().AsSlice())
+	}
+	if len(options.Inet6Address) > 0 {
+		nativeTun.inet6Address = string(options.Inet6Address[0].Addr().AsSlice())
 	}
 	var ok bool
 	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
@@ -155,83 +159,87 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 	if err != nil {
 		return err
 	}
-	if options.Inet4Address.IsValid() {
-		ifReq := ifAliasReq{
-			Addr: unix.RawSockaddrInet4{
-				Len:    unix.SizeofSockaddrInet4,
-				Family: unix.AF_INET,
-				Addr:   options.Inet4Address.Addr().As4(),
-			},
-			Dstaddr: unix.RawSockaddrInet4{
-				Len:    unix.SizeofSockaddrInet4,
-				Family: unix.AF_INET,
-				Addr:   options.Inet4Address.Addr().As4(),
-			},
-			Mask: unix.RawSockaddrInet4{
-				Len:    unix.SizeofSockaddrInet4,
-				Family: unix.AF_INET,
-				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(options.Inet4Address.Bits(), 32)).String()).As4(),
-			},
-		}
-		copy(ifReq.Name[:], name)
-		err = useSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, func(socketFd int) error {
-			if _, _, errno := unix.Syscall(
-				syscall.SYS_IOCTL,
-				uintptr(socketFd),
-				uintptr(unix.SIOCAIFADDR),
-				uintptr(unsafe.Pointer(&ifReq)),
-			); errno != 0 {
-				return os.NewSyscallError("SIOCAIFADDR", errno)
+	if len(options.Inet4Address) > 0 {
+		for _, address := range options.Inet4Address {
+			ifReq := ifAliasReq{
+				Addr: unix.RawSockaddrInet4{
+					Len:    unix.SizeofSockaddrInet4,
+					Family: unix.AF_INET,
+					Addr:   address.Addr().As4(),
+				},
+				Dstaddr: unix.RawSockaddrInet4{
+					Len:    unix.SizeofSockaddrInet4,
+					Family: unix.AF_INET,
+					Addr:   address.Addr().As4(),
+				},
+				Mask: unix.RawSockaddrInet4{
+					Len:    unix.SizeofSockaddrInet4,
+					Family: unix.AF_INET,
+					Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(address.Bits(), 32)).String()).As4(),
+				},
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+			copy(ifReq.Name[:], name)
+			err = useSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, func(socketFd int) error {
+				if _, _, errno := unix.Syscall(
+					syscall.SYS_IOCTL,
+					uintptr(socketFd),
+					uintptr(unix.SIOCAIFADDR),
+					uintptr(unsafe.Pointer(&ifReq)),
+				); errno != 0 {
+					return os.NewSyscallError("SIOCAIFADDR", errno)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
-	if options.Inet6Address.IsValid() {
-		ifReq6 := ifAliasReq6{
-			Addr: unix.RawSockaddrInet6{
-				Len:    unix.SizeofSockaddrInet6,
-				Family: unix.AF_INET6,
-				Addr:   options.Inet6Address.Addr().As16(),
-			},
-			Mask: unix.RawSockaddrInet6{
-				Len:    unix.SizeofSockaddrInet6,
-				Family: unix.AF_INET6,
-				Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(options.Inet6Address.Bits(), 128)).String()).As16(),
-			},
-			Flags: IN6_IFF_NODAD | IN6_IFF_SECURED,
-			Lifetime: addrLifetime6{
-				Vltime: ND6_INFINITE_LIFETIME,
-				Pltime: ND6_INFINITE_LIFETIME,
-			},
-		}
-		if options.Inet6Address.Bits() == 128 {
-			ifReq6.Dstaddr = unix.RawSockaddrInet6{
-				Len:    unix.SizeofSockaddrInet6,
-				Family: unix.AF_INET6,
-				Addr:   options.Inet6Address.Addr().Next().As16(),
+	if len(options.Inet6Address) > 0 {
+		for _, address := range options.Inet6Address {
+			ifReq6 := ifAliasReq6{
+				Addr: unix.RawSockaddrInet6{
+					Len:    unix.SizeofSockaddrInet6,
+					Family: unix.AF_INET6,
+					Addr:   address.Addr().As16(),
+				},
+				Mask: unix.RawSockaddrInet6{
+					Len:    unix.SizeofSockaddrInet6,
+					Family: unix.AF_INET6,
+					Addr:   netip.MustParseAddr(net.IP(net.CIDRMask(address.Bits(), 128)).String()).As16(),
+				},
+				Flags: IN6_IFF_NODAD | IN6_IFF_SECURED,
+				Lifetime: addrLifetime6{
+					Vltime: ND6_INFINITE_LIFETIME,
+					Pltime: ND6_INFINITE_LIFETIME,
+				},
 			}
-		}
-		copy(ifReq6.Name[:], name)
-		err = useSocket(unix.AF_INET6, unix.SOCK_DGRAM, 0, func(socketFd int) error {
-			if _, _, errno := unix.Syscall(
-				syscall.SYS_IOCTL,
-				uintptr(socketFd),
-				uintptr(SIOCAIFADDR_IN6),
-				uintptr(unsafe.Pointer(&ifReq6)),
-			); errno != 0 {
-				return os.NewSyscallError("SIOCAIFADDR_IN6", errno)
+			if address.Bits() == 128 {
+				ifReq6.Dstaddr = unix.RawSockaddrInet6{
+					Len:    unix.SizeofSockaddrInet6,
+					Family: unix.AF_INET6,
+					Addr:   address.Addr().Next().As16(),
+				}
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+			copy(ifReq6.Name[:], name)
+			err = useSocket(unix.AF_INET6, unix.SOCK_DGRAM, 0, func(socketFd int) error {
+				if _, _, errno := unix.Syscall(
+					syscall.SYS_IOCTL,
+					uintptr(socketFd),
+					uintptr(SIOCAIFADDR_IN6),
+					uintptr(unsafe.Pointer(&ifReq6)),
+				); errno != 0 {
+					return os.NewSyscallError("SIOCAIFADDR_IN6", errno)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if options.AutoRoute {
-		if options.Inet4Address.IsValid() {
+		if len(options.Inet4Address) > 0 {
 			for _, subnet := range []netip.Prefix{
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 0, 0, 0}), 8),
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{2, 0, 0, 0}), 7),
@@ -242,15 +250,15 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{64, 0, 0, 0}), 2),
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{128, 0, 0, 0}), 1),
 			} {
-				err = addRoute(subnet, options.Inet4Address.Addr())
+				err = addRoute(subnet, options.Inet4Address[0].Addr())
 				if err != nil {
 					return err
 				}
 			}
 		}
-		if options.Inet6Address.IsValid() {
+		if len(options.Inet6Address) > 0 {
 			subnet := netip.PrefixFrom(netip.AddrFrom16([16]byte{32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), 3)
-			err = addRoute(subnet, options.Inet6Address.Addr())
+			err = addRoute(subnet, options.Inet6Address[0].Addr())
 			if err != nil {
 				return err
 			}

@@ -32,8 +32,8 @@ type WinTun interface {
 
 type Options struct {
 	Name               string
-	Inet4Address       netip.Prefix
-	Inet6Address       netip.Prefix
+	Inet4Address       []netip.Prefix
+	Inet6Address       []netip.Prefix
 	MTU                uint32
 	AutoRoute          bool
 	StrictRoute        bool
