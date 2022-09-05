@@ -44,9 +44,11 @@ func (m *networkUpdateMonitor) NewError(ctx context.Context, err error) {
 }
 
 type defaultInterfaceMonitor struct {
+	options               DefaultInterfaceMonitorOptions
 	networkAddresses      []networkAddress
 	defaultInterfaceName  string
 	defaultInterfaceIndex int
+	androidVPNEnabled     bool
 	networkMonitor        NetworkUpdateMonitor
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
@@ -59,8 +61,9 @@ type networkAddress struct {
 	addresses      []netip.Prefix
 }
 
-func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor) (DefaultInterfaceMonitor, error) {
+func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return &defaultInterfaceMonitor{
+		options:        options,
 		networkMonitor: networkMonitor,
 	}, nil
 }
@@ -140,6 +143,14 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 	return m.defaultInterfaceIndex
 }
 
+func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
+	return m.options.OverrideAndroidVPN
+}
+
+func (m *defaultInterfaceMonitor) AndroidVPNEnabled() bool {
+	return m.androidVPNEnabled
+}
+
 func (m *defaultInterfaceMonitor) RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback] {
 	m.access.Lock()
 	defer m.access.Unlock()
@@ -152,12 +163,12 @@ func (m *defaultInterfaceMonitor) UnregisterCallback(element *list.Element[Defau
 	m.callbacks.Remove(element)
 }
 
-func (m *defaultInterfaceMonitor) emit() {
+func (m *defaultInterfaceMonitor) emit(event int) {
 	m.access.Lock()
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		err := callback()
+		err := callback(event)
 		if err != nil {
 			m.networkMonitor.NewError(context.Background(), err)
 		}

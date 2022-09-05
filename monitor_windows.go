@@ -103,6 +103,6 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return nil
 	}
 
-	m.emit()
+	m.emit(EventInterfaceUpdate)
 	return nil
 }

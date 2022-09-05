@@ -42,10 +42,13 @@ type Options struct {
 	IncludeAndroidUser []int
 	IncludePackage     []string
 	ExcludePackage     []string
+	InterfaceMonitor   DefaultInterfaceMonitor
 }
 
-func DefaultInterfaceName() (tunName string) {
-	if runtime.GOOS == "darwin" {
+func CalculateInterfaceName(name string) (tunName string) {
+	if name != "" {
+		tunName = name
+	} else if runtime.GOOS == "darwin" {
 		tunName = "utun"
 	} else {
 		tunName = "tun"

@@ -11,7 +11,12 @@ var ErrNoRoute = E.New("no route to internet")
 
 type (
 	NetworkUpdateCallback          = func() error
-	DefaultInterfaceUpdateCallback = func() error
+	DefaultInterfaceUpdateCallback = func(event int) error
+)
+
+const (
+	EventInterfaceUpdate  = 1
+	EventAndroidVPNUpdate = 2
 )
 
 type NetworkUpdateMonitor interface {
@@ -27,6 +32,12 @@ type DefaultInterfaceMonitor interface {
 	Close() error
 	DefaultInterfaceName(destination netip.Addr) string
 	DefaultInterfaceIndex(destination netip.Addr) int
+	OverrideAndroidVPN() bool
+	AndroidVPNEnabled() bool
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
 	UnregisterCallback(element *list.Element[DefaultInterfaceUpdateCallback])
+}
+
+type DefaultInterfaceMonitorOptions struct {
+	OverrideAndroidVPN bool
 }

@@ -10,14 +10,16 @@ import (
 	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/rw"
+	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/sys/unix"
 )
 
 type NativeTun struct {
-	tunFd   int
-	tunFile *os.File
-	options Options
+	tunFd             int
+	tunFile           *os.File
+	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
+	options           Options
 }
 
 func Open(options Options) (Tun, error) {
@@ -121,11 +123,17 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	}
 
 	if t.options.AutoRoute {
-		_ = t.unsetRoute0(tunLink)
+		err = t.unsetRoute0(tunLink)
+		if err != nil {
+			return E.Cause(err, "cleanup rules")
+		}
 		err = t.setRoute(tunLink)
 		if err != nil {
 			_ = t.unsetRoute0(tunLink)
 			return err
+		}
+		if runtime.GOOS == "android" {
+			t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
 		}
 	}
 	return nil
@@ -135,6 +143,9 @@ func (t *NativeTun) Close() error {
 	var errors []error
 	if t.options.AutoRoute {
 		errors = append(errors, t.unsetRoute())
+	}
+	if t.interfaceCallback != nil {
+		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
 	return E.Errors(append(errors, t.tunFile.Close())...)
 }
@@ -166,6 +177,11 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	return routes
 }
 
+const (
+	ruleStart = 9000
+	ruleEnd   = ruleStart + 10
+)
+
 func (t *NativeTun) rules() []*netlink.Rule {
 	var p4, p6 bool
 	var pRule int
@@ -185,9 +201,9 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	var it *netlink.Rule
 
 	excludeRanges := t.options.ExcludedRanges()
-	priority := 9000
+	priority := ruleStart
 	priority6 := priority
-	nopPriority := priority + 10
+	nopPriority := ruleEnd
 
 	for _, excludeRange := range excludeRanges {
 		if p4 {
@@ -212,6 +228,34 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			priority++
 		}
 		if p6 {
+			priority6++
+		}
+	}
+
+	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
+		const protectedFromVPN = 0x20000
+		if p6 || t.options.StrictRoute {
+			it = netlink.NewRule()
+			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
+				it.Mark = protectedFromVPN
+			}
+			it.Mask = protectedFromVPN
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority++
+		}
+		if p6 || t.options.StrictRoute {
+			it = netlink.NewRule()
+			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
+				it.Mark = protectedFromVPN
+			}
+			it.Mask = protectedFromVPN
+			it.Family = unix.AF_INET6
+			it.Priority = priority6
+			it.Goto = nopPriority
+			rules = append(rules, it)
 			priority6++
 		}
 	}
@@ -382,6 +426,10 @@ func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 			return E.Cause(err, "add route ", i)
 		}
 	}
+	return t.setRules()
+}
+
+func (t *NativeTun) setRules() error {
 	for i, rule := range t.rules() {
 		err := netlink.RuleAdd(rule)
 		if err != nil {
@@ -400,18 +448,43 @@ func (t *NativeTun) unsetRoute() error {
 }
 
 func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
-	var errors []error
 	for _, route := range t.routes(tunLink) {
-		err := netlink.RouteDel(&route)
-		if err != nil {
-			errors = append(errors, err)
+		_ = netlink.RouteDel(&route)
+	}
+	return t.unsetRules()
+}
+
+func (t *NativeTun) unsetRules() error {
+	ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+	for _, rule := range ruleList {
+		if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+			ruleToDel := netlink.NewRule()
+			ruleToDel.Family = rule.Family
+			ruleToDel.Priority = rule.Priority
+			err = netlink.RuleDel(ruleToDel)
+			if err != nil {
+				return E.Cause(err, "unset rule ", rule.Priority, " for ", rule.Family)
+			}
 		}
 	}
-	for _, rule := range t.rules() {
-		err := netlink.RuleDel(rule)
-		if err != nil {
-			errors = append(errors, err)
-		}
+	return nil
+}
+
+func (t *NativeTun) resetRules() error {
+	t.unsetRules()
+	return t.setRules()
+}
+
+func (t *NativeTun) routeUpdate(event int) error {
+	if event&EventAndroidVPNUpdate == 0 {
+		return nil
 	}
-	return E.Errors(errors...)
+	err := t.resetRules()
+	if err != nil {
+		return E.Cause(err, "reset route")
+	}
+	return nil
 }

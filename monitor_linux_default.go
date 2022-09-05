@@ -34,7 +34,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
 			return nil
 		}
-		m.emit()
+		m.emit(EventInterfaceUpdate)
 		return nil
 	}
 	return E.New("no route to internet")

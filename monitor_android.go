@@ -11,15 +11,29 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return err
 	}
 
+	oldVPNEnabled := m.androidVPNEnabled
 	var defaultTableIndex int
+	var vpnEnabled bool
 	for _, rule := range ruleList {
+		if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+			continue
+		}
+		if rule.Mask == 0x20000 {
+			vpnEnabled = true
+			if m.options.OverrideAndroidVPN {
+				defaultTableIndex = rule.Table
+				break
+			}
+		}
 		if rule.Mask == 0xFFFF {
 			defaultTableIndex = rule.Table
+			break
 		}
 	}
+	m.androidVPNEnabled = vpnEnabled
 
 	if defaultTableIndex == 0 {
-		return E.Extend(ErrNoRoute, "no rule 0xFFFF")
+		return ErrNoRoute
 	}
 
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: defaultTableIndex}, netlink.RT_FILTER_TABLE)
@@ -43,10 +57,16 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	m.defaultInterfaceName = link.Attrs().Name
 	m.defaultInterfaceIndex = link.Attrs().Index
 
-	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
-		return nil
+	var event int
+	if oldInterface != m.defaultInterfaceName || oldIndex != m.defaultInterfaceIndex {
+		event |= EventInterfaceUpdate
+	}
+	if oldVPNEnabled != m.androidVPNEnabled {
+		event |= EventAndroidVPNUpdate
+	}
+	if event != 0 {
+		m.emit(event)
 	}
 
-	m.emit()
 	return nil
 }
