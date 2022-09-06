@@ -15,10 +15,10 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	var defaultTableIndex int
 	var vpnEnabled bool
 	for _, rule := range ruleList {
-		if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
-			continue
-		}
 		if rule.Mask == 0x20000 {
+			if rule.UIDRange == nil {
+				continue
+			}
 			vpnEnabled = true
 			if m.options.OverrideAndroidVPN {
 				defaultTableIndex = rule.Table

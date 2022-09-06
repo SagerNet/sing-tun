@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"math/rand"
 	"net"
 	"net/netip"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/netlink"
+	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/x/list"
@@ -20,6 +22,7 @@ type NativeTun struct {
 	tunFile           *os.File
 	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
 	options           Options
+	ruleIndex6        []int
 }
 
 func Open(options Options) (Tun, error) {
@@ -125,60 +128,48 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
+	if t.options.TableIndex == 0 {
+		for {
+			t.options.TableIndex = int(rand.Uint32())
+			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.TableIndex}, netlink.RT_FILTER_TABLE)
+			if len(routeList) == 0 || fErr != nil {
+				break
+			}
+		}
+	}
+
 	err = t.setRoute(tunLink)
 	if err != nil {
 		_ = t.unsetRoute0(tunLink)
 		return err
 	}
 
-	if t.options.AutoRoute {
-		err = t.unsetRules()
-		if err != nil {
-			return E.Cause(err, "cleanup rules")
-		}
-		err = t.setRules()
-		if err != nil {
-			_ = t.unsetRules()
-			return err
-		}
-		if runtime.GOOS == "android" {
-			t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
-		}
+	err = t.unsetRules()
+	if err != nil {
+		return E.Cause(err, "cleanup rules")
+	}
+	err = t.setRules()
+	if err != nil {
+		_ = t.unsetRules()
+		return err
+	}
+
+	if t.options.AutoRoute && runtime.GOOS == "android" {
+		t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
 	}
 	return nil
 }
 
 func (t *NativeTun) Close() error {
-	var errors []error
-	errors = append(errors, t.unsetRoute())
-	if t.options.AutoRoute {
-		errors = append(errors, t.unsetRules())
-	}
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
-	return E.Errors(append(errors, t.tunFile.Close())...)
+	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
-
-const tunTableIndex = 2022
 
 func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	var routes []netlink.Route
 	if len(t.options.Inet4Address) > 0 {
-		for _, address := range t.options.Inet4Address {
-			if address.Bits() != 32 {
-				continue
-			}
-			routes = append(routes, netlink.Route{
-				Dst: &net.IPNet{
-					IP:   address.Addr().AsSlice(),
-					Mask: net.CIDRMask(address.Bits(), 32),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-				Table:     unix.RT_TABLE_MAIN,
-				Scope:     unix.RT_SCOPE_LINK,
-			})
-		}
 		if t.options.AutoRoute {
 			routes = append(routes, netlink.Route{
 				Dst: &net.IPNet{
@@ -186,35 +177,19 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 					Mask: net.CIDRMask(0, 32),
 				},
 				LinkIndex: tunLink.Attrs().Index,
-				Table:     tunTableIndex,
+				Table:     t.options.TableIndex,
 			})
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
-		for _, address := range t.options.Inet6Address {
-			if address.Bits() != 128 {
-				continue
-			}
-			routes = append(routes, netlink.Route{
-				Dst: &net.IPNet{
-					IP:   address.Addr().AsSlice(),
-					Mask: net.CIDRMask(address.Bits(), 128),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-				Table:     unix.RT_TABLE_MAIN,
-				Scope:     unix.RT_SCOPE_LINK,
-			})
-		}
-		if t.options.AutoRoute {
-			routes = append(routes, netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv6zero,
-					Mask: net.CIDRMask(0, 128),
-				},
-				LinkIndex: tunLink.Attrs().Index,
-				Table:     tunTableIndex,
-			})
-		}
+		routes = append(routes, netlink.Route{
+			Dst: &net.IPNet{
+				IP:   net.IPv6zero,
+				Mask: net.CIDRMask(0, 128),
+			},
+			LinkIndex: tunLink.Attrs().Index,
+			Table:     t.options.TableIndex,
+		})
 	}
 	return routes
 }
@@ -224,7 +199,35 @@ const (
 	ruleEnd   = ruleStart + 10
 )
 
+func (t *NativeTun) nextIndex6() int {
+	ruleList, err := netlink.RuleList(netlink.FAMILY_V6)
+	if err != nil {
+		return -1
+	}
+	var minIndex int
+	for _, rule := range ruleList {
+		if rule.Priority > 0 && (minIndex == 0 || rule.Priority < minIndex) {
+			minIndex = rule.Priority
+		}
+	}
+	minIndex--
+	t.ruleIndex6 = append(t.ruleIndex6, minIndex)
+	return minIndex
+}
+
 func (t *NativeTun) rules() []*netlink.Rule {
+	if !t.options.AutoRoute {
+		if len(t.options.Inet6Address) > 0 {
+			it := netlink.NewRule()
+			it.Priority = t.nextIndex6()
+			it.Table = t.options.TableIndex
+			it.Family = unix.AF_INET6
+			it.OifName = t.options.Name
+			return []*netlink.Rule{it}
+		}
+		return nil
+	}
+
 	var p4, p6 bool
 	var pRule int
 	if len(t.options.Inet4Address) > 0 {
@@ -327,7 +330,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it = netlink.NewRule()
 				it.Priority = priority
 				it.Dst = address.Masked()
-				it.Table = tunTableIndex
+				it.Table = t.options.TableIndex
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 			}
@@ -385,7 +388,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Table = tunTableIndex
+			it.Table = t.options.TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 		} else {
@@ -393,7 +396,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority
 			it.Invert = true
 			it.IifName = "lo"
-			it.Table = tunTableIndex
+			it.Table = t.options.TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 
@@ -401,7 +404,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority
 			it.IifName = "lo"
 			it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
-			it.Table = tunTableIndex
+			it.Table = t.options.TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 
@@ -410,7 +413,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Priority = priority
 				it.IifName = "lo"
 				it.Src = address.Masked()
-				it.Table = tunTableIndex
+				it.Table = t.options.TableIndex
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 			}
@@ -421,7 +424,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		// FIXME: this match connections from public address
 		it = netlink.NewRule()
 		it.Priority = priority6
-		it.Table = tunTableIndex
+		it.Table = t.options.TableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
 
@@ -501,18 +504,32 @@ func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
 }
 
 func (t *NativeTun) unsetRules() error {
-	ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
-	if err != nil {
-		return err
-	}
-	for _, rule := range ruleList {
-		if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+	if len(t.ruleIndex6) > 0 {
+		for _, index := range t.ruleIndex6 {
 			ruleToDel := netlink.NewRule()
-			ruleToDel.Family = rule.Family
-			ruleToDel.Priority = rule.Priority
-			err = netlink.RuleDel(ruleToDel)
+			ruleToDel.Family = unix.AF_INET6
+			ruleToDel.Priority = index
+			err := netlink.RuleDel(ruleToDel)
 			if err != nil {
-				return E.Cause(err, "unset rule ", rule.Priority, " for ", rule.Family)
+				return E.Cause(err, "unset rule6 ", index)
+			}
+		}
+		t.ruleIndex6 = nil
+	}
+	if t.options.AutoRoute {
+		ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
+		if err != nil {
+			return err
+		}
+		for _, rule := range ruleList {
+			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+				ruleToDel := netlink.NewRule()
+				ruleToDel.Family = rule.Family
+				ruleToDel.Priority = rule.Priority
+				err = netlink.RuleDel(ruleToDel)
+				if err != nil {
+					return E.Cause(err, "unset rule ", rule.Priority, " for ", rule.Family)
+				}
 			}
 		}
 	}
