@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const PacketOffset = 4
+
 type NativeTun struct {
 	tunFile      *os.File
 	tunWriter    N.VectorisedWriter

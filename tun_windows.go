@@ -62,38 +62,37 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
+		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address[0].Addr().Next()}, nil)
+		if err != nil {
+			return E.Cause(err, "set ipv4 dns")
+		}
 	}
 	if len(t.options.Inet6Address) > 0 {
 		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), t.options.Inet6Address)
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
-	}
-	err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address[0].Addr().Next()}, nil)
-	if err != nil {
-		return E.Cause(err, "set ipv4 dns")
-	}
-	err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address[0].Addr().Next()}, nil)
-	if err != nil {
-		return E.Cause(err, "set ipv6 dns")
+		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address[0].Addr().Next()}, nil)
+		if err != nil {
+			return E.Cause(err, "set ipv6 dns")
+		}
 	}
 	if t.options.AutoRoute {
 		if len(t.options.Inet4Address) > 0 {
-			err = luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
+			err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv4 route")
 			}
 		}
 		if len(t.options.Inet6Address) > 0 {
-			err = luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
+			err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
 			if err != nil {
 				return E.Cause(err, "set ipv6 route")
 			}
 		}
 	}
 	if len(t.options.Inet4Address) > 0 {
-		var inetIf *winipcfg.MibIPInterfaceRow
-		inetIf, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
+		inetIf, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
 		if err != nil {
 			return err
 		}
@@ -113,8 +112,7 @@ func (t *NativeTun) configure() error {
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
-		var inet6If *winipcfg.MibIPInterfaceRow
-		inet6If, err = luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET6))
+		inet6If, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET6))
 		if err != nil {
 			return err
 		}

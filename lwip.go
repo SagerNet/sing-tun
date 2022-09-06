@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"runtime"
 
 	lwip "github.com/sagernet/go-tun2socks/core"
 	"github.com/sagernet/sing/common"
@@ -28,19 +27,15 @@ type LWIP struct {
 }
 
 func NewLWIP(
-	ctx context.Context,
-	tun Tun,
-	tunMtu uint32,
-	udpTimeout int64,
-	handler Handler,
+	options StackOptions,
 ) (Stack, error) {
 	return &LWIP{
-		ctx:     ctx,
-		tun:     tun,
-		tunMtu:  tunMtu,
-		handler: handler,
+		ctx:     options.Context,
+		tun:     options.Tun,
+		tunMtu:  options.MTU,
+		handler: options.Handler,
 		stack:   lwip.NewLWIPStack(),
-		udpNat:  udpnat.New[netip.AddrPort](udpTimeout, handler),
+		udpNat:  udpnat.New[netip.AddrPort](options.UDPTimeout, options.Handler),
 	}, nil
 }
 
@@ -57,10 +52,7 @@ func (l *LWIP) loopIn() {
 		l.loopInWintun(winTun)
 		return
 	}
-	mtu := int(l.tunMtu)
-	if runtime.GOOS == "darwin" {
-		mtu += 4
-	}
+	mtu := int(l.tunMtu) + PacketOffset
 	_buffer := buf.StackNewSize(mtu)
 	defer common.KeepAlive(_buffer)
 	buffer := common.Dup(_buffer)
@@ -71,13 +63,7 @@ func (l *LWIP) loopIn() {
 		if err != nil {
 			return
 		}
-		var packet []byte
-		if runtime.GOOS == "darwin" {
-			packet = data[4:n]
-		} else {
-			packet = data[:n]
-		}
-		_, err = l.stack.Write(packet)
+		_, err = l.stack.Write(data[PacketOffset:n])
 		if err != nil {
 			if err.Error() == "stack closed" {
 				return

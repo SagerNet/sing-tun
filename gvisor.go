@@ -41,25 +41,20 @@ type GVisorTun interface {
 }
 
 func NewGVisor(
-	ctx context.Context,
-	tun Tun,
-	tunMtu uint32,
-	endpointIndependentNat bool,
-	udpTimeout int64,
-	handler Handler,
+	options StackOptions,
 ) (Stack, error) {
-	gTun, isGTun := tun.(GVisorTun)
+	gTun, isGTun := options.Tun.(GVisorTun)
 	if !isGTun {
 		return nil, ErrGVisorUnsupported
 	}
 
 	return &GVisor{
-		ctx:                    ctx,
+		ctx:                    options.Context,
 		tun:                    gTun,
-		tunMtu:                 tunMtu,
-		endpointIndependentNat: endpointIndependentNat,
-		udpTimeout:             udpTimeout,
-		handler:                handler,
+		tunMtu:                 options.MTU,
+		endpointIndependentNat: options.EndpointIndependentNat,
+		udpTimeout:             options.UDPTimeout,
+		handler:                options.Handler,
 	}, nil
 }
 

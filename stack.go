@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"net/netip"
 
 	E "github.com/sagernet/sing/common/exceptions"
 )
@@ -17,20 +18,29 @@ type Stack interface {
 	Close() error
 }
 
+type StackOptions struct {
+	Context                context.Context
+	Tun                    Tun
+	Name                   string
+	MTU                    uint32
+	Inet4Address           []netip.Prefix
+	Inet6Address           []netip.Prefix
+	EndpointIndependentNat bool
+	UDPTimeout             int64
+	Handler                Handler
+}
+
 func NewStack(
-	ctx context.Context,
 	stack string,
-	tun Tun,
-	tunMtu uint32,
-	endpointIndependentNat bool,
-	udpTimeout int64,
-	handler Handler,
+	options StackOptions,
 ) (Stack, error) {
 	switch stack {
 	case "gvisor", "":
-		return NewGVisor(ctx, tun, tunMtu, endpointIndependentNat, udpTimeout, handler)
+		return NewGVisor(options)
+	case "system":
+		return NewSystem(options)
 	case "lwip":
-		return NewLWIP(ctx, tun, tunMtu, udpTimeout, handler)
+		return NewLWIP(options)
 	default:
 		return nil, E.New("unknown stack: ", stack)
 	}

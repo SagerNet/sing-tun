@@ -2,14 +2,8 @@
 
 package tun
 
-import "context"
-
 func NewLWIP(
-	ctx context.Context,
-	tun Tun,
-	tunMtu uint32,
-	udpTimeout int64,
-	handler Handler,
+	options StackOptions,
 ) (Stack, error) {
 	return nil, ErrLWIPNotIncluded
 }
