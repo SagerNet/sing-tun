@@ -51,6 +51,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		mtu:           options.MTU,
 		udpTimeout:    options.UDPTimeout,
 		handler:       options.Handler,
+		logger:        options.Logger,
 		inet4Prefixes: options.Inet4Address,
 		inet6Prefixes: options.Inet6Address,
 	}
@@ -149,11 +150,16 @@ func (s *System) wintunLoop(winTun WinTun) {
 			release()
 			continue
 		}
-		switch packet[0] >> 4 {
+		switch ipVersion := packet[0] >> 4; ipVersion {
 		case 4:
-			s.processIPv4(packet)
+			err = s.processIPv4(packet)
 		case 6:
-			s.processIPv6(packet)
+			err = s.processIPv6(packet)
+		default:
+			err = E.New("ip: unknown version: ", ipVersion)
+		}
+		if err != nil {
+			s.logger.Trace(err)
 		}
 		release()
 	}
