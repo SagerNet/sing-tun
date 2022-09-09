@@ -14,7 +14,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 
-	"golang.org/x/net/ipv4"
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 )
@@ -83,7 +82,7 @@ var (
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	var packetHeader []byte
-	if p[0]>>4 == ipv4.Version {
+	if p[0]>>4 == 4 {
 		packetHeader = packetHeader4[:]
 	} else {
 		packetHeader = packetHeader6[:]

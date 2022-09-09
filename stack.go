@@ -5,6 +5,7 @@ import (
 	"net/netip"
 
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 )
 
 var (
@@ -28,6 +29,7 @@ type StackOptions struct {
 	EndpointIndependentNat bool
 	UDPTimeout             int64
 	Handler                Handler
+	Logger                 logger.Logger
 }
 
 func NewStack(

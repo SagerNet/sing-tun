@@ -7,10 +7,10 @@ require (
 	github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.0.0-20220819003212-2424b1e2fac1
-	golang.org/x/net v0.0.0-20220826154423-83b083e8dc8b
-	golang.org/x/sys v0.0.0-20220825204002-c680a09ffe64
-	gvisor.dev/gvisor v0.0.0-20220819163037-ba6e795b139a
+	github.com/sagernet/sing v0.0.0-20220905164441-f3d346256d4a
+	golang.org/x/net v0.0.0-20220907135653-1e95f45603a7
+	golang.org/x/sys v0.0.0-20220908164124-27713097b956
+	gvisor.dev/gvisor v0.0.0-20220901235040-6ca97ef2ce1c
 )
 
 require (

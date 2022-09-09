@@ -20,18 +20,16 @@ import (
 )
 
 type UDPForwarder struct {
-	ctx     context.Context
-	stack   *stack.Stack
-	handler Handler
-	udpNat  *udpnat.Service[netip.AddrPort]
+	ctx    context.Context
+	stack  *stack.Stack
+	udpNat *udpnat.Service[netip.AddrPort]
 }
 
 func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, udpTimeout int64) *UDPForwarder {
 	return &UDPForwarder{
-		ctx:     ctx,
-		stack:   stack,
-		handler: handler,
-		udpNat:  udpnat.New[netip.AddrPort](udpTimeout, handler),
+		ctx:    ctx,
+		stack:  stack,
+		udpNat: udpnat.New[netip.AddrPort](udpTimeout, handler),
 	}
 }
 

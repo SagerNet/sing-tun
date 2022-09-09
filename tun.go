@@ -47,10 +47,10 @@ type Options struct {
 }
 
 func CalculateInterfaceName(name string) (tunName string) {
-	if name != "" {
-		tunName = name
-	} else if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" {
 		tunName = "utun"
+	} else if name != "" {
+		tunName = name
 	} else {
 		tunName = "tun"
 	}

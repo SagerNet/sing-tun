@@ -10,6 +10,7 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
@@ -20,6 +21,7 @@ type System struct {
 	tun                Tun
 	mtu                uint32
 	handler            Handler
+	logger             logger.Logger
 	inet4Prefixes      []netip.Prefix
 	inet6Prefixes      []netip.Prefix
 	inet4ServerAddress netip.Addr
@@ -123,11 +125,16 @@ func (s *System) tunLoop() {
 			continue
 		}
 		packet := packetSlice[PacketOffset:n]
-		switch packet[0] >> 4 {
+		switch ipVersion := packet[0] >> 4; ipVersion {
 		case 4:
-			s.processIPv4(packet)
+			err = s.processIPv4(packet)
 		case 6:
-			s.processIPv6(packet)
+			err = s.processIPv6(packet)
+		default:
+			err = E.New("ip: unknown version: ", ipVersion)
+		}
+		if err != nil {
+			s.logger.Trace(err)
 		}
 	}
 }
@@ -161,7 +168,7 @@ func (s *System) acceptLoop(listener net.Listener) {
 		connPort := M.SocksaddrFromNet(conn.RemoteAddr()).Port
 		session := s.tcpNat.LookupBack(connPort)
 		if session == nil {
-			s.handler.NewError(context.Background(), E.New("unknown session with port ", connPort))
+			s.logger.Trace(E.New("unknown session with port ", connPort))
 			continue
 		}
 		destination := M.SocksaddrFromNetIP(session.Destination)
@@ -192,10 +199,6 @@ func (s *System) acceptLoop(listener net.Listener) {
 	}
 }
 
-func (s *System) NewError(ctx context.Context, err error) {
-	s.handler.NewError(ctx, err)
-}
-
 func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
 	if !packet.Valid() {
 		return E.New("ipv4: invalid packet")
@@ -211,7 +214,7 @@ func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
 	case clashtcpip.ICMP:
 		return s.processIPv4ICMP(packet, packet.Payload())
 	default:
-		return nil
+		return common.Error(s.tun.Write(packet))
 	}
 }
 
@@ -230,7 +233,7 @@ func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
 	case clashtcpip.ICMPv6:
 		return s.processIPv6ICMP(packet, packet.Payload())
 	default:
-		return nil
+		return common.Error(s.tun.Write(packet))
 	}
 }
 
@@ -240,7 +243,7 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if source.Addr() == s.inet4ServerAddress && source.Port() == s.tcpPort {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
-			return E.New("session not found: ", destination.Port())
+			return E.New("ipv4: tcp: session not found: ", destination.Port())
 		}
 		packet.SetSourceIP(session.Destination.Addr())
 		header.SetSourcePort(session.Destination.Port())
@@ -264,7 +267,7 @@ func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	if source.Addr() == s.inet6ServerAddress && source.Port() == s.tcpPort6 {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
-			return E.New("session not found: ", destination.Port())
+			return E.New("ipv6: tcp: session not found: ", destination.Port())
 		}
 		packet.SetSourceIP(session.Destination.Addr())
 		header.SetSourcePort(session.Destination.Port())
@@ -287,7 +290,7 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		return E.New("ipv4: fragment dropped")
 	}
 	if packet.FragmentOffset() != 0 {
-		return E.New("ipv4: fragment dropped")
+		return E.New("ipv4: udp: fragment dropped")
 	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
