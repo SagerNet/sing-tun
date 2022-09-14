@@ -279,7 +279,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
 		const protectedFromVPN = 0x20000
-		if p6 || t.options.StrictRoute {
+		if p4 || t.options.StrictRoute {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
