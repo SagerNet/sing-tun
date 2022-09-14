@@ -298,17 +298,20 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if packet.FragmentOffset() != 0 {
 		return E.New("ipv4: udp: fragment dropped")
 	}
+	data := buf.As(header.Payload())
+	if data.Len() == 0 {
+		return nil
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() || destination.Addr().IsMulticast() {
 		return nil
 	}
-	data := buf.As(header.Payload()).ToOwned()
 	metadata := M.Metadata{
 		Source:      M.SocksaddrFromNetIP(source),
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
-	s.udpNat.NewPacket(s.ctx, source, data, metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
 		hdr := buf.As(packet[:packet.HeaderLen()+clashtcpip.UDPHeaderSize]).ToOwned()
 		return &systemPacketWriter4{s.tun, hdr, source}
 	})
@@ -321,12 +324,15 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	if !destination.Addr().IsGlobalUnicast() || destination.Addr().IsMulticast() {
 		return nil
 	}
-	data := buf.As(header.Payload()).ToOwned()
+	data := buf.As(header.Payload())
+	if data.Len() == 0 {
+		return nil
+	}
 	metadata := M.Metadata{
 		Source:      M.SocksaddrFromNetIP(source),
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
-	s.udpNat.NewPacket(s.ctx, source, data, metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
 		hdr := buf.As(packet[:len(packet)-len(header.Payload())]).ToOwned()
 		return &systemPacketWriter6{s.tun, hdr, source}
 	})
