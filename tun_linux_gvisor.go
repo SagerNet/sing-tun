@@ -1,4 +1,4 @@
-//go:build !no_gvisor && linux
+//go:build with_gvisor && linux
 
 package tun
 

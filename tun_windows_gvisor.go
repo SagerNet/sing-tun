@@ -1,4 +1,4 @@
-//go:build !no_gvisor && windows
+//go:build with_gvisor && windows
 
 package tun
 

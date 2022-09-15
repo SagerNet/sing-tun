@@ -1,4 +1,4 @@
-//go:build !(no_gvisor || !(linux || windows || darwin))
+//go:build with_gvisor
 
 package tun
 
@@ -21,6 +21,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
 )
+
+const WithGVisor = true
 
 const defaultNIC tcpip.NICID = 1
 
@@ -45,7 +47,7 @@ func NewGVisor(
 ) (Stack, error) {
 	gTun, isGTun := options.Tun.(GVisorTun)
 	if !isGTun {
-		return nil, ErrGVisorUnsupported
+		return nil, E.New("gVisor stack is unsupported on current platform")
 	}
 
 	return &GVisor{

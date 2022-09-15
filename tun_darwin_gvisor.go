@@ -1,4 +1,4 @@
-//go:build !no_gvisor && darwin
+//go:build with_gvisor && darwin
 
 package tun
 

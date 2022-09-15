@@ -8,12 +8,6 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-var (
-	ErrGVisorNotIncluded = E.New("gVisor is disabled in current build, try build without -tags `no_gvisor`")
-	ErrGVisorUnsupported = E.New("gVisor stack is unsupported on current platform")
-	ErrLWIPNotIncluded   = E.New("LWIP stack is disabled in current build, try build with -tags `with_lwip` and CGO_ENABLED=1")
-)
-
 type Stack interface {
 	Start() error
 	Close() error
@@ -37,7 +31,9 @@ func NewStack(
 	options StackOptions,
 ) (Stack, error) {
 	switch stack {
-	case "gvisor", "":
+	case "":
+		return NewSystem(options)
+	case "gvisor":
 		return NewGVisor(options)
 	case "system":
 		return NewSystem(options)
