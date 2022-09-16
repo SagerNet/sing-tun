@@ -246,7 +246,9 @@ func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
 func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.TCPPacket) error {
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if source.Addr() == s.inet4ServerAddress && source.Port() == s.tcpPort {
+	if !destination.Addr().IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
+	} else if source.Addr() == s.inet4ServerAddress && source.Port() == s.tcpPort {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
 			return E.New("ipv4: tcp: session not found: ", destination.Port())
@@ -270,7 +272,9 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.TCPPacket) error {
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if source.Addr() == s.inet6ServerAddress && source.Port() == s.tcpPort6 {
+	if !destination.Addr().IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
+	} else if source.Addr() == s.inet6ServerAddress && source.Port() == s.tcpPort6 {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
 			return E.New("ipv6: tcp: session not found: ", destination.Port())
@@ -298,13 +302,13 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if packet.FragmentOffset() != 0 {
 		return E.New("ipv4: udp: fragment dropped")
 	}
-	data := buf.As(header.Payload())
-	if data.Len() == 0 {
-		return nil
-	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if !destination.Addr().IsGlobalUnicast() || destination.Addr().IsMulticast() {
+	if !destination.Addr().IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
+	}
+	data := buf.As(header.Payload())
+	if data.Len() == 0 {
 		return nil
 	}
 	metadata := M.Metadata{
@@ -321,8 +325,8 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if !destination.Addr().IsGlobalUnicast() || destination.Addr().IsMulticast() {
-		return nil
+	if !destination.Addr().IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
 	}
 	data := buf.As(header.Payload())
 	if data.Len() == 0 {
