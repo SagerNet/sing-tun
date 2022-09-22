@@ -173,7 +173,7 @@ func (p IPv4Packet) PseudoSum() uint32 {
 }
 
 func (p IPv4Packet) Valid() bool {
-	return len(p) >= IPv4HeaderSize && uint16(len(p)) >= p.TotalLen()
+	return len(p) >= IPv4HeaderSize && p.TotalLen() >= p.HeaderLen() && uint16(len(p)) >= p.TotalLen()
 }
 
 func (p IPv4Packet) Verify() error {
