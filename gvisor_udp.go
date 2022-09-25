@@ -65,11 +65,7 @@ type UDPBackWriter struct {
 func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
 
-	if w.sourceNetwork == header.IPv4ProtocolNumber && destination.Addr.Is4In6() {
-		destination = destination.Unwrap()
-	} else if w.sourceNetwork == header.IPv6ProtocolNumber && destination.Addr.Is4() {
-		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
-	}
+	destination.CheckBadAddr()
 
 	route, err := w.stack.FindRoute(
 		defaultNIC,
