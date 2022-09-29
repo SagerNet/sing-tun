@@ -4,6 +4,8 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"math"
+	"net"
 	"net/netip"
 	"os"
 	"sync"
@@ -12,8 +14,10 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
+	"github.com/sagernet/sing-tun/internal/winsys"
 	"github.com/sagernet/sing-tun/internal/wintun"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/windnsapi"
 
 	"golang.org/x/sys/windows"
 )
@@ -21,14 +25,15 @@ import (
 var TunnelType = "sing-tun"
 
 type NativeTun struct {
-	adapter   *wintun.Adapter
-	options   Options
-	session   wintun.Session
-	readWait  windows.Handle
-	rate      rateJuggler
-	running   sync.WaitGroup
-	closeOnce sync.Once
-	close     int32
+	adapter     *wintun.Adapter
+	options     Options
+	session     wintun.Session
+	readWait    windows.Handle
+	rate        rateJuggler
+	running     sync.WaitGroup
+	closeOnce   sync.Once
+	close       int32
+	fwpmSession uintptr
 }
 
 func Open(options Options) (WinTun, error) {
@@ -78,16 +83,41 @@ func (t *NativeTun) configure() error {
 		}
 	}
 	if t.options.AutoRoute {
-		if len(t.options.Inet4Address) > 0 {
-			err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
-			if err != nil {
-				return E.Cause(err, "set ipv4 route")
+		if t.options.StrictRoute {
+			if len(t.options.Inet4Address) > 0 {
+				for _, prefix := range []netip.Prefix{
+					netip.MustParsePrefix("0.0.0.0/1"),
+					netip.MustParsePrefix("128.0.0.0/1"),
+				} {
+					err := luid.AddRoute(prefix, netip.IPv4Unspecified(), 0)
+					if err != nil {
+						return E.Cause(err, "set ipv4 route")
+					}
+				}
 			}
-		}
-		if len(t.options.Inet6Address) > 0 {
-			err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
-			if err != nil {
-				return E.Cause(err, "set ipv6 route")
+			if len(t.options.Inet6Address) > 0 {
+				for _, prefix := range []netip.Prefix{
+					netip.MustParsePrefix("::/1"),
+					netip.MustParsePrefix("8000::/1"),
+				} {
+					err := luid.AddRoute(prefix, netip.IPv6Unspecified(), 0)
+					if err != nil {
+						return E.Cause(err, "set ipv6 route")
+					}
+				}
+			}
+		} else {
+			if len(t.options.Inet4Address) > 0 {
+				err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
+				if err != nil {
+					return E.Cause(err, "set ipv4 route")
+				}
+			}
+			if len(t.options.Inet6Address) > 0 {
+				err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
+				if err != nil {
+					return E.Cause(err, "set ipv6 route")
+				}
 			}
 		}
 	}
@@ -128,6 +158,187 @@ func (t *NativeTun) configure() error {
 		err = inet6If.Set()
 		if err != nil {
 			return E.Cause(err, "set ipv6 options")
+		}
+	}
+
+	if t.options.AutoRoute {
+		var engine uintptr
+		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
+		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
+		if err != nil {
+			return os.NewSyscallError("FwpmEngineOpen0", err)
+		}
+		t.fwpmSession = engine
+
+		subLayerKey, err := windows.GenerateGUID()
+		if err != nil {
+			return os.NewSyscallError("CoCreateGuid", err)
+		}
+
+		subLayer := winsys.FWPM_SUBLAYER0{}
+		subLayer.SubLayerKey = subLayerKey
+		subLayer.DisplayData = winsys.CreateDisplayData("sing-box", "auto-route rules")
+		subLayer.Weight = math.MaxUint16
+		err = winsys.FwpmSubLayerAdd0(engine, &subLayer, 0)
+		if err != nil {
+			return os.NewSyscallError("FwpmSubLayerAdd0", err)
+		}
+
+		processAppID, err := winsys.GetCurrentProcessAppID()
+		if err != nil {
+			return err
+		}
+		defer winsys.FwpmFreeMemory0(unsafe.Pointer(&processAppID))
+
+		var filterId uint64
+		permitCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+		permitCondition[0].FieldKey = winsys.FWPM_CONDITION_ALE_APP_ID
+		permitCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+		permitCondition[0].ConditionValue.Type = winsys.FWP_BYTE_BLOB_TYPE
+		permitCondition[0].ConditionValue.Value = uintptr(unsafe.Pointer(processAppID))
+
+		permitFilter4 := winsys.FWPM_FILTER0{}
+		permitFilter4.FilterCondition = &permitCondition[0]
+		permitFilter4.NumFilterConditions = 1
+		permitFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "protect ipv4")
+		permitFilter4.SubLayerKey = subLayerKey
+		permitFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+		permitFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
+		permitFilter4.Weight.Type = winsys.FWP_UINT8
+		permitFilter4.Weight.Value = uintptr(12)
+		permitFilter4.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+		err = winsys.FwpmFilterAdd0(engine, &permitFilter4, 0, &filterId)
+		if err != nil {
+			return os.NewSyscallError("FwpmFilterAdd0", err)
+		}
+
+		permitFilter6 := winsys.FWPM_FILTER0{}
+		permitFilter6.FilterCondition = &permitCondition[0]
+		permitFilter6.NumFilterConditions = 1
+		permitFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "protect ipv6")
+		permitFilter6.SubLayerKey = subLayerKey
+		permitFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+		permitFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
+		permitFilter6.Weight.Type = winsys.FWP_UINT8
+		permitFilter6.Weight.Value = uintptr(12)
+		permitFilter6.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
+		err = winsys.FwpmFilterAdd0(engine, &permitFilter6, 0, &filterId)
+		if err != nil {
+			return os.NewSyscallError("FwpmFilterAdd0", err)
+		}
+
+		if len(t.options.Inet4Address) == 0 {
+			blockFilter := winsys.FWPM_FILTER0{}
+			blockFilter.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv4")
+			blockFilter.SubLayerKey = subLayerKey
+			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockFilter.Weight.Type = winsys.FWP_UINT8
+			blockFilter.Weight.Value = uintptr(13)
+			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
+		}
+
+		if len(t.options.Inet6Address) == 0 {
+			blockFilter := winsys.FWPM_FILTER0{}
+			blockFilter.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv6")
+			blockFilter.SubLayerKey = subLayerKey
+			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockFilter.Weight.Type = winsys.FWP_UINT8
+			blockFilter.Weight.Value = uintptr(13)
+			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
+		}
+
+		netInterface, err := net.InterfaceByName(t.options.Name)
+		if err != nil {
+			return err
+		}
+
+		tunCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+		tunCondition[0].FieldKey = winsys.FWPM_CONDITION_LOCAL_INTERFACE_INDEX
+		tunCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+		tunCondition[0].ConditionValue.Type = winsys.FWP_UINT32
+		tunCondition[0].ConditionValue.Value = uintptr(uint32(netInterface.Index))
+
+		if len(t.options.Inet4Address) > 0 {
+			tunFilter4 := winsys.FWPM_FILTER0{}
+			tunFilter4.FilterCondition = &tunCondition[0]
+			tunFilter4.NumFilterConditions = 1
+			tunFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "allow ipv4")
+			tunFilter4.SubLayerKey = subLayerKey
+			tunFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+			tunFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
+			tunFilter4.Weight.Type = winsys.FWP_UINT8
+			tunFilter4.Weight.Value = uintptr(11)
+			err = winsys.FwpmFilterAdd0(engine, &tunFilter4, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
+		}
+
+		if len(t.options.Inet6Address) > 0 {
+			tunFilter6 := winsys.FWPM_FILTER0{}
+			tunFilter6.FilterCondition = &tunCondition[0]
+			tunFilter6.NumFilterConditions = 1
+			tunFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "allow ipv6")
+			tunFilter6.SubLayerKey = subLayerKey
+			tunFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+			tunFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
+			tunFilter6.Weight.Type = winsys.FWP_UINT8
+			tunFilter6.Weight.Value = uintptr(11)
+			err = winsys.FwpmFilterAdd0(engine, &tunFilter6, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
+		}
+
+		blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 2)
+		blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_PROTOCOL
+		blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+		blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT8
+		blockDNSCondition[0].ConditionValue.Value = uintptr(uint8(winsys.IPPROTO_UDP))
+		blockDNSCondition[1].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
+		blockDNSCondition[1].MatchType = winsys.FWP_MATCH_EQUAL
+		blockDNSCondition[1].ConditionValue.Type = winsys.FWP_UINT16
+		blockDNSCondition[1].ConditionValue.Value = uintptr(uint16(53))
+
+		blockDNSFilter4 := winsys.FWPM_FILTER0{}
+		blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
+		blockDNSFilter4.NumFilterConditions = 2
+		blockDNSFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv4 dns")
+		blockDNSFilter4.SubLayerKey = subLayerKey
+		blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+		blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
+		blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
+		blockDNSFilter4.Weight.Value = uintptr(10)
+		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
+		if err != nil {
+			return os.NewSyscallError("FwpmFilterAdd0", err)
+		}
+
+		blockDNSFilter6 := winsys.FWPM_FILTER0{}
+		blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
+		blockDNSFilter6.NumFilterConditions = 2
+		blockDNSFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv6 dns")
+		blockDNSFilter6.SubLayerKey = subLayerKey
+		blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+		blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
+		blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
+		blockDNSFilter6.Weight.Value = uintptr(10)
+		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
+		if err != nil {
+			return os.NewSyscallError("FwpmFilterAdd0", err)
+		}
+
+		err = windnsapi.FlushResolverCache()
+		if err != nil {
+			return err
 		}
 	}
 
@@ -269,6 +480,10 @@ func (t *NativeTun) Close() error {
 		t.running.Wait()
 		t.session.End()
 		t.adapter.Close()
+		if t.fwpmSession != 0 {
+			winsys.FwpmEngineClose0(t.fwpmSession)
+		}
+		windnsapi.FlushResolverCache()
 	})
 	return err
 }
