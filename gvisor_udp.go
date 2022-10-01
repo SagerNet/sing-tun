@@ -65,8 +65,6 @@ type UDPBackWriter struct {
 func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
 
-	destination.CheckBadAddr()
-
 	route, err := w.stack.FindRoute(
 		defaultNIC,
 		tcpip.Address(destination.Addr.AsSlice()),

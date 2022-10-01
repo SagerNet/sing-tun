@@ -244,6 +244,9 @@ func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
 }
 
 func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.TCPPacket) error {
+	if !header.Valid() {
+		return E.New("ipv4: tcp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -270,6 +273,9 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 }
 
 func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.TCPPacket) error {
+	if !header.Valid() {
+		return E.New("ipv6: tcp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -302,6 +308,9 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if packet.FragmentOffset() != 0 {
 		return E.New("ipv4: udp: fragment dropped")
 	}
+	if !header.Valid() {
+		return E.New("ipv4: udp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -316,13 +325,18 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
 	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
-		hdr := buf.As(packet[:packet.HeaderLen()+clashtcpip.UDPHeaderSize]).ToOwned()
-		return &systemPacketWriter4{s.tun, hdr, source}
+		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
+		headerCopy := make([]byte, headerLen)
+		copy(headerCopy, packet[:headerLen])
+		return &systemPacketWriter4{s.tun, headerCopy, source}
 	})
 	return nil
 }
 
 func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
+	if !header.Valid() {
+		return E.New("ipv6: udp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -337,8 +351,10 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
 	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
-		hdr := buf.As(packet[:len(packet)-len(header.Payload())]).ToOwned()
-		return &systemPacketWriter6{s.tun, hdr, source}
+		headerLen := len(packet) - int(header.Length()) + clashtcpip.UDPHeaderSize
+		headerCopy := make([]byte, headerLen)
+		copy(headerCopy, packet[:headerLen])
+		return &systemPacketWriter6{s.tun, headerCopy, source}
 	})
 	return nil
 }
@@ -371,19 +387,18 @@ func (s *System) processIPv6ICMP(packet clashtcpip.IPv6Packet, header clashtcpip
 
 type systemPacketWriter4 struct {
 	tun    Tun
-	header *buf.Buffer
+	header []byte
 	source netip.AddrPort
 }
 
 func (w *systemPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.StackNewSize(w.header.Len() + buffer.Len())
+	newPacket := buf.StackNewSize(len(w.header) + buffer.Len())
 	defer newPacket.Release()
-	newPacket.Write(w.header.Bytes())
+	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())
 	ipHdr := clashtcpip.IPv4Packet(newPacket.Bytes())
 	ipHdr.SetTotalLength(uint16(newPacket.Len()))
 	ipHdr.SetDestinationIP(ipHdr.SourceIP())
-	destination.CheckBadAddr()
 	ipHdr.SetSourceIP(destination.Addr)
 	udpHdr := clashtcpip.UDPPacket(ipHdr.Payload())
 	udpHdr.SetDestinationPort(udpHdr.SourcePort())
@@ -394,21 +409,16 @@ func (w *systemPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Sock
 	return common.Error(w.tun.Write(newPacket.Bytes()))
 }
 
-func (w *systemPacketWriter4) Close() error {
-	w.header.Release()
-	return nil
-}
-
 type systemPacketWriter6 struct {
 	tun    Tun
-	header *buf.Buffer
+	header []byte
 	source netip.AddrPort
 }
 
 func (w *systemPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.StackNewSize(w.header.Len() + buffer.Len())
+	newPacket := buf.StackNewSize(len(w.header) + buffer.Len())
 	defer newPacket.Release()
-	newPacket.Write(w.header.Bytes())
+	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())
 	ipHdr := clashtcpip.IPv6Packet(newPacket.Bytes())
 	udpLen := uint16(clashtcpip.UDPHeaderSize + buffer.Len())
@@ -421,9 +431,4 @@ func (w *systemPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Sock
 	udpHdr.SetLength(udpLen)
 	udpHdr.ResetChecksum(ipHdr.PseudoSum())
 	return common.Error(w.tun.Write(newPacket.Bytes()))
-}
-
-func (w *systemPacketWriter6) Close() error {
-	w.header.Release()
-	return nil
 }
