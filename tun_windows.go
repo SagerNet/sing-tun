@@ -177,7 +177,7 @@ func (t *NativeTun) configure() error {
 
 		subLayer := winsys.FWPM_SUBLAYER0{}
 		subLayer.SubLayerKey = subLayerKey
-		subLayer.DisplayData = winsys.CreateDisplayData("sing-box", "auto-route rules")
+		subLayer.DisplayData = winsys.CreateDisplayData(TunnelType, "auto-route rules")
 		subLayer.Weight = math.MaxUint16
 		err = winsys.FwpmSubLayerAdd0(engine, &subLayer, 0)
 		if err != nil {
@@ -200,7 +200,7 @@ func (t *NativeTun) configure() error {
 		permitFilter4 := winsys.FWPM_FILTER0{}
 		permitFilter4.FilterCondition = &permitCondition[0]
 		permitFilter4.NumFilterConditions = 1
-		permitFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "protect ipv4")
+		permitFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "protect ipv4")
 		permitFilter4.SubLayerKey = subLayerKey
 		permitFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 		permitFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
@@ -215,7 +215,7 @@ func (t *NativeTun) configure() error {
 		permitFilter6 := winsys.FWPM_FILTER0{}
 		permitFilter6.FilterCondition = &permitCondition[0]
 		permitFilter6.NumFilterConditions = 1
-		permitFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "protect ipv6")
+		permitFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "protect ipv6")
 		permitFilter6.SubLayerKey = subLayerKey
 		permitFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 		permitFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
@@ -229,7 +229,7 @@ func (t *NativeTun) configure() error {
 
 		if len(t.options.Inet4Address) == 0 {
 			blockFilter := winsys.FWPM_FILTER0{}
-			blockFilter.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv4")
+			blockFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4")
 			blockFilter.SubLayerKey = subLayerKey
 			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
@@ -243,7 +243,7 @@ func (t *NativeTun) configure() error {
 
 		if len(t.options.Inet6Address) == 0 {
 			blockFilter := winsys.FWPM_FILTER0{}
-			blockFilter.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv6")
+			blockFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6")
 			blockFilter.SubLayerKey = subLayerKey
 			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
@@ -270,7 +270,7 @@ func (t *NativeTun) configure() error {
 			tunFilter4 := winsys.FWPM_FILTER0{}
 			tunFilter4.FilterCondition = &tunCondition[0]
 			tunFilter4.NumFilterConditions = 1
-			tunFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "allow ipv4")
+			tunFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "allow ipv4")
 			tunFilter4.SubLayerKey = subLayerKey
 			tunFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 			tunFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
@@ -286,7 +286,7 @@ func (t *NativeTun) configure() error {
 			tunFilter6 := winsys.FWPM_FILTER0{}
 			tunFilter6.FilterCondition = &tunCondition[0]
 			tunFilter6.NumFilterConditions = 1
-			tunFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "allow ipv6")
+			tunFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "allow ipv6")
 			tunFilter6.SubLayerKey = subLayerKey
 			tunFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 			tunFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
@@ -311,7 +311,7 @@ func (t *NativeTun) configure() error {
 		blockDNSFilter4 := winsys.FWPM_FILTER0{}
 		blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
 		blockDNSFilter4.NumFilterConditions = 2
-		blockDNSFilter4.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv4 dns")
+		blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
 		blockDNSFilter4.SubLayerKey = subLayerKey
 		blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 		blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
@@ -325,7 +325,7 @@ func (t *NativeTun) configure() error {
 		blockDNSFilter6 := winsys.FWPM_FILTER0{}
 		blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
 		blockDNSFilter6.NumFilterConditions = 2
-		blockDNSFilter6.DisplayData = winsys.CreateDisplayData("sing-box", "block ipv6 dns")
+		blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
 		blockDNSFilter6.SubLayerKey = subLayerKey
 		blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 		blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
