@@ -205,7 +205,7 @@ func (t *NativeTun) configure() error {
 		permitFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 		permitFilter4.Action.Type = winsys.FWP_ACTION_PERMIT
 		permitFilter4.Weight.Type = winsys.FWP_UINT8
-		permitFilter4.Weight.Value = uintptr(12)
+		permitFilter4.Weight.Value = uintptr(13)
 		permitFilter4.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
 		err = winsys.FwpmFilterAdd0(engine, &permitFilter4, 0, &filterId)
 		if err != nil {
@@ -220,26 +220,26 @@ func (t *NativeTun) configure() error {
 		permitFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 		permitFilter6.Action.Type = winsys.FWP_ACTION_PERMIT
 		permitFilter6.Weight.Type = winsys.FWP_UINT8
-		permitFilter6.Weight.Value = uintptr(12)
+		permitFilter6.Weight.Value = uintptr(13)
 		permitFilter6.Flags = winsys.FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT
 		err = winsys.FwpmFilterAdd0(engine, &permitFilter6, 0, &filterId)
 		if err != nil {
 			return os.NewSyscallError("FwpmFilterAdd0", err)
 		}
 
-		if len(t.options.Inet4Address) == 0 {
+		/*if len(t.options.Inet4Address) == 0 {
 			blockFilter := winsys.FWPM_FILTER0{}
 			blockFilter.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4")
 			blockFilter.SubLayerKey = subLayerKey
 			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
 			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
 			blockFilter.Weight.Type = winsys.FWP_UINT8
-			blockFilter.Weight.Value = uintptr(13)
+			blockFilter.Weight.Value = uintptr(12)
 			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
 			if err != nil {
 				return os.NewSyscallError("FwpmFilterAdd0", err)
 			}
-		}
+		}*/
 
 		if len(t.options.Inet6Address) == 0 {
 			blockFilter := winsys.FWPM_FILTER0{}
@@ -248,7 +248,7 @@ func (t *NativeTun) configure() error {
 			blockFilter.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
 			blockFilter.Action.Type = winsys.FWP_ACTION_BLOCK
 			blockFilter.Weight.Type = winsys.FWP_UINT8
-			blockFilter.Weight.Value = uintptr(13)
+			blockFilter.Weight.Value = uintptr(12)
 			err = winsys.FwpmFilterAdd0(engine, &blockFilter, 0, &filterId)
 			if err != nil {
 				return os.NewSyscallError("FwpmFilterAdd0", err)
