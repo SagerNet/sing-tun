@@ -135,7 +135,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 	copy(ctlInfo.Name[:], utunControlName)
 	err := unix.IoctlCtlInfo(tunFd, ctlInfo)
 	if err != nil {
-		return err
+		return os.NewSyscallError("IoctlCtlInfo", err)
 	}
 
 	err = unix.Connect(tunFd, &unix.SockaddrCtl{
@@ -143,12 +143,12 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 		Unit: uint32(ifIndex) + 1,
 	})
 	if err != nil {
-		return err
+		return os.NewSyscallError("Connect", err)
 	}
 
 	err = unix.SetNonblock(tunFd, true)
 	if err != nil {
-		return err
+		return os.NewSyscallError("SetNonblock", err)
 	}
 
 	err = useSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, func(socketFd int) error {
@@ -158,7 +158,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 		return unix.IoctlSetIfreqMTU(socketFd, &ifr)
 	})
 	if err != nil {
-		return err
+		return os.NewSyscallError("IoctlSetIfreqMTU", err)
 	}
 	if len(options.Inet4Address) > 0 {
 		for _, address := range options.Inet4Address {
@@ -253,7 +253,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 			} {
 				err = addRoute(subnet, options.Inet4Address[0].Addr())
 				if err != nil {
-					return err
+					return E.Cause(err, "add ipv4 route "+subnet.String())
 				}
 			}
 		}
@@ -261,7 +261,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 			subnet := netip.PrefixFrom(netip.AddrFrom16([16]byte{32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), 3)
 			err = addRoute(subnet, options.Inet6Address[0].Addr())
 			if err != nil {
-				return err
+				return E.Cause(err, "add ipv6 route "+subnet.String())
 			}
 		}
 	}
