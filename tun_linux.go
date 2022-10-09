@@ -171,25 +171,51 @@ func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
 	var routes []netlink.Route
 	if len(t.options.Inet4Address) > 0 {
 		if t.options.AutoRoute {
+			if len(t.options.Inet4RouteAddress) > 0 {
+				for _, addr := range t.options.Inet4RouteAddress {
+					routes = append(routes, netlink.Route{
+						Dst: &net.IPNet{
+							IP:   addr.Addr().AsSlice(),
+							Mask: net.CIDRMask(addr.Bits(), 32),
+						},
+						LinkIndex: tunLink.Attrs().Index,
+						Table:     t.options.TableIndex,
+					})
+				}
+			} else {
+				routes = append(routes, netlink.Route{
+					Dst: &net.IPNet{
+						IP:   net.IPv4zero,
+						Mask: net.CIDRMask(0, 32),
+					},
+					LinkIndex: tunLink.Attrs().Index,
+					Table:     t.options.TableIndex,
+				})
+			}
+		}
+	}
+	if len(t.options.Inet6Address) > 0 {
+		if len(t.options.Inet6RouteAddress) > 0 {
+			for _, addr := range t.options.Inet6RouteAddress {
+				routes = append(routes, netlink.Route{
+					Dst: &net.IPNet{
+						IP:   addr.Addr().AsSlice(),
+						Mask: net.CIDRMask(addr.Bits(), 128),
+					},
+					LinkIndex: tunLink.Attrs().Index,
+					Table:     t.options.TableIndex,
+				})
+			}
+		} else {
 			routes = append(routes, netlink.Route{
 				Dst: &net.IPNet{
-					IP:   net.IPv4zero,
-					Mask: net.CIDRMask(0, 32),
+					IP:   net.IPv6zero,
+					Mask: net.CIDRMask(0, 128),
 				},
 				LinkIndex: tunLink.Attrs().Index,
 				Table:     t.options.TableIndex,
 			})
 		}
-	}
-	if len(t.options.Inet6Address) > 0 {
-		routes = append(routes, netlink.Route{
-			Dst: &net.IPNet{
-				IP:   net.IPv6zero,
-				Mask: net.CIDRMask(0, 128),
-			},
-			LinkIndex: tunLink.Attrs().Index,
-			Table:     t.options.TableIndex,
-		})
 	}
 	return routes
 }
