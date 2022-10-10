@@ -37,6 +37,8 @@ type Options struct {
 	MTU                uint32
 	AutoRoute          bool
 	StrictRoute        bool
+	Inet4RouteAddress  []netip.Prefix
+	Inet6RouteAddress  []netip.Prefix
 	IncludeUID         []ranges.Range[uint32]
 	ExcludeUID         []ranges.Range[uint32]
 	IncludeAndroidUser []int

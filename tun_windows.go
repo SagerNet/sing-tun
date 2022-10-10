@@ -108,15 +108,33 @@ func (t *NativeTun) configure() error {
 			}
 		} else {
 			if len(t.options.Inet4Address) > 0 {
-				err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
-				if err != nil {
-					return E.Cause(err, "set ipv4 route")
+				if len(t.options.Inet4RouteAddress) > 0 {
+					for _, addr := range t.options.Inet4RouteAddress {
+						err := luid.AddRoute(addr, netip.IPv4Unspecified(), 0)
+						if err != nil {
+							return E.Cause(err, "add ipv4 route: ", addr)
+						}
+					}
+				} else {
+					err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
+					if err != nil {
+						return E.Cause(err, "set ipv4 route")
+					}
 				}
 			}
 			if len(t.options.Inet6Address) > 0 {
-				err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
-				if err != nil {
-					return E.Cause(err, "set ipv6 route")
+				if len(t.options.Inet6RouteAddress) > 0 {
+					for _, addr := range t.options.Inet6RouteAddress {
+						err := luid.AddRoute(addr, netip.IPv6Unspecified(), 0)
+						if err != nil {
+							return E.Cause(err, "add ipv6 route: ", addr)
+						}
+					}
+				} else {
+					err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
+					if err != nil {
+						return E.Cause(err, "set ipv6 route")
+					}
 				}
 			}
 		}
