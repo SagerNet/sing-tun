@@ -63,15 +63,16 @@ type networkAddress struct {
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return &defaultInterfaceMonitor{
-		options:        options,
-		networkMonitor: networkMonitor,
+		options:               options,
+		networkMonitor:        networkMonitor,
+		defaultInterfaceIndex: -1,
 	}, nil
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
 	err := m.checkUpdate()
 	if err != nil {
-		return err
+		m.networkMonitor.NewError(context.Background(), err)
 	}
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
@@ -129,6 +130,9 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) s
 			}
 		}
 	}
+	if m.defaultInterfaceIndex == -1 {
+		m.checkUpdate()
+	}
 	return m.defaultInterfaceName
 }
 
@@ -139,6 +143,9 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 				return address.interfaceIndex
 			}
 		}
+	}
+	if m.defaultInterfaceIndex == -1 {
+		m.checkUpdate()
 	}
 	return m.defaultInterfaceIndex
 }
