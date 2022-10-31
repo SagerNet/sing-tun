@@ -154,7 +154,7 @@ func (t *NativeTun) configure() error {
 		}
 	}
 
-	if t.options.AutoRoute {
+	if t.options.AutoRoute && t.options.StrictRoute {
 		var engine uintptr
 		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
 		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
