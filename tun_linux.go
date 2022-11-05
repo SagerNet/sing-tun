@@ -418,6 +418,15 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 		} else {
+			if runtime.GOOS == "android" {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = t.options.Name
+				it.Table = 254 //main
+				it.Family = unix.AF_INET
+				it.SuppressPrefixlen = 0
+				rules = append(rules, it)
+			}
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.Invert = true
