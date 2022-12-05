@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/sagernet/sing-tun/internal/clashtcpip"
+	"github.com/metacubex/sing-tun/internal/clashtcpip"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"

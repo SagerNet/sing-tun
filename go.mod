@@ -1,4 +1,4 @@
-module github.com/sagernet/sing-tun
+module github.com/metacubex/sing-tun
 
 go 1.18
 

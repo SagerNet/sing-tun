@@ -36,7 +36,7 @@ jobs:
           mkdir build
           pushd build
           go mod init build
-          go get -v github.com/sagernet/sing-tun@$version
+          go get -v github.com/metacubex/sing-tun@$version
           popd
         continue-on-error: true
       - name: Build
