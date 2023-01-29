@@ -10,7 +10,7 @@ require (
 	github.com/sagernet/sing v0.1.0
 	golang.org/x/net v0.2.0
 	golang.org/x/sys v0.2.0
-	gvisor.dev/gvisor v0.0.0-20220901235040-6ca97ef2ce1c
+	gvisor.dev/gvisor v0.0.0-20230128000341-b7014294633b
 )
 
 require (
