@@ -123,8 +123,8 @@ func (p IPv4Packet) SourceIP() netip.Addr {
 }
 
 func (p IPv4Packet) SetSourceIP(ip netip.Addr) {
-	if ip.Is4() {
-		copy(p[12:16], ip.AsSlice())
+	if ip.Is4() || ip.Is4In6() {
+		copy(p[12:16], ip.Unmap().AsSlice())
 	}
 }
 
