@@ -2,6 +2,8 @@ github.com/fsnotify/fsnotify v1.6.0 h1:n+5WquG0fcWoWp6xPWfHdbskMCQaFnG6PfBrh1Ky4
 github.com/fsnotify/fsnotify v1.6.0/go.mod h1:sl3t1tCWJFWoRz9R8WJCbQihKKwmorjAbSClcnxKAGw=
 github.com/google/btree v1.0.1 h1:gK4Kx5IaGY9CD5sPJ36FHiBJ6ZXl0kilRiiCj+jdYp4=
 github.com/google/btree v1.0.1/go.mod h1:xXMiIv4Fb/0kKde4SpL7qlzvu5cMJDRkFDxJfI9uaxA=
+github.com/metacubex/gvisor v0.0.0-20230213124051-7a16c835d80e h1:j4j2dlV2d//FAsQlRUriH6nvv36AEAhECbNy7narf1M=
+github.com/metacubex/gvisor v0.0.0-20230213124051-7a16c835d80e/go.mod h1:abc7OdNmWlhcNHz84ECEosd5ND5pnWQmD8W55p/4cuc=
 github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e h1:5CFRo8FJbCuf5s/eTBdZpmMbn8Fe2eSMLNAYfKanA34=
 github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e/go.mod h1:qbt0dWObotCfcjAJJ9AxtFPNSDUfZF+6dCpgKEOBn/g=
 github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61 h1:5+m7c6AkmAylhauulqN/c5dnh8/KssrE9c93TQrXldA=
@@ -22,8 +24,3 @@ golang.org/x/sys v0.2.0 h1:ljd4t30dBnAvMZaQCevtY0xLLD0A+bRZXbgLMLU1F/A=
 golang.org/x/sys v0.2.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/time v0.0.0-20191024005414-555d28b269f0 h1:/5xXl8Y5W96D+TtHSlonuFqGHIWVuyCkGJLwGh9JJFs=
 golang.org/x/time v0.0.0-20191024005414-555d28b269f0/go.mod h1:tRJNPiyCQ0inRvYxbN9jk5I+vvW/OXSQhTDSoE431IQ=
-gvisor.dev/gvisor v0.0.0-20220901235040-6ca97ef2ce1c h1:m5lcgWnL3OElQNVyp3qcncItJ2c0sQlSGjYK2+nJTA4=
-gvisor.dev/gvisor v0.0.0-20220901235040-6ca97ef2ce1c/go.mod h1:TIvkJD0sxe8pIob3p6T8IzxXunlp6yfgktvTNp+DGNM=
-gvisor.dev/gvisor v0.0.0-20230127235637-4e75dc46503d/go.mod h1:94x/o/BlxPAbw4phqHRac0/IzpcQRUP7ZQldDWV3TKU=
-gvisor.dev/gvisor v0.0.0-20230128000341-b7014294633b h1:XFXNTjVvJrnFnXCo3TjLyMi/GqFqb/Hh5mfDW5aY5uw=
-gvisor.dev/gvisor v0.0.0-20230128000341-b7014294633b/go.mod h1:94x/o/BlxPAbw4phqHRac0/IzpcQRUP7ZQldDWV3TKU=
