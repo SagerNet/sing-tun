@@ -206,12 +206,6 @@ func (s *System) acceptLoop(listener net.Listener) {
 }
 
 func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
-	if !packet.Valid() {
-		return E.New("ipv4: invalid packet")
-	}
-	if packet.TimeToLive() == 0x00 {
-		return E.New("ipv4: TTL exceeded")
-	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return s.processIPv4TCP(packet, packet.Payload())
@@ -225,12 +219,6 @@ func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
 }
 
 func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
-	if !packet.Valid() {
-		return E.New("ipv6: invalid packet")
-	}
-	if packet.HopLimit() == 0x00 {
-		return E.New("ipv6: TTL exceeded")
-	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return s.processIPv6TCP(packet, packet.Payload())
@@ -244,9 +232,6 @@ func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
 }
 
 func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.TCPPacket) error {
-	if !header.Valid() {
-		return E.New("ipv4: tcp: invalid packet")
-	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -273,9 +258,6 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 }
 
 func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.TCPPacket) error {
-	if !header.Valid() {
-		return E.New("ipv6: tcp: invalid packet")
-	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -308,9 +290,6 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if packet.FragmentOffset() != 0 {
 		return E.New("ipv4: udp: fragment dropped")
 	}
-	if !header.Valid() {
-		return E.New("ipv4: udp: invalid packet")
-	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -334,9 +313,6 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 }
 
 func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
-	if !header.Valid() {
-		return E.New("ipv6: udp: invalid packet")
-	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {

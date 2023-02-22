@@ -8,8 +8,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/sagernet/abx-go"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/abx"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"github.com/fsnotify/fsnotify"
@@ -104,7 +104,7 @@ func (m *packageManager) updatePackages() error {
 		return err
 	}
 	var decoder *xml.Decoder
-	reader, ok := abx.NewReader(bytes.NewReader(packagesData))
+	reader, ok := abx.NewReader(packagesData)
 	if ok {
 		decoder = xml.NewTokenDecoder(reader)
 	} else {

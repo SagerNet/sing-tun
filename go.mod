@@ -5,12 +5,11 @@ go 1.18
 require (
 	github.com/fsnotify/fsnotify v1.6.0
 	github.com/metacubex/gvisor v0.0.0-20230213124051-7a16c835d80e
-	github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.1.0
-	golang.org/x/net v0.2.0
-	golang.org/x/sys v0.2.0
+	github.com/sagernet/sing v0.1.2
+	golang.org/x/net v0.4.0
+	golang.org/x/sys v0.3.0
 )
 
 require (
