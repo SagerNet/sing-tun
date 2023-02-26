@@ -25,26 +25,36 @@ type NativeTun struct {
 	ruleIndex6        []int
 }
 
-func Open(options Options) (Tun, error) {
-	tunFd, err := open(options.Name)
-	if err != nil {
-		return nil, err
+func New(options Options) (Tun, error) {
+	if options.FileDescriptor == 0 {
+		tunFd, err := open(options.Name)
+		if err != nil {
+			return nil, err
+		}
+		tunLink, err := netlink.LinkByName(options.Name)
+		if err != nil {
+			return nil, E.Errors(err, unix.Close(tunFd))
+		}
+		nativeTun := &NativeTun{
+			tunFd:   tunFd,
+			tunFile: os.NewFile(uintptr(tunFd), "tun"),
+			options: options,
+		}
+		runtime.SetFinalizer(nativeTun.tunFile, nil)
+		err = nativeTun.configure(tunLink)
+		if err != nil {
+			return nil, E.Errors(err, unix.Close(tunFd))
+		}
+		return nativeTun, nil
+	} else {
+		nativeTun := &NativeTun{
+			tunFd:   options.FileDescriptor,
+			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
+			options: options,
+		}
+		runtime.SetFinalizer(nativeTun.tunFile, nil)
+		return nativeTun, nil
 	}
-	tunLink, err := netlink.LinkByName(options.Name)
-	if err != nil {
-		return nil, E.Errors(err, unix.Close(tunFd))
-	}
-	nativeTun := &NativeTun{
-		tunFd:   tunFd,
-		tunFile: os.NewFile(uintptr(tunFd), "tun"),
-		options: options,
-	}
-	runtime.SetFinalizer(nativeTun.tunFile, nil)
-	err = nativeTun.configure(tunLink)
-	if err != nil {
-		return nil, E.Errors(err, unix.Close(tunFd))
-	}
-	return nativeTun, nil
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
