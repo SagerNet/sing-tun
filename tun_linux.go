@@ -525,6 +525,9 @@ func (t *NativeTun) setRules() error {
 }
 
 func (t *NativeTun) unsetRoute() error {
+	if t.options.FileDescriptor > 0 {
+		return nil
+	}
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return err
@@ -540,6 +543,9 @@ func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
 }
 
 func (t *NativeTun) unsetRules() error {
+	if t.options.FileDescriptor > 0 {
+		return nil
+	}
 	if len(t.ruleIndex6) > 0 {
 		for _, index := range t.ruleIndex6 {
 			ruleToDel := netlink.NewRule()
