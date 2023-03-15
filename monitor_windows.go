@@ -72,6 +72,10 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	var index int
 
 	for _, row := range rows {
+		if row.DestinationPrefix.PrefixLength != 0 {
+			continue
+		}
+
 		if row.NextHop.Addr() == zeroTierFakeGatewayIp {
 			continue
 		}
