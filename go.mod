@@ -7,9 +7,9 @@ require (
 	github.com/metacubex/gvisor v0.0.0-20230315105319-c03631d706be
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.1.7
+	github.com/sagernet/sing v0.2.1-0.20230323071235-f8038854d286
 	golang.org/x/net v0.7.0
-	golang.org/x/sys v0.5.0
+	golang.org/x/sys v0.6.0
 )
 
 require (
