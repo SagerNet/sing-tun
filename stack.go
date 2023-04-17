@@ -34,7 +34,7 @@ func NewStack(
 ) (Stack, error) {
 	switch stack {
 	case "":
-		return defaultStack(options)
+		return NewSystem(options)
 	case "gvisor":
 		return NewGVisor(options)
 	case "system":
