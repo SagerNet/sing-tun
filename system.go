@@ -10,6 +10,7 @@ import (
 	"github.com/sagernet/sing-tun/internal/clashtcpip"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -20,6 +21,7 @@ import (
 type System struct {
 	ctx                context.Context
 	tun                Tun
+	tunName            string
 	mtu                uint32
 	router             Router
 	handler            Handler
@@ -38,6 +40,7 @@ type System struct {
 	tcpNat             *TCPNat
 	udpNat             *udpnat.Service[netip.AddrPort]
 	routeMapping       *RouteMapping
+	underPlatform      bool
 }
 
 type Session struct {
@@ -51,6 +54,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
 		ctx:           options.Context,
 		tun:           options.Tun,
+		tunName:       options.Name,
 		mtu:           options.MTU,
 		udpTimeout:    options.UDPTimeout,
 		router:        options.Router,
@@ -58,6 +62,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		logger:        options.Logger,
 		inet4Prefixes: options.Inet4Address,
 		inet6Prefixes: options.Inet6Address,
+		underPlatform: options.UnderPlatform,
 		routeMapping:  NewRouteMapping(options.UDPTimeout),
 	}
 	if len(options.Inet4Address) > 0 {
@@ -88,8 +93,12 @@ func (s *System) Close() error {
 }
 
 func (s *System) Start() error {
+	var listener net.ListenConfig
+	if s.underPlatform {
+		listener.Control = control.Append(listener.Control, control.BindToInterface(control.DefaultInterfaceFinder(), s.tunName, -1))
+	}
 	if s.inet4Address.IsValid() {
-		tcpListener, err := net.Listen("tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+		tcpListener, err := listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
 		if err != nil {
 			return err
 		}
@@ -98,7 +107,7 @@ func (s *System) Start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	if s.inet6Address.IsValid() {
-		tcpListener, err := net.Listen("tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+		tcpListener, err := listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
 		if err != nil {
 			return err
 		}
