@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -85,6 +87,13 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	}
 	for _, rawRouteMessage := range routeMessages {
 		routeMessage := rawRouteMessage.(*route.RouteMessage)
+		routeInterface, err := net.InterfaceByIndex(routeMessage.Index)
+		if err != nil {
+			return err
+		}
+		if runtime.GOOS == "ios" && strings.HasPrefix(routeInterface.Name, "utun") {
+			continue
+		}
 		if common.Any(common.FilterIsInstance(routeMessage.Addrs, func(it route.Addr) (*route.Inet4Addr, bool) {
 			addr, loaded := it.(*route.Inet4Addr)
 			return addr, loaded
@@ -95,11 +104,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			oldIndex := m.defaultInterfaceIndex
 
 			m.defaultInterfaceIndex = routeMessage.Index
-			defaultInterface, err := net.InterfaceByIndex(routeMessage.Index)
-			if err != nil {
-				return err
-			}
-			m.defaultInterfaceName = defaultInterface.Name
+			m.defaultInterfaceName = routeInterface.Name
 			if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
 				return nil
 			}
