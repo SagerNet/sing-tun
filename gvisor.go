@@ -57,7 +57,7 @@ func NewGVisor(
 		return nil, E.New("gVisor stack is unsupported on current platform")
 	}
 
-	return &GVisor{
+	gStack := &GVisor{
 		ctx:                    options.Context,
 		tun:                    gTun,
 		tunMtu:                 options.MTU,
@@ -66,8 +66,11 @@ func NewGVisor(
 		router:                 options.Router,
 		handler:                options.Handler,
 		logger:                 options.Logger,
-		routeMapping:           NewRouteMapping(options.UDPTimeout),
-	}, nil
+	}
+	if gStack.router != nil {
+		gStack.routeMapping = NewRouteMapping(options.Context, options.UDPTimeout)
+	}
+	return gStack, nil
 }
 
 func (t *GVisor) Start() error {
