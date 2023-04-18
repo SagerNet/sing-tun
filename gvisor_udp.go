@@ -29,7 +29,7 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, u
 	return &UDPForwarder{
 		ctx:    ctx,
 		stack:  stack,
-		udpNat: udpnat.New[netip.AddrPort](udpTimeout, handler),
+		udpNat: udpnat.New[netip.AddrPort](ctx, udpTimeout, handler),
 	}
 }
 

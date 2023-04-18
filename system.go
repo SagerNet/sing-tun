@@ -116,7 +116,7 @@ func (s *System) Start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	s.tcpNat = NewNat()
-	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
+	s.udpNat = udpnat.New[netip.AddrPort](s.ctx, s.udpTimeout, s.handler)
 	go s.tunLoop()
 	return nil
 }
