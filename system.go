@@ -63,7 +63,9 @@ func NewSystem(options StackOptions) (Stack, error) {
 		inet4Prefixes: options.Inet4Address,
 		inet6Prefixes: options.Inet6Address,
 		underPlatform: options.UnderPlatform,
-		routeMapping:  NewRouteMapping(options.UDPTimeout),
+	}
+	if stack.router != nil {
+		stack.routeMapping = NewRouteMapping(options.UDPTimeout)
 	}
 	if len(options.Inet4Address) > 0 {
 		if options.Inet4Address[0].Bits() == 32 {
@@ -115,7 +117,7 @@ func (s *System) Start() error {
 		s.tcpPort6 = M.SocksaddrFromNet(tcpListener.Addr()).Port
 		go s.acceptLoop(tcpListener)
 	}
-	s.tcpNat = NewNat()
+	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
 	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
 	go s.tunLoop()
 	return nil
@@ -208,13 +210,14 @@ func (s *System) acceptLoop(listener net.Listener) {
 			}
 		}
 		go func() {
-			s.handler.NewConnection(s.ctx, conn, M.Metadata{
+			_ = s.handler.NewConnection(s.ctx, conn, M.Metadata{
 				Source:      M.SocksaddrFromNetIP(session.Source),
 				Destination: destination,
 			})
-			conn.Close()
-			time.Sleep(time.Second)
-			s.tcpNat.Revoke(connPort, session)
+			if tcpConn, isTCPConn := conn.(*net.TCPConn); isTCPConn {
+				_ = tcpConn.SetLinger(0)
+			}
+			_ = conn.Close()
 		}()
 	}
 }
