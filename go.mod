@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/fsnotify/fsnotify v1.6.0
-	github.com/metacubex/gvisor v0.0.0-20230323114922-412956fb6a03
+	github.com/metacubex/gvisor v0.0.0-20230417114019-3c3ee672d60c
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
 	github.com/sagernet/sing v0.2.1
