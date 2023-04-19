@@ -68,7 +68,7 @@ func NewGVisor(
 		logger:                 options.Logger,
 	}
 	if gStack.router != nil {
-		gStack.routeMapping = NewRouteMapping(options.Context, options.UDPTimeout)
+		gStack.routeMapping = NewRouteMapping(options.UDPTimeout)
 	}
 	return gStack, nil
 }

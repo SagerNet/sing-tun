@@ -65,7 +65,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		underPlatform: options.UnderPlatform,
 	}
 	if stack.router != nil {
-		stack.routeMapping = NewRouteMapping(options.Context, options.UDPTimeout)
+		stack.routeMapping = NewRouteMapping(options.UDPTimeout)
 	}
 	if len(options.Inet4Address) > 0 {
 		if options.Inet4Address[0].Bits() == 32 {
@@ -118,7 +118,7 @@ func (s *System) Start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
-	s.udpNat = udpnat.New[netip.AddrPort](s.ctx, s.udpTimeout, s.handler)
+	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
 	go s.tunLoop()
 	return nil
 }

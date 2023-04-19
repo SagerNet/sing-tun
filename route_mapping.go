@@ -1,8 +1,6 @@
 package tun
 
 import (
-	"context"
-
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/cache"
 )
@@ -11,10 +9,9 @@ type RouteMapping struct {
 	status *cache.LruCache[RouteSession, RouteAction]
 }
 
-func NewRouteMapping(ctx context.Context, maxAge int64) *RouteMapping {
+func NewRouteMapping(maxAge int64) *RouteMapping {
 	return &RouteMapping{
 		status: cache.New(
-			cache.WithContext[RouteSession, RouteAction](ctx),
 			cache.WithAge[RouteSession, RouteAction](maxAge),
 			cache.WithUpdateAgeOnGet[RouteSession, RouteAction](),
 			cache.WithEvict[RouteSession, RouteAction](func(key RouteSession, conn RouteAction) {
