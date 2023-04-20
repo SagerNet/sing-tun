@@ -40,7 +40,8 @@ type System struct {
 	tcpNat             *TCPNat
 	udpNat             *udpnat.Service[netip.AddrPort]
 	routeMapping       *RouteMapping
-	underPlatform      bool
+	bindInterface      bool
+	interfaceFinder    control.InterfaceFinder
 }
 
 type Session struct {
@@ -52,17 +53,18 @@ type Session struct {
 
 func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
-		ctx:           options.Context,
-		tun:           options.Tun,
-		tunName:       options.Name,
-		mtu:           options.MTU,
-		udpTimeout:    options.UDPTimeout,
-		router:        options.Router,
-		handler:       options.Handler,
-		logger:        options.Logger,
-		inet4Prefixes: options.Inet4Address,
-		inet6Prefixes: options.Inet6Address,
-		underPlatform: options.UnderPlatform,
+		ctx:             options.Context,
+		tun:             options.Tun,
+		tunName:         options.Name,
+		mtu:             options.MTU,
+		udpTimeout:      options.UDPTimeout,
+		router:          options.Router,
+		handler:         options.Handler,
+		logger:          options.Logger,
+		inet4Prefixes:   options.Inet4Address,
+		inet6Prefixes:   options.Inet6Address,
+		bindInterface:   options.ForwarderBindInterface,
+		interfaceFinder: options.InterfaceFinder,
 	}
 	if stack.router != nil {
 		stack.routeMapping = NewRouteMapping(options.UDPTimeout)
@@ -96,8 +98,14 @@ func (s *System) Close() error {
 
 func (s *System) Start() error {
 	var listener net.ListenConfig
-	if s.underPlatform {
-		listener.Control = control.Append(listener.Control, control.BindToInterface(control.DefaultInterfaceFinder(), s.tunName, -1))
+	if s.bindInterface {
+		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
+			err := control.BindToInterface(s.interfaceFinder, s.tunName, -1)(network, address, conn)
+			if err != nil {
+				s.logger.Warn("bind forwarder to interface: ", err)
+			}
+			return nil
+		})
 	}
 	if s.inet4Address.IsValid() {
 		tcpListener, err := listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
