@@ -155,7 +155,7 @@ func (t *GVisor) Start() error {
 			}
 		}()
 	})
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, buffer *stack.PacketBuffer) bool {
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, buffer stack.PacketBufferPtr) bool {
 		if t.router != nil {
 			var routeSession RouteSession
 			routeSession.Network = syscall.IPPROTO_TCP
@@ -218,7 +218,7 @@ func (t *GVisor) Start() error {
 				}
 			}()
 		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, buffer *stack.PacketBuffer) bool {
+		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, buffer stack.PacketBufferPtr) bool {
 			if t.router != nil {
 				var routeSession RouteSession
 				routeSession.Network = syscall.IPPROTO_UDP

@@ -9,11 +9,11 @@ require (
 	github.com/sagernet/sing v0.2.4
 	golang.org/x/net v0.9.0
 	golang.org/x/sys v0.7.0
-	gvisor.dev/gvisor v0.0.0-20220901235040-6ca97ef2ce1c
+	gvisor.dev/gvisor v0.0.0-20230415003630-3981d5d5e523
 )
 
 require (
 	github.com/google/btree v1.0.1 // indirect
 	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
-	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
+	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
 )
