@@ -42,6 +42,7 @@ type System struct {
 	routeMapping       *RouteMapping
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
+	fixWindowsFirewall bool
 }
 
 type Session struct {
@@ -53,18 +54,19 @@ type Session struct {
 
 func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
-		ctx:             options.Context,
-		tun:             options.Tun,
-		tunName:         options.Name,
-		mtu:             options.MTU,
-		udpTimeout:      options.UDPTimeout,
-		router:          options.Router,
-		handler:         options.Handler,
-		logger:          options.Logger,
-		inet4Prefixes:   options.Inet4Address,
-		inet6Prefixes:   options.Inet6Address,
-		bindInterface:   options.ForwarderBindInterface,
-		interfaceFinder: options.InterfaceFinder,
+		ctx:                options.Context,
+		tun:                options.Tun,
+		tunName:            options.Name,
+		mtu:                options.MTU,
+		udpTimeout:         options.UDPTimeout,
+		router:             options.Router,
+		handler:            options.Handler,
+		logger:             options.Logger,
+		inet4Prefixes:      options.Inet4Address,
+		inet6Prefixes:      options.Inet6Address,
+		bindInterface:      options.ForwarderBindInterface,
+		interfaceFinder:    options.InterfaceFinder,
+		fixWindowsFirewall: options.ExperimentalFixWindowsFirewall,
 	}
 	if stack.router != nil {
 		stack.routeMapping = NewRouteMapping(options.UDPTimeout)
@@ -97,6 +99,12 @@ func (s *System) Close() error {
 }
 
 func (s *System) Start() error {
+	if s.fixWindowsFirewall {
+		err := fixWindowsFirewall()
+		if err != nil {
+			return E.Cause(err, "fix windows firewall for system stack")
+		}
+	}
 	var listener net.ListenConfig
 	if s.bindInterface {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {

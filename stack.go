@@ -15,19 +15,20 @@ type Stack interface {
 }
 
 type StackOptions struct {
-	Context                context.Context
-	Tun                    Tun
-	Name                   string
-	MTU                    uint32
-	Inet4Address           []netip.Prefix
-	Inet6Address           []netip.Prefix
-	EndpointIndependentNat bool
-	UDPTimeout             int64
-	Router                 Router
-	Handler                Handler
-	Logger                 logger.Logger
-	ForwarderBindInterface bool
-	InterfaceFinder        control.InterfaceFinder
+	Context                        context.Context
+	Tun                            Tun
+	Name                           string
+	MTU                            uint32
+	Inet4Address                   []netip.Prefix
+	Inet6Address                   []netip.Prefix
+	EndpointIndependentNat         bool
+	UDPTimeout                     int64
+	Router                         Router
+	Handler                        Handler
+	Logger                         logger.Logger
+	ForwarderBindInterface         bool
+	InterfaceFinder                control.InterfaceFinder
+	ExperimentalFixWindowsFirewall bool
 }
 
 func NewStack(
