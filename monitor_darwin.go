@@ -122,10 +122,15 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		break
 	}
 	if defaultInterface == nil {
-		defaultInterface, err = getDefaultInterfaceBySocket()
-		if err != nil {
-			return err
+		if m.options.UnderNetworkExtension {
+			defaultInterface, err = getDefaultInterfaceBySocket()
+			if err != nil {
+				return err
+			}
 		}
+	}
+	if defaultInterface == nil {
+		return ErrNoRoute
 	}
 	oldInterface := m.defaultInterfaceName
 	oldIndex := m.defaultInterfaceIndex
