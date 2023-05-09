@@ -39,5 +39,6 @@ type DefaultInterfaceMonitor interface {
 }
 
 type DefaultInterfaceMonitorOptions struct {
-	OverrideAndroidVPN bool
+	OverrideAndroidVPN    bool
+	UnderNetworkExtension bool
 }
