@@ -19,7 +19,7 @@ func fixWindowsFirewall() error {
 		isPWSH = false
 	}
 	if err != nil {
-		return nil
+		return err
 	}
 	ruleName := "sing-tun rule for " + os.Args[0]
 	commandPrefix := []string{"-NoProfile", "-NonInteractive"}
