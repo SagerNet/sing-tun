@@ -3,7 +3,7 @@
 package tun
 
 import (
-	"gvisor.dev/gvisor/pkg/bufferv2"
+	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -51,16 +51,16 @@ func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 
 func (e *WintunEndpoint) dispatchLoop() {
 	for {
-		var buffer bufferv2.Buffer
+		var packetBuffer buffer.Buffer
 		err := e.tun.ReadFunc(func(b []byte) {
-			buffer = bufferv2.MakeWithData(b)
+			packetBuffer = buffer.MakeWithData(b)
 		})
 		if err != nil {
 			break
 		}
-		ihl, ok := buffer.PullUp(0, 1)
+		ihl, ok := packetBuffer.PullUp(0, 1)
 		if !ok {
-			buffer.Release()
+			packetBuffer.Release()
 			continue
 		}
 		var networkProtocol tcpip.NetworkProtocolNumber
@@ -70,12 +70,12 @@ func (e *WintunEndpoint) dispatchLoop() {
 		case header.IPv6Version:
 			networkProtocol = header.IPv6ProtocolNumber
 		default:
-			e.tun.Write(buffer.Flatten())
-			buffer.Release()
+			e.tun.Write(packetBuffer.Flatten())
+			packetBuffer.Release()
 			continue
 		}
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer,
+			Payload:           packetBuffer,
 			IsForwardedPacket: true,
 		})
 		dispatcher := e.dispatcher

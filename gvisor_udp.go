@@ -5,7 +5,6 @@ package tun
 import (
 	"context"
 	"math"
-	"net"
 	"net/netip"
 
 	"github.com/sagernet/sing/common/buf"
@@ -13,7 +12,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
 
-	"gvisor.dev/gvisor/pkg/bufferv2"
+	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -36,8 +35,8 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, u
 
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt stack.PacketBufferPtr) bool {
 	var upstreamMetadata M.Metadata
-	upstreamMetadata.Source = M.SocksaddrFrom(M.AddrFromIP(net.IP(id.RemoteAddress)), id.RemotePort)
-	upstreamMetadata.Destination = M.SocksaddrFrom(M.AddrFromIP(net.IP(id.LocalAddress)), id.LocalPort)
+	upstreamMetadata.Source = M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
+	upstreamMetadata.Destination = M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
 	var netProto tcpip.NetworkProtocolNumber
 	if upstreamMetadata.Source.IsIPv4() {
 		netProto = header.IPv4ProtocolNumber
@@ -63,12 +62,12 @@ type UDPBackWriter struct {
 	sourceNetwork tcpip.NetworkProtocolNumber
 }
 
-func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	defer buffer.Release()
+func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
+	defer packetBuffer.Release()
 
 	route, err := w.stack.FindRoute(
 		defaultNIC,
-		tcpip.Address(destination.Addr.AsSlice()),
+		AddressFromAddr(destination.Addr),
 		w.source,
 		w.sourceNetwork,
 		false,
@@ -80,7 +79,7 @@ func (w *UDPBackWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
 
 	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{
 		ReserveHeaderBytes: header.UDPMinimumSize + int(route.MaxHeaderLength()),
-		Payload:            bufferv2.MakeWithData(buffer.Bytes()),
+		Payload:            buffer.MakeWithData(packetBuffer.Bytes()),
 	})
 	defer packet.DecRef()
 

@@ -25,8 +25,8 @@ type NativeTun struct {
 	tunFile      *os.File
 	tunWriter    N.VectorisedWriter
 	mtu          uint32
-	inet4Address string
-	inet6Address string
+	inet4Address [4]byte
+	inet6Address [16]byte
 }
 
 func New(options Options) (Tun, error) {
@@ -57,10 +57,10 @@ func New(options Options) (Tun, error) {
 		mtu:     options.MTU,
 	}
 	if len(options.Inet4Address) > 0 {
-		nativeTun.inet4Address = string(options.Inet4Address[0].Addr().AsSlice())
+		nativeTun.inet4Address = options.Inet4Address[0].Addr().As4()
 	}
 	if len(options.Inet6Address) > 0 {
-		nativeTun.inet6Address = string(options.Inet6Address[0].Addr().AsSlice())
+		nativeTun.inet6Address = options.Inet6Address[0].Addr().As16()
 	}
 	var ok bool
 	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)

@@ -4,8 +4,7 @@ package tun
 
 import (
 	"context"
-	"net"
-	"syscall"
+	"net/netip"
 	"time"
 
 	"github.com/sagernet/sing/common/bufio"
@@ -36,12 +35,10 @@ type GVisor struct {
 	tunMtu                 uint32
 	endpointIndependentNat bool
 	udpTimeout             int64
-	router                 Router
 	handler                Handler
 	logger                 logger.Logger
 	stack                  *stack.Stack
 	endpoint               stack.LinkEndpoint
-	routeMapping           *RouteMapping
 }
 
 type GVisorTun interface {
@@ -63,12 +60,8 @@ func NewGVisor(
 		tunMtu:                 options.MTU,
 		endpointIndependentNat: options.EndpointIndependentNat,
 		udpTimeout:             options.UDPTimeout,
-		router:                 options.Router,
 		handler:                options.Handler,
 		logger:                 options.Logger,
-	}
-	if gStack.router != nil {
-		gStack.routeMapping = NewRouteMapping(options.UDPTimeout)
 	}
 	return gStack, nil
 }
@@ -155,44 +148,7 @@ func (t *GVisor) Start() error {
 			}
 		}()
 	})
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, func(id stack.TransportEndpointID, buffer stack.PacketBufferPtr) bool {
-		if t.router != nil {
-			var routeSession RouteSession
-			routeSession.Network = syscall.IPPROTO_TCP
-			var ipHdr header.Network
-			if buffer.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-				routeSession.IPVersion = 4
-				ipHdr = header.IPv4(buffer.NetworkHeader().Slice())
-			} else {
-				routeSession.IPVersion = 6
-				ipHdr = header.IPv6(buffer.NetworkHeader().Slice())
-			}
-			tcpHdr := header.TCP(buffer.TransportHeader().Slice())
-			routeSession.Source = M.AddrPortFrom(net.IP(ipHdr.SourceAddress()), tcpHdr.SourcePort())
-			routeSession.Destination = M.AddrPortFrom(net.IP(ipHdr.DestinationAddress()), tcpHdr.DestinationPort())
-			action := t.routeMapping.Lookup(routeSession, func() RouteAction {
-				if routeSession.IPVersion == 4 {
-					return t.router.RouteConnection(routeSession, &systemTCPDirectPacketWriter4{t.tun, routeSession.Source})
-				} else {
-					return t.router.RouteConnection(routeSession, &systemTCPDirectPacketWriter6{t.tun, routeSession.Source})
-				}
-			})
-			switch actionType := action.(type) {
-			case *ActionBlock:
-				// TODO: send icmp unreachable
-				return true
-			case *ActionDirect:
-				buffer.IncRef()
-				err = actionType.WritePacketBuffer(buffer)
-				if err != nil {
-					t.logger.Trace("route gvisor tcp packet: ", err)
-				}
-				return true
-			}
-		}
-		return tcpForwarder.HandlePacket(id, buffer)
-	})
-
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	if !t.endpointIndependentNat {
 		udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
 			var wq waiter.Queue
@@ -218,43 +174,7 @@ func (t *GVisor) Start() error {
 				}
 			}()
 		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, func(id stack.TransportEndpointID, buffer stack.PacketBufferPtr) bool {
-			if t.router != nil {
-				var routeSession RouteSession
-				routeSession.Network = syscall.IPPROTO_UDP
-				var ipHdr header.Network
-				if buffer.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-					routeSession.IPVersion = 4
-					ipHdr = header.IPv4(buffer.NetworkHeader().Slice())
-				} else {
-					routeSession.IPVersion = 6
-					ipHdr = header.IPv6(buffer.NetworkHeader().Slice())
-				}
-				udpHdr := header.UDP(buffer.TransportHeader().Slice())
-				routeSession.Source = M.AddrPortFrom(net.IP(ipHdr.SourceAddress()), udpHdr.SourcePort())
-				routeSession.Destination = M.AddrPortFrom(net.IP(ipHdr.DestinationAddress()), udpHdr.DestinationPort())
-				action := t.routeMapping.Lookup(routeSession, func() RouteAction {
-					if routeSession.IPVersion == 4 {
-						return t.router.RouteConnection(routeSession, &systemUDPDirectPacketWriter4{t.tun, routeSession.Source})
-					} else {
-						return t.router.RouteConnection(routeSession, &systemUDPDirectPacketWriter6{t.tun, routeSession.Source})
-					}
-				})
-				switch actionType := action.(type) {
-				case *ActionBlock:
-					// TODO: send icmp unreachable
-					return true
-				case *ActionDirect:
-					buffer.IncRef()
-					err = actionType.WritePacketBuffer(buffer)
-					if err != nil {
-						t.logger.Trace("route gvisor udp packet: ", err)
-					}
-					return true
-				}
-			}
-			return udpForwarder.HandlePacket(id, buffer)
-		})
+		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 	} else {
 		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
 	}
@@ -271,4 +191,20 @@ func (t *GVisor) Close() error {
 		endpoint.Abort()
 	}
 	return nil
+}
+
+func AddressFromAddr(destination netip.Addr) tcpip.Address {
+	if destination.Is6() {
+		return tcpip.AddrFrom16(destination.As16())
+	} else {
+		return tcpip.AddrFrom4(destination.As4())
+	}
+}
+
+func AddrFromAddress(address tcpip.Address) netip.Addr {
+	if address.Len() == 16 {
+		return netip.AddrFrom16(address.As16())
+	} else {
+		return netip.AddrFrom4(address.As4())
+	}
 }
