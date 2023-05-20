@@ -2,46 +2,24 @@ package tun
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 
-	E "github.com/sagernet/sing/common/exceptions"
-	F "github.com/sagernet/sing/common/format"
-	"github.com/sagernet/sing/common/shell"
+	"github.com/sagernet/sing-tun/internal/winfw"
 )
 
 func fixWindowsFirewall() error {
-	const shellStringSplit = "\""
-	isPWSH := true
-	powershell, err := exec.LookPath("pwsh.exe")
+	absPath, err := filepath.Abs(os.Args[0])
 	if err != nil {
-		powershell, err = exec.LookPath("powershell.exe")
-		isPWSH = false
+		return err
 	}
-	if err != nil {
-		return nil
+	rule := winfw.FWRule{
+		Name:            "sing-tun (" + absPath + ")",
+		ApplicationName: absPath,
+		Enabled:         true,
+		Protocol:        winfw.NET_FW_IP_PROTOCOL_TCP,
+		Direction:       winfw.NET_FW_RULE_DIR_IN,
+		Action:          winfw.NET_FW_ACTION_ALLOW,
 	}
-	ruleName := "sing-tun rule for " + os.Args[0]
-	commandPrefix := []string{"-NoProfile", "-NonInteractive"}
-	if isPWSH {
-		commandPrefix = append(commandPrefix, "-Command")
-	}
-	err = shell.Exec(powershell, append(commandPrefix,
-		F.ToString("Get-NetFirewallRule -Name ", shellStringSplit, ruleName, shellStringSplit))...).Run()
-	if err == nil {
-		return nil
-	}
-	fileName := filepath.Base(os.Args[0])
-	output, err := shell.Exec(powershell, append(commandPrefix,
-		F.ToString("New-NetFirewallRule",
-			" -Name ", shellStringSplit, ruleName, shellStringSplit,
-			" -DisplayName ", shellStringSplit, "sing-tun (", fileName, ")", shellStringSplit,
-			" -Program ", shellStringSplit, os.Args[0], shellStringSplit,
-			" -Direction Inbound",
-			" -Protocol TCP",
-			" -Action Allow"))...).Read()
-	if err != nil {
-		return E.Extend(err, output)
-	}
-	return nil
+	_, err = winfw.FirewallRuleAddAdvanced(rule)
+	return err
 }
