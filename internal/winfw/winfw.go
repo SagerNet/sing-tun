@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"runtime"
 
-	ole "github.com/go-ole/go-ole"
+	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
 	"github.com/scjalliance/comshim"
 )
@@ -83,7 +83,6 @@ func FirewallRuleAddAdvanced(rule FWRule) (bool, error) {
 
 // firewallRuleAdd is universal function to add all kinds of rules.
 func firewallRuleAdd(name, description, group, appPath, serviceName, ports, remotePorts, localAddresses, remoteAddresses, icmpTypes string, protocol, direction, action, profile int32, enabled, edgeTraversal bool) (bool, error) {
-
 	if name == "" {
 		return false, fmt.Errorf("empty FW Rule name, name is mandatory")
 	}
@@ -265,7 +264,6 @@ func firewallAPIInit() (*ole.IUnknown, *ole.IDispatch, error) {
 	}
 
 	return unknown, fwPolicy, nil
-
 }
 
 // firewallAPIRelease cleans memory.
