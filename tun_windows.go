@@ -14,11 +14,13 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
+	"github.com/sagernet/sing-tun/internal/winnet"
 	"github.com/sagernet/sing-tun/internal/winsys"
 	"github.com/sagernet/sing-tun/internal/wintun"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/windnsapi"
 
+	"github.com/go-ole/go-ole"
 	"golang.org/x/sys/windows"
 )
 
@@ -63,8 +65,45 @@ func New(options Options) (WinTun, error) {
 	return nativeTun, nil
 }
 
-func (t *NativeTun) configure() error {
+func (t *NativeTun) configure() (retErr error) {
 	luid := winipcfg.LUID(t.adapter.LUID())
+
+	// Send non-nil return errors to retErrc, to interrupt our background
+	// setPrivateNetwork goroutine.
+	retErrc := make(chan error, 1)
+	defer func() {
+		if retErr != nil {
+			retErrc <- retErr
+		}
+	}()
+
+	go func() {
+		// It takes a weirdly long time for Windows to notice the
+		// new interface has come up. Poll periodically until it
+		// does.
+		const tries = 20
+		for i := 0; i < tries; i++ {
+			found, err := setPrivateNetwork(luid)
+			if err != nil {
+				//log.Printf("setPrivateNetwork(try=%d): %v", i, err)
+			} else {
+				if found {
+					if i > 0 {
+						//log.Printf("setPrivateNetwork(try=%d): success", i)
+					}
+					return
+				}
+				//log.Printf("setPrivateNetwork(try=%d): not found", i)
+			}
+			select {
+			case <-time.After(time.Second):
+			case <-retErrc:
+				return
+			}
+		}
+		//log.Printf("setPrivateNetwork: adapter LUID %v not found after %d tries, giving up", luid, tries)
+	}()
+
 	if len(t.options.Inet4Address) > 0 {
 		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), t.options.Inet4Address)
 		if err != nil {
@@ -338,6 +377,71 @@ func (t *NativeTun) configure() error {
 	}
 
 	return nil
+}
+
+// setPrivateNetwork marks the provided network adapter's category to private.
+// It returns (false, nil) if the adapter was not found.
+func setPrivateNetwork(ifcLUID winipcfg.LUID) (bool, error) {
+	// NLM_NETWORK_CATEGORY values.
+	const (
+		categoryPublic  = 0
+		categoryPrivate = 1
+		categoryDomain  = 2
+	)
+
+	ifcGUID, err := ifcLUID.GUID()
+	if err != nil {
+		return false, E.Cause(err, "ifcLUID.GUID")
+	}
+
+	var c ole.Connection
+	err = c.Initialize()
+	if err != nil {
+		return false, E.Cause(err, "ole.Connection.Initialize")
+	}
+	defer c.Uninitialize()
+
+	m, err := winnet.NewNetworkListManager(&c)
+	if err != nil {
+		return false, E.Cause(err, "winnet.NewNetworkListManager")
+	}
+	defer m.Release()
+
+	cl, err := m.GetNetworkConnections()
+	if err != nil {
+		return false, E.Cause(err, "m.GetNetworkConnections")
+	}
+	defer cl.Release()
+
+	for _, nco := range cl {
+		aid, err := nco.GetAdapterId()
+		if err != nil {
+			return false, E.Cause(err, "nco.GetAdapterId")
+		}
+		if aid != ifcGUID.String() {
+			continue
+		}
+
+		n, err := nco.GetNetwork()
+		if err != nil {
+			return false, E.Cause(err, "nco.GetNetwork")
+		}
+		defer n.Release()
+
+		cat, err := n.GetCategory()
+		if err != nil {
+			return false, E.Cause(err, "n.GetCategory")
+		}
+
+		if cat != categoryPrivate {
+			if err = n.SetCategory(categoryPrivate); err != nil {
+				return false, E.Cause(err, "n.SetCategory")
+			}
+		}
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
