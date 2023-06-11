@@ -23,7 +23,6 @@ type System struct {
 	tun                Tun
 	tunName            string
 	mtu                uint32
-	router             Router
 	handler            Handler
 	logger             logger.Logger
 	inet4Prefixes      []netip.Prefix
@@ -39,7 +38,6 @@ type System struct {
 	tcpPort6           uint16
 	tcpNat             *TCPNat
 	udpNat             *udpnat.Service[netip.AddrPort]
-	routeMapping       *RouteMapping
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
 }
@@ -58,16 +56,12 @@ func NewSystem(options StackOptions) (Stack, error) {
 		tunName:         options.Name,
 		mtu:             options.MTU,
 		udpTimeout:      options.UDPTimeout,
-		router:          options.Router,
 		handler:         options.Handler,
 		logger:          options.Logger,
 		inet4Prefixes:   options.Inet4Address,
 		inet6Prefixes:   options.Inet6Address,
 		bindInterface:   options.ForwarderBindInterface,
 		interfaceFinder: options.InterfaceFinder,
-	}
-	if stack.router != nil {
-		stack.routeMapping = NewRouteMapping(options.UDPTimeout)
 	}
 	if len(options.Inet4Address) > 0 {
 		if options.Inet4Address[0].Bits() == 32 {
@@ -275,21 +269,6 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		packet.SetDestinationIP(session.Source.Addr())
 		header.SetDestinationPort(session.Source.Port())
 	} else {
-		if s.router != nil {
-			session := RouteSession{4, syscall.IPPROTO_TCP, source, destination}
-			action := s.routeMapping.Lookup(session, func() RouteAction {
-				return s.router.RouteConnection(session, &systemTCPDirectPacketWriter4{s.tun, source})
-			})
-			switch actionType := action.(type) {
-			case *ActionBlock:
-				// TODO: send ICMP unreachable
-				return nil
-			case *ActionDirect:
-				return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-					return E.Cause(err, "route ipv4 tcp packet")
-				})
-			}
-		}
 		natPort := s.tcpNat.Lookup(source, destination)
 		packet.SetSourceIP(s.inet4Address)
 		header.SetSourcePort(natPort)
@@ -316,21 +295,6 @@ func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		packet.SetDestinationIP(session.Source.Addr())
 		header.SetDestinationPort(session.Source.Port())
 	} else {
-		if s.router != nil {
-			session := RouteSession{6, syscall.IPPROTO_TCP, source, destination}
-			action := s.routeMapping.Lookup(session, func() RouteAction {
-				return s.router.RouteConnection(session, &systemTCPDirectPacketWriter6{s.tun, source})
-			})
-			switch actionType := action.(type) {
-			case *ActionBlock:
-				// TODO: send RST
-				return nil
-			case *ActionDirect:
-				return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-					return E.Cause(err, "route ipv6 tcp packet")
-				})
-			}
-		}
 		natPort := s.tcpNat.Lookup(source, destination)
 		packet.SetSourceIP(s.inet6Address)
 		header.SetSourcePort(natPort)
@@ -353,21 +317,6 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
 		return common.Error(s.tun.Write(packet))
-	}
-	if s.router != nil {
-		routeSession := RouteSession{4, syscall.IPPROTO_UDP, source, destination}
-		action := s.routeMapping.Lookup(routeSession, func() RouteAction {
-			return s.router.RouteConnection(routeSession, &systemUDPDirectPacketWriter4{s.tun, source})
-		})
-		switch actionType := action.(type) {
-		case *ActionBlock:
-			// TODO: send icmp unreachable
-			return nil
-		case *ActionDirect:
-			return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-				return E.Cause(err, "route ipv4 udp packet")
-			})
-		}
 	}
 	data := buf.As(header.Payload())
 	if data.Len() == 0 {
@@ -392,21 +341,6 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	if !destination.Addr().IsGlobalUnicast() {
 		return common.Error(s.tun.Write(packet))
 	}
-	if s.router != nil {
-		routeSession := RouteSession{6, syscall.IPPROTO_UDP, source, destination}
-		action := s.routeMapping.Lookup(routeSession, func() RouteAction {
-			return s.router.RouteConnection(routeSession, &systemUDPDirectPacketWriter6{s.tun, source})
-		})
-		switch actionType := action.(type) {
-		case *ActionBlock:
-			// TODO: send icmp unreachable
-			return nil
-		case *ActionDirect:
-			return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-				return E.Cause(err, "route ipv6 udp packet")
-			})
-		}
-	}
 	data := buf.As(header.Payload())
 	if data.Len() == 0 {
 		return nil
@@ -425,21 +359,6 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 }
 
 func (s *System) processIPv4ICMP(packet clashtcpip.IPv4Packet, header clashtcpip.ICMPPacket) error {
-	if s.router != nil {
-		routeSession := RouteSession{4, clashtcpip.ICMP, netip.AddrPortFrom(packet.SourceIP(), 0), netip.AddrPortFrom(packet.DestinationIP(), 0)}
-		action := s.routeMapping.Lookup(routeSession, func() RouteAction {
-			return s.router.RouteConnection(routeSession, &systemICMPDirectPacketWriter4{s.tun, packet.SourceIP()})
-		})
-		switch actionType := action.(type) {
-		case *ActionBlock:
-			// TODO: send icmp unreachable
-			return nil
-		case *ActionDirect:
-			return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-				return E.Cause(err, "route ipv4 icmp packet")
-			})
-		}
-	}
 	if header.Type() != clashtcpip.ICMPTypePingRequest || header.Code() != 0 {
 		return nil
 	}
@@ -453,21 +372,6 @@ func (s *System) processIPv4ICMP(packet clashtcpip.IPv4Packet, header clashtcpip
 }
 
 func (s *System) processIPv6ICMP(packet clashtcpip.IPv6Packet, header clashtcpip.ICMPv6Packet) error {
-	if s.router != nil {
-		routeSession := RouteSession{6, clashtcpip.ICMPv6, netip.AddrPortFrom(packet.SourceIP(), 0), netip.AddrPortFrom(packet.DestinationIP(), 0)}
-		action := s.routeMapping.Lookup(routeSession, func() RouteAction {
-			return s.router.RouteConnection(routeSession, &systemICMPDirectPacketWriter6{s.tun, packet.SourceIP()})
-		})
-		switch actionType := action.(type) {
-		case *ActionBlock:
-			// TODO: send icmp unreachable
-			return nil
-		case *ActionDirect:
-			return E.Append(nil, actionType.WritePacket(buf.As(packet).ToOwned()), func(err error) error {
-				return E.Cause(err, "route ipv6 icmp packet")
-			})
-		}
-	}
 	if header.Type() != clashtcpip.ICMPv6EchoRequest || header.Code() != 0 {
 		return nil
 	}
