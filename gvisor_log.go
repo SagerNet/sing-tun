@@ -5,7 +5,7 @@ package tun
 import (
 	"time"
 
-	gLog "gvisor.dev/gvisor/pkg/log"
+	gLog "github.com/sagernet/gvisor/pkg/log"
 )
 
 func init() {
