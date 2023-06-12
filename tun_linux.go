@@ -167,7 +167,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
-	setSearchDomainForSystemdResolved(t.options.Name)
+	configureSystemdResulved(t.options)
 
 	if t.options.AutoRoute && runtime.GOOS == "android" {
 		t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
@@ -599,10 +599,26 @@ func (t *NativeTun) routeUpdate(event int) error {
 	return nil
 }
 
-func setSearchDomainForSystemdResolved(interfaceName string) {
+func configureSystemdResulved(options Options) {
 	ctlPath, err := exec.LookPath("resolvectl")
 	if err != nil {
 		return
 	}
-	shell.Exec(ctlPath, "domain", interfaceName, "~.").Run()
+
+	if options.StrictRoute {
+		if len(options.Inet4Address) > 0 && len(options.Inet6Address) > 0 {
+			shell.Exec(ctlPath, "dns", options.Name, options.Inet4Address[0].Addr().Next().String(), options.Inet6Address[0].Addr().Next().String()).Run()
+		} else {
+			if len(options.Inet4Address) > 0 {
+				shell.Exec(ctlPath, "dns", options.Name, options.Inet4Address[0].Addr().Next().String()).Run()
+			}
+			if len(options.Inet6Address) > 0 {
+				shell.Exec(ctlPath, "dns", options.Name, options.Inet6Address[0].Addr().Next().String()).Run()
+			}
+		}
+
+		shell.Exec(ctlPath, "default-route", options.Name, "true").Run()
+	}
+
+	shell.Exec(ctlPath, "domain", options.Name, "~.").Run()
 }
