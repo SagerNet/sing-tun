@@ -8,6 +8,7 @@ import (
 	"net/netip"
 
 	"github.com/sagernet/sing/common/buf"
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/udpnat"
@@ -63,6 +64,12 @@ type UDPBackWriter struct {
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
+	if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
+		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
+	} else if destination.IsIPv6() && (w.sourceNetwork == header.IPv4AddressSizeBits) {
+		return E.New("send IPv6 packet to IPv4 connection")
+	}
+
 	defer packetBuffer.Release()
 
 	route, err := w.stack.FindRoute(
