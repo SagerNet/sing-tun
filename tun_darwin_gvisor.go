@@ -7,8 +7,6 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
-	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 )
 
@@ -53,37 +51,33 @@ func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *DarwinEndpoint) dispatchLoop() {
-	_buffer := buf.StackNewSize(int(e.tun.mtu) + 4)
-	defer common.KeepAlive(_buffer)
-	packetBuffer := common.Dup(_buffer)
-	defer packetBuffer.Release()
-	data := packetBuffer.FreeBytes()
+	packetBuffer := make([]byte, e.tun.mtu + 4)
 	for {
-		n, err := e.tun.tunFile.Read(data)
+		n, err := e.tun.tunFile.Read(packetBuffer)
 		if err != nil {
 			break
 		}
-		packet := data[4:n]
+		packet := packetBuffer[4:n]
 		var networkProtocol tcpip.NetworkProtocolNumber
 		switch header.IPVersion(packet) {
 		case header.IPv4Version:
 			networkProtocol = header.IPv4ProtocolNumber
 			if header.IPv4(packet).DestinationAddress().As4() == e.tun.inet4Address {
-				e.tun.tunFile.Write(data[:n])
+				e.tun.tunFile.Write(packetBuffer[:n])
 				continue
 			}
 		case header.IPv6Version:
 			networkProtocol = header.IPv6ProtocolNumber
 			if header.IPv6(packet).DestinationAddress().As16() == e.tun.inet6Address {
-				e.tun.tunFile.Write(data[:n])
+				e.tun.tunFile.Write(packetBuffer[:n])
 				continue
 			}
 		default:
-			e.tun.tunFile.Write(data[:n])
+			e.tun.tunFile.Write(packetBuffer[:n])
 			continue
 		}
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer.MakeWithData(data[4:n]),
+			Payload:           buffer.MakeWithData(packetBuffer[4:n]),
 			IsForwardedPacket: true,
 		})
 		pkt.NetworkProtocolNumber = networkProtocol
