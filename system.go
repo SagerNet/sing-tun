@@ -134,20 +134,16 @@ func (s *System) tunLoop() {
 		s.wintunLoop(winTun)
 		return
 	}
-	_packetBuffer := buf.StackNewSize(int(s.mtu))
-	defer common.KeepAlive(_packetBuffer)
-	packetBuffer := common.Dup(_packetBuffer)
-	defer packetBuffer.Release()
-	packetSlice := packetBuffer.Slice()
+	packetBuffer := make([]byte, s.mtu + PacketOffset)
 	for {
-		n, err := s.tun.Read(packetSlice)
+		n, err := s.tun.Read(packetBuffer)
 		if err != nil {
 			return
 		}
 		if n < clashtcpip.IPv4PacketMinLength {
 			continue
 		}
-		packet := packetSlice[PacketOffset:n]
+		packet := packetBuffer[PacketOffset:n]
 		switch ipVersion := packet[0] >> 4; ipVersion {
 		case 4:
 			err = s.processIPv4(packet)
@@ -475,7 +471,7 @@ type systemUDPPacketWriter4 struct {
 }
 
 func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.StackNewSize(len(w.header) + buffer.Len())
+	newPacket := buf.NewSize(len(w.header) + buffer.Len())
 	defer newPacket.Release()
 	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())
@@ -499,7 +495,7 @@ type systemUDPPacketWriter6 struct {
 }
 
 func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.StackNewSize(len(w.header) + buffer.Len())
+	newPacket := buf.NewSize(len(w.header) + buffer.Len())
 	defer newPacket.Release()
 	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())

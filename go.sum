@@ -11,8 +11,8 @@ github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61/go.mod h
 github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97 h1:iL5gZI3uFp0X6EslacyapiRz7LLSJyr4RajF/BhMVyE=
 github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97/go.mod h1:xLnfdiJbSp8rNqYEdIW/6eDO4mVoogml14Bh2hSiFpM=
 github.com/sagernet/sing v0.0.0-20220817130738-ce854cda8522/go.mod h1:QVsS5L/ZA2Q5UhQwLrn0Trw+msNd/NPGEhBKR/ioWiY=
-github.com/sagernet/sing v0.2.7 h1:cOy0FfPS8q7m0aJ51wS7LRQAGc9wF+fWhHtBDj99wy8=
-github.com/sagernet/sing v0.2.7/go.mod h1:Ta8nHnDLAwqySzKhGoKk4ZIB+vJ3GTKj7UPrWYvM+4w=
+github.com/sagernet/sing v0.2.8-0.20230703002104-c68251b6d059 h1:nqTONy58Gq1mdoGx9GX+GKXdSTwOPTKF/DXK+Wn4B+A=
+github.com/sagernet/sing v0.2.8-0.20230703002104-c68251b6d059/go.mod h1:Ta8nHnDLAwqySzKhGoKk4ZIB+vJ3GTKj7UPrWYvM+4w=
 github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9 h1:rc/CcqLH3lh8n+csdOuDfP+NuykE0U6AeYSJJHKDgSg=
 github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9/go.mod h1:a/83NAfUXvEuLpmxDssAXxgUgrEy12MId3Wd7OTs76s=
 github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 h1:gga7acRE695APm9hlsSMoOoE65U4/TcqNj90mc69Rlg=

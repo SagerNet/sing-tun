@@ -52,18 +52,13 @@ func (l *LWIP) loopIn() {
 		l.loopInWintun(winTun)
 		return
 	}
-	mtu := int(l.tunMtu) + PacketOffset
-	_buffer := buf.StackNewSize(mtu)
-	defer common.KeepAlive(_buffer)
-	buffer := common.Dup(_buffer)
-	defer buffer.Release()
-	data := buffer.FreeBytes()
+	buffer := make([]byte, int(l.tunMtu) + PacketOffset)
 	for {
-		n, err := l.tun.Read(data)
+		n, err := l.tun.Read(buffer)
 		if err != nil {
 			return
 		}
-		_, err = l.stack.Write(data[PacketOffset:n])
+		_, err = l.stack.Write(buffer[PacketOffset:n])
 		if err != nil {
 			if err.Error() == "stack closed" {
 				return
