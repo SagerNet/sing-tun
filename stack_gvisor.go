@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/netip"
 	"time"
+	"unsafe"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
@@ -70,44 +71,10 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	ipStack := stack.New(stack.Options{
-		NetworkProtocols: []stack.NetworkProtocolFactory{
-			ipv4.NewProtocol,
-			ipv6.NewProtocol,
-		},
-		TransportProtocols: []stack.TransportProtocolFactory{
-			tcp.NewProtocol,
-			udp.NewProtocol,
-			icmp.NewProtocol4,
-			icmp.NewProtocol6,
-		},
-	})
-	tErr := ipStack.CreateNIC(defaultNIC, linkEndpoint)
-	if tErr != nil {
-		return E.New("create nic: ", wrapStackError(tErr))
+	ipStack, err := newGVisorStack(linkEndpoint)
+	if err != nil {
+		return err
 	}
-	ipStack.SetRouteTable([]tcpip.Route{
-		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
-		{Destination: header.IPv6EmptySubnet, NIC: defaultNIC},
-	})
-	ipStack.SetSpoofing(defaultNIC, true)
-	ipStack.SetPromiscuousMode(defaultNIC, true)
-	bufSize := 20 * 1024
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     1,
-		Default: bufSize,
-		Max:     bufSize,
-	})
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
-		Min:     1,
-		Default: bufSize,
-		Max:     bufSize,
-	})
-	sOpt := tcpip.TCPSACKEnabled(true)
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
-	mOpt := tcpip.TCPModerateReceiveBufferOption(true)
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &mOpt)
-
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
 		var wq waiter.Queue
 		handshakeCtx, cancel := context.WithCancel(context.Background())
@@ -162,11 +129,12 @@ func (t *GVisor) Start() error {
 				endpoint.Abort()
 				return
 			}
+			gConn := &gUDPConn{udpConn, ipStack, (*gRequest)(unsafe.Pointer(request)).pkt.IncRef()}
 			go func() {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(&gUDPConn{udpConn}), Addr: M.SocksaddrFromNet(rAddr)}), time.Duration(t.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(gConn), Addr: M.SocksaddrFromNet(rAddr)}), time.Duration(t.udpTimeout)*time.Second)
 				hErr := t.handler.NewPacketConnection(ctx, conn, metadata)
 				if hErr != nil {
 					endpoint.Abort()
@@ -206,4 +174,45 @@ func AddrFromAddress(address tcpip.Address) netip.Addr {
 	} else {
 		return netip.AddrFrom4(address.As4())
 	}
+}
+
+func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
+	ipStack := stack.New(stack.Options{
+		NetworkProtocols: []stack.NetworkProtocolFactory{
+			ipv4.NewProtocol,
+			ipv6.NewProtocol,
+		},
+		TransportProtocols: []stack.TransportProtocolFactory{
+			tcp.NewProtocol,
+			udp.NewProtocol,
+			icmp.NewProtocol4,
+			icmp.NewProtocol6,
+		},
+	})
+	tErr := ipStack.CreateNIC(defaultNIC, ep)
+	if tErr != nil {
+		return nil, E.New("create nic: ", wrapStackError(tErr))
+	}
+	ipStack.SetRouteTable([]tcpip.Route{
+		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
+		{Destination: header.IPv6EmptySubnet, NIC: defaultNIC},
+	})
+	ipStack.SetSpoofing(defaultNIC, true)
+	ipStack.SetPromiscuousMode(defaultNIC, true)
+	bufSize := 20 * 1024
+	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     1,
+		Default: bufSize,
+		Max:     bufSize,
+	})
+	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
+		Min:     1,
+		Default: bufSize,
+		Max:     bufSize,
+	})
+	sOpt := tcpip.TCPSACKEnabled(true)
+	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
+	mOpt := tcpip.TCPModerateReceiveBufferOption(true)
+	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &mOpt)
+	return ipStack, nil
 }
