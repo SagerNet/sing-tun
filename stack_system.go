@@ -91,6 +91,15 @@ func (s *System) Close() error {
 }
 
 func (s *System) Start() error {
+	err := s.start()
+	if err != nil {
+		return err
+	}
+	go s.tunLoop()
+	return nil
+}
+
+func (s *System) start() error {
 	err := fixWindowsFirewall()
 	if err != nil {
 		return E.Cause(err, "fix windows firewall for system stack")
@@ -125,7 +134,6 @@ func (s *System) Start() error {
 	}
 	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
 	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
-	go s.tunLoop()
 	return nil
 }
 

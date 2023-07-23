@@ -4,11 +4,15 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/netip"
+	"os"
+	"syscall"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
+	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 	"github.com/sagernet/gvisor/pkg/tcpip/checksum"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
@@ -78,6 +82,7 @@ type UDPBackWriter struct {
 	source        tcpip.Address
 	sourcePort    uint16
 	sourceNetwork tcpip.NetworkProtocolNumber
+	packet        stack.PacketBufferPtr
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
@@ -139,5 +144,100 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 	}
 
 	route.Stats().UDP.PacketsSent.Increment()
+	return nil
+}
+
+func (w *UDPBackWriter) HandshakeFailure(err error) error {
+	if w.packet == nil {
+		return os.ErrClosed
+	}
+	err = gWriteUnreachable(w.stack, w.packet, err)
+	w.packet.DecRef()
+	w.packet = nil
+	return err
+}
+
+type gRequest struct {
+	stack *stack.Stack
+	id    stack.TransportEndpointID
+	pkt   stack.PacketBufferPtr
+}
+
+type gUDPConn struct {
+	*gonet.UDPConn
+	stack  *stack.Stack
+	packet stack.PacketBufferPtr
+}
+
+func (c *gUDPConn) Read(b []byte) (n int, err error) {
+	n, err = c.UDPConn.Read(b)
+	if err == nil {
+		return
+	}
+	err = wrapError(err)
+	return
+}
+
+func (c *gUDPConn) Write(b []byte) (n int, err error) {
+	n, err = c.UDPConn.Write(b)
+	if err == nil {
+		return
+	}
+	err = wrapError(err)
+	return
+}
+
+func (c *gUDPConn) Close() error {
+	c.packet.DecRef()
+	c.packet = nil
+	return c.UDPConn.Close()
+}
+
+func (c *gUDPConn) HandshakeFailure(err error) error {
+	if c.packet == nil {
+		return os.ErrClosed
+	}
+	err = gWriteUnreachable(c.stack, c.packet, err)
+	c.packet.DecRef()
+	c.packet = nil
+	return err
+}
+
+func gWriteUnreachable(gStack *stack.Stack, packet stack.PacketBufferPtr, err error) error {
+	if errors.Is(err, syscall.ENETUNREACH) {
+		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetUnreachable)
+		} else {
+			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPNoRoute)
+		}
+	} else if errors.Is(err, syscall.EHOSTUNREACH) {
+		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPHostUnreachable)
+		} else {
+			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPNoRoute)
+		}
+	} else if errors.Is(err, syscall.ECONNREFUSED) {
+		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPPortUnreachable)
+		} else {
+			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPPortUnreachable)
+		}
+	}
+	return nil
+}
+
+func gWriteUnreachable4(gStack *stack.Stack, packet stack.PacketBufferPtr, icmpCode stack.RejectIPv4WithICMPType) error {
+	err := gStack.NetworkProtocolInstance(header.IPv4ProtocolNumber).(stack.RejectIPv4WithHandler).SendRejectionError(packet, icmpCode, true)
+	if err != nil {
+		return wrapStackError(err)
+	}
+	return nil
+}
+
+func gWriteUnreachable6(gStack *stack.Stack, packet stack.PacketBufferPtr, icmpCode stack.RejectIPv6WithICMPType) error {
+	err := gStack.NetworkProtocolInstance(header.IPv6ProtocolNumber).(stack.RejectIPv6WithHandler).SendRejectionError(packet, icmpCode, true)
+	if err != nil {
+		return wrapStackError(err)
+	}
 	return nil
 }

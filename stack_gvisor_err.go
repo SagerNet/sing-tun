@@ -27,28 +27,6 @@ func (c *gTCPConn) Write(b []byte) (n int, err error) {
 	return
 }
 
-type gUDPConn struct {
-	*gonet.UDPConn
-}
-
-func (c *gUDPConn) Read(b []byte) (n int, err error) {
-	n, err = c.UDPConn.Read(b)
-	if err == nil {
-		return
-	}
-	err = wrapError(err)
-	return
-}
-
-func (c *gUDPConn) Write(b []byte) (n int, err error) {
-	n, err = c.UDPConn.Write(b)
-	if err == nil {
-		return
-	}
-	err = wrapError(err)
-	return
-}
-
 func wrapStackError(err tcpip.Error) error {
 	switch err.(type) {
 	case *tcpip.ErrClosedForSend,
