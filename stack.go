@@ -35,9 +35,15 @@ func NewStack(
 ) (Stack, error) {
 	switch stack {
 	case "":
-		return NewSystem(options)
+		if WithGVisor {
+			return NewMixed(options)
+		} else {
+			return NewSystem(options)
+		}
 	case "gvisor":
 		return NewGVisor(options)
+	case "mixed":
+		return NewMixed(options)
 	case "system":
 		return NewSystem(options)
 	case "lwip":
