@@ -51,7 +51,7 @@ func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *DarwinEndpoint) dispatchLoop() {
-	packetBuffer := make([]byte, e.tun.mtu + 4)
+	packetBuffer := make([]byte, e.tun.mtu+4)
 	for {
 		n, err := e.tun.tunFile.Read(packetBuffer)
 		if err != nil {

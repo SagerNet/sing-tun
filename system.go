@@ -134,7 +134,7 @@ func (s *System) tunLoop() {
 		s.wintunLoop(winTun)
 		return
 	}
-	packetBuffer := make([]byte, s.mtu + PacketOffset)
+	packetBuffer := make([]byte, s.mtu+PacketOffset)
 	for {
 		n, err := s.tun.Read(packetBuffer)
 		if err != nil {
