@@ -4,6 +4,7 @@ package tun
 
 import (
 	"github.com/sagernet/netlink"
+
 	"golang.org/x/sys/unix"
 )
 

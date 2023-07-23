@@ -3,8 +3,9 @@
 package tun
 
 import (
-	"github.com/sagernet/sing/common/logger"
 	"os"
+
+	"github.com/sagernet/sing/common/logger"
 )
 
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {

@@ -13,3 +13,9 @@ func NewGVisor(
 ) (Stack, error) {
 	return nil, ErrGVisorNotIncluded
 }
+
+func NewMixed(
+	options StackOptions,
+) (Stack, error) {
+	return nil, ErrGVisorNotIncluded
+}

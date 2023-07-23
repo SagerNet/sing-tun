@@ -12,7 +12,9 @@ import (
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -66,6 +68,10 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	return t.tunFile.Write(p)
+}
+
+func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
+	return bufio.NewVectorisedWriter(t.tunFile)
 }
 
 var controlPath string

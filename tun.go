@@ -23,6 +23,7 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
+	CreateVectorisedWriter() N.VectorisedWriter
 	Close() error
 }
 
