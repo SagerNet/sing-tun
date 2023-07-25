@@ -47,7 +47,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt stack.Pack
 	} else {
 		f.cacheProto = header.IPv6ProtocolNumber
 	}
-	gBuffer := pkt.ToBuffer()
+	gBuffer := pkt.Data().ToBuffer()
 	sBuffer := buf.NewSize(int(gBuffer.Size()))
 	gBuffer.Apply(func(view *buffer.View) {
 		sBuffer.Write(view.AsSlice())
