@@ -52,7 +52,7 @@ func (l *LWIP) loopIn() {
 		l.loopInWintun(winTun)
 		return
 	}
-	buffer := make([]byte, int(l.tunMtu) + PacketOffset)
+	buffer := make([]byte, int(l.tunMtu)+PacketOffset)
 	for {
 		n, err := l.tun.Read(buffer)
 		if err != nil {
