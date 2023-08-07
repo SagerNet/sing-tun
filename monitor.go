@@ -15,8 +15,9 @@ type (
 )
 
 const (
-	EventInterfaceUpdate  = 1
-	EventAndroidVPNUpdate = 2
+	EventInterfaceUpdate = iota
+	EventAndroidVPNUpdate
+	EventNoRoute
 )
 
 type NetworkUpdateMonitor interface {

@@ -4,6 +4,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -84,7 +85,11 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() error {
 	if err != nil {
 		m.networkMonitor.NewError(context.Background(), E.Cause(err, "update interfaces"))
 	}
-	return m.checkUpdate()
+	err = m.checkUpdate()
+	if errors.Is(err, ErrNoRoute) {
+		m.emit(EventNoRoute)
+	}
+	return err
 }
 
 func (m *defaultInterfaceMonitor) updateInterfaces() error {
