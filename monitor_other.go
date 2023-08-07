@@ -3,15 +3,14 @@
 package tun
 
 import (
+	"github.com/sagernet/sing/common/logger"
 	"os"
-
-	E "github.com/sagernet/sing/common/exceptions"
 )
 
-func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, error) {
+func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	return nil, os.ErrInvalid
 }
 
-func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
+func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return nil, os.ErrInvalid
 }

@@ -588,15 +588,16 @@ func (t *NativeTun) resetRules() error {
 	return t.setRules()
 }
 
-func (t *NativeTun) routeUpdate(event int) error {
+func (t *NativeTun) routeUpdate(event int) {
 	if event&EventAndroidVPNUpdate == 0 {
-		return nil
+		return
 	}
 	err := t.resetRules()
 	if err != nil {
-		return E.Cause(err, "reset route")
+		if t.options.Logger != nil {
+			t.options.Logger.Error(E.Cause(err, "reset route"))
+		}
 	}
-	return nil
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() {

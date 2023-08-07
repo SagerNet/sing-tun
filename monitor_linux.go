@@ -5,26 +5,26 @@ import (
 	"sync"
 
 	"github.com/sagernet/netlink"
-	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 )
 
 type networkUpdateMonitor struct {
-	routeUpdate  chan netlink.RouteUpdate
-	linkUpdate   chan netlink.LinkUpdate
-	close        chan struct{}
-	errorHandler E.Handler
+	routeUpdate chan netlink.RouteUpdate
+	linkUpdate  chan netlink.LinkUpdate
+	close       chan struct{}
 
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]
+	logger    logger.Logger
 }
 
-func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, error) {
+func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	return &networkUpdateMonitor{
-		routeUpdate:  make(chan netlink.RouteUpdate, 2),
-		linkUpdate:   make(chan netlink.LinkUpdate, 2),
-		close:        make(chan struct{}),
-		errorHandler: errorHandler,
+		routeUpdate: make(chan netlink.RouteUpdate, 2),
+		linkUpdate:  make(chan netlink.LinkUpdate, 2),
+		close:       make(chan struct{}),
+		logger:      logger,
 	}, nil
 }
 

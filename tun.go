@@ -10,6 +10,7 @@ import (
 
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
+	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ranges"
 )
@@ -47,6 +48,7 @@ type Options struct {
 	InterfaceMonitor   DefaultInterfaceMonitor
 	TableIndex         int
 	FileDescriptor     int
+	Logger             logger.Logger
 }
 
 func CalculateInterfaceName(name string) (tunName string) {

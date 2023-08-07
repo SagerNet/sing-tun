@@ -10,14 +10,14 @@ import (
 var ErrNoRoute = E.New("no route to internet")
 
 type (
-	NetworkUpdateCallback          = func() error
-	DefaultInterfaceUpdateCallback = func(event int) error
+	NetworkUpdateCallback          = func()
+	DefaultInterfaceUpdateCallback = func(event int)
 )
 
 const (
-	EventInterfaceUpdate = iota
-	EventAndroidVPNUpdate
-	EventNoRoute
+	EventInterfaceUpdate  = 1
+	EventAndroidVPNUpdate = 2
+	EventNoRoute          = 4
 )
 
 type NetworkUpdateMonitor interface {
@@ -25,7 +25,6 @@ type NetworkUpdateMonitor interface {
 	Close() error
 	RegisterCallback(callback NetworkUpdateCallback) *list.Element[NetworkUpdateCallback]
 	UnregisterCallback(element *list.Element[NetworkUpdateCallback])
-	E.Handler
 }
 
 type DefaultInterfaceMonitor interface {

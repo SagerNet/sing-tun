@@ -4,8 +4,6 @@ package tun
 
 import (
 	"github.com/sagernet/netlink"
-	E "github.com/sagernet/sing/common/exceptions"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -37,5 +35,5 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		m.emit(EventInterfaceUpdate)
 		return nil
 	}
-	return E.New("no route to internet")
+	return ErrNoRoute
 }
