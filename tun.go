@@ -41,6 +41,8 @@ type Options struct {
 	StrictRoute        bool
 	Inet4RouteAddress  []netip.Prefix
 	Inet6RouteAddress  []netip.Prefix
+	IncludeInterface   []string
+	ExcludeInterface   []string
 	IncludeUID         []ranges.Range[uint32]
 	ExcludeUID         []ranges.Range[uint32]
 	IncludeAndroidUser []int

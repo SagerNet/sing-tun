@@ -323,6 +323,110 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			priority6++
 		}
 	}
+	if len(t.options.IncludeInterface) > 0 {
+		matchPriority := priority + 2*len(t.options.IncludeInterface) + 1
+		for _, includeInterface := range t.options.IncludeInterface {
+			if p4 {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.OifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+			}
+			if p6 {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.OifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+			}
+		}
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = matchPriority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Family = unix.AF_INET6
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = matchPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+		}
+	} else if len(t.options.ExcludeInterface) > 0 {
+		for _, excludeInterface := range t.options.ExcludeInterface {
+			if p4 {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.OifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+			}
+			if p6 {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.OifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+			}
+		}
+	}
 
 	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
 		const protectedFromVPN = 0x20000
