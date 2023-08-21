@@ -17,14 +17,19 @@ import (
 )
 
 type networkUpdateMonitor struct {
-	access      sync.Mutex
-	callbacks   list.List[NetworkUpdateCallback]
-	routeSocket int
-	logger      logger.Logger
+	access          sync.Mutex
+	callbacks       list.List[NetworkUpdateCallback]
+	routeSocketFile *os.File
+	closeOnce       sync.Once
+	done            chan struct{}
+	logger          logger.Logger
 }
 
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
-	return &networkUpdateMonitor{logger: logger}, nil
+	return &networkUpdateMonitor{
+		logger: logger,
+		done:   make(chan struct{}),
+	}, nil
 }
 
 func (m *networkUpdateMonitor) Start() error {
@@ -34,6 +39,11 @@ func (m *networkUpdateMonitor) Start() error {
 
 func (m *networkUpdateMonitor) loopUpdate() {
 	for {
+		select {
+		case <-m.done:
+			return
+		case <-time.After(time.Second):
+		}
 		err := m.loopUpdate0()
 		if err != nil {
 			m.logger.Error("listen network update: ", err)
@@ -47,7 +57,9 @@ func (m *networkUpdateMonitor) loopUpdate0() error {
 	if err != nil {
 		return err
 	}
-	m.loopUpdate1(os.NewFile(uintptr(routeSocket), "route"))
+	routeSocketFile := os.NewFile(uintptr(routeSocket), "route")
+	m.routeSocketFile = routeSocketFile
+	m.loopUpdate1(routeSocketFile)
 	return nil
 }
 
@@ -73,7 +85,10 @@ func (m *networkUpdateMonitor) loopUpdate1(routeSocketFile *os.File) {
 }
 
 func (m *networkUpdateMonitor) Close() error {
-	return unix.Close(m.routeSocket)
+	m.closeOnce.Do(func() {
+		close(m.done)
+	})
+	return nil
 }
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
