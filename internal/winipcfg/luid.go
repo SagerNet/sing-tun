@@ -385,3 +385,25 @@ func (luid LUID) SetDNS(family AddressFamily, servers []netip.Addr, domains []st
 func (luid LUID) FlushDNS(family AddressFamily) error {
 	return luid.SetDNS(family, nil, nil)
 }
+
+func (luid LUID) DisableDNSRegistration() error {
+	guid, err := luid.GUID()
+	if err != nil {
+		return err
+	}
+
+	dnsInterfaceSettings := &DnsInterfaceSettings{
+		Version:             DnsInterfaceSettingsVersion1,
+		Flags:               DnsInterfaceSettingsFlagRegistrationEnabled,
+		RegistrationEnabled: 0,
+	}
+
+	// For >= Windows 10 1809
+	err = SetInterfaceDnsSettings(*guid, dnsInterfaceSettings)
+	if err == nil || !errors.Is(err, windows.ERROR_PROC_NOT_FOUND) {
+		return err
+	}
+
+	// For < Windows 10 1809
+	return luid.fallbackDisableDNSRegistration()
+}
