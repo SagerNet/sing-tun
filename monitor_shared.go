@@ -81,6 +81,7 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
+		m.defaultInterfaceName = ""
 		m.defaultInterfaceIndex = -1
 		m.emit(EventNoRoute)
 	}
