@@ -1,16 +1,15 @@
 package tun
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/net/route"
@@ -18,61 +17,78 @@ import (
 )
 
 type networkUpdateMonitor struct {
-	errorHandler E.Handler
-
-	access      sync.Mutex
-	callbacks   list.List[NetworkUpdateCallback]
-	routeSocket *os.File
+	access          sync.Mutex
+	callbacks       list.List[NetworkUpdateCallback]
+	routeSocketFile *os.File
+	closeOnce       sync.Once
+	done            chan struct{}
+	logger          logger.Logger
 }
 
-func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, error) {
+func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	return &networkUpdateMonitor{
-		errorHandler: errorHandler,
+		logger: logger,
+		done:   make(chan struct{}),
 	}, nil
 }
 
 func (m *networkUpdateMonitor) Start() error {
-	routeSocket, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
-	if err != nil {
-		return err
-	}
-	err = unix.SetNonblock(routeSocket, true)
-	if err != nil {
-		return err
-	}
-	m.routeSocket = os.NewFile(uintptr(routeSocket), "route")
 	go m.loopUpdate()
 	return nil
 }
 
 func (m *networkUpdateMonitor) loopUpdate() {
-	rawConn, err := m.routeSocket.SyscallConn()
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-time.After(time.Second):
+		}
+		err := m.loopUpdate0()
+		if err != nil {
+			m.logger.Error("listen network update: ", err)
+			return
+		}
+	}
+}
+
+func (m *networkUpdateMonitor) loopUpdate0() error {
+	routeSocket, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
 	if err != nil {
-		m.errorHandler.NewError(context.Background(), E.Cause(err, "create raw route connection"))
+		return err
+	}
+	routeSocketFile := os.NewFile(uintptr(routeSocket), "route")
+	m.routeSocketFile = routeSocketFile
+	m.loopUpdate1(routeSocketFile)
+	return nil
+}
+
+func (m *networkUpdateMonitor) loopUpdate1(routeSocketFile *os.File) {
+	defer routeSocketFile.Close()
+	buffer := buf.NewPacket()
+	defer buffer.Release()
+	n, err := routeSocketFile.Read(buffer.FreeBytes())
+	if err != nil {
 		return
 	}
-	for {
-		var innerErr error
-		err = rawConn.Read(func(fd uintptr) (done bool) {
-			var msg [2048]byte
-			_, innerErr = unix.Read(int(fd), msg[:])
-			return innerErr != unix.EWOULDBLOCK
-		})
-		if innerErr != nil {
-			err = innerErr
-		}
-		if err != nil {
-			break
-		}
-		m.emit()
+	buffer.Truncate(n)
+	messages, err := route.ParseRIB(route.RIBTypeRoute, buffer.Bytes())
+	if err != nil {
+		return
 	}
-	if err != syscall.EAGAIN {
-		m.errorHandler.NewError(context.Background(), E.Cause(err, "read route message"))
+	for _, message := range messages {
+		if _, isRouteMessage := message.(*route.RouteMessage); isRouteMessage {
+			m.emit()
+			return
+		}
 	}
 }
 
 func (m *networkUpdateMonitor) Close() error {
-	return common.Close(common.PtrOrNil(m.routeSocket))
+	m.closeOnce.Do(func() {
+		close(m.done)
+	})
+	return nil
 }
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
@@ -116,7 +132,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			continue
 		}
 		if routeMessage.Flags&unix.RTF_IFSCOPE != 0 {
-			continue
+			// continue
 		}
 		defaultInterface = routeInterface
 		break

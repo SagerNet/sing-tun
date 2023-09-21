@@ -3,14 +3,14 @@
 package tun
 
 import (
-	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/sagernet/sing/common"
-	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 )
@@ -32,15 +32,8 @@ func (m *networkUpdateMonitor) emit() {
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		err := callback()
-		if err != nil {
-			m.NewError(context.Background(), err)
-		}
+		callback()
 	}
-}
-
-func (m *networkUpdateMonitor) NewError(ctx context.Context, err error) {
-	m.errorHandler.NewError(ctx, err)
 }
 
 type defaultInterfaceMonitor struct {
@@ -53,6 +46,7 @@ type defaultInterfaceMonitor struct {
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
+	logger                logger.Logger
 }
 
 type networkAddress struct {
@@ -61,30 +55,36 @@ type networkAddress struct {
 	addresses      []netip.Prefix
 }
 
-func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
+func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return &defaultInterfaceMonitor{
 		options:               options,
 		networkMonitor:        networkMonitor,
 		defaultInterfaceIndex: -1,
+		logger: logger,
 	}, nil
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
 	err := m.checkUpdate()
 	if err != nil {
-		m.networkMonitor.NewError(context.Background(), err)
+		m.logger.Error("initialize default interface: ", err)
 	}
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
 }
 
-func (m *defaultInterfaceMonitor) delayCheckUpdate() error {
+func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 	time.Sleep(time.Second)
 	err := m.updateInterfaces()
 	if err != nil {
-		m.networkMonitor.NewError(context.Background(), E.Cause(err, "update interfaces"))
+		m.logger.Error("update interfaces: ", err)
 	}
-	return m.checkUpdate()
+	err = m.checkUpdate()
+	if errors.Is(err, ErrNoRoute) {
+		m.defaultInterfaceName = ""
+		m.defaultInterfaceIndex = -1
+		m.emit(EventNoRoute)
+	}
 }
 
 func (m *defaultInterfaceMonitor) updateInterfaces() error {
@@ -175,9 +175,6 @@ func (m *defaultInterfaceMonitor) emit(event int) {
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		err := callback(event)
-		if err != nil {
-			m.networkMonitor.NewError(context.Background(), err)
-		}
+		callback(event)
 	}
 }

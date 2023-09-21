@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 
 	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
@@ -24,6 +25,7 @@ import (
 
 type Mixed struct {
 	*System
+	writer                 N.VectorisedWriter
 	endpointIndependentNat bool
 	stack                  *stack.Stack
 	endpoint               *channel.Endpoint
@@ -38,6 +40,7 @@ func NewMixed(
 	}
 	return &Mixed{
 		System:                 system.(*System),
+		writer:                 options.Tun.CreateVectorisedWriter(),
 		endpointIndependentNat: options.EndpointIndependentNat,
 	}, nil
 }
@@ -66,7 +69,7 @@ func (m *Mixed) Start() error {
 				endpoint.Abort()
 				return
 			}
-			gConn := &gUDPConn{udpConn, ipStack, (*gRequest)(unsafe.Pointer(request)).pkt.IncRef()}
+			gConn := &gUDPConn{UDPConn: udpConn, stack: ipStack, packet: (*gRequest)(unsafe.Pointer(request)).pkt.IncRef()}
 			go func() {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
@@ -85,6 +88,7 @@ func (m *Mixed) Start() error {
 	m.stack = ipStack
 	m.endpoint = endpoint
 	go m.tunLoop()
+	go m.packetLoop()
 	return nil
 }
 
@@ -114,6 +118,31 @@ func (m *Mixed) tunLoop() {
 		if err != nil {
 			m.logger.Trace(err)
 		}
+	}
+}
+
+func (m *Mixed) wintunLoop(winTun WinTun) {
+	for {
+		packet, release, err := winTun.ReadPacket()
+		if err != nil {
+			return
+		}
+		if len(packet) < clashtcpip.IPv4PacketMinLength {
+			release()
+			continue
+		}
+		switch ipVersion := packet[0] >> 4; ipVersion {
+		case 4:
+			err = m.processIPv4(packet)
+		case 6:
+			err = m.processIPv6(packet)
+		default:
+			err = E.New("ip: unknown version: ", ipVersion)
+		}
+		if err != nil {
+			m.logger.Trace(err)
+		}
+		release()
 	}
 }
 
@@ -150,6 +179,17 @@ func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) error {
 		return m.processIPv6ICMP(packet, packet.Payload())
 	default:
 		return common.Error(m.tun.Write(packet))
+	}
+}
+
+func (m *Mixed) packetLoop() {
+	for {
+		packet := m.endpoint.ReadContext(m.ctx)
+		if packet == nil {
+			break
+		}
+		bufio.WriteVectorised(m.writer, packet.AsSlices())
+		packet.DecRef()
 	}
 }
 

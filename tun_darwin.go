@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
@@ -99,6 +100,20 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 		n = len(p)
 	}
 	return
+}
+
+func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
+	return t
+}
+
+func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
+	var packetHeader []byte
+	if buffers[0].Byte(0)>>4 == 4 {
+		packetHeader = packetHeader4[:]
+	} else {
+		packetHeader = packetHeader6[:]
+	}
+	return t.tunWriter.WriteVectorised(append([]*buf.Buffer{buf.As(packetHeader)}, buffers...))
 }
 
 func (t *NativeTun) Close() error {

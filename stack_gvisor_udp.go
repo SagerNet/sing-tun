@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/netip"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/sagernet/sing/common/buf"
@@ -52,7 +53,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt stack.Pack
 	} else {
 		f.cacheProto = header.IPv6ProtocolNumber
 	}
-	gBuffer := pkt.ToBuffer()
+	gBuffer := pkt.Data().ToBuffer()
 	sBuffer := buf.NewSize(int(gBuffer.Size()))
 	gBuffer.Apply(func(view *buffer.View) {
 		sBuffer.Write(view.AsSlice())
@@ -75,10 +76,12 @@ func (f *UDPForwarder) newUDPConn(natConn N.PacketConn) N.PacketWriter {
 		source:        f.cacheID.RemoteAddress,
 		sourcePort:    f.cacheID.RemotePort,
 		sourceNetwork: f.cacheProto,
+		packet: f.cachePacket.IncRef(),
 	}
 }
 
 type UDPBackWriter struct {
+	access sync.Mutex
 	stack         *stack.Stack
 	source        tcpip.Address
 	sourcePort    uint16
@@ -86,8 +89,21 @@ type UDPBackWriter struct {
 	packet        stack.PacketBufferPtr
 }
 
+func (w *UDPBackWriter) Close() error {
+	w.access.Lock()
+	defer w.access.Unlock()
+	if w.packet == nil {
+		return os.ErrClosed
+	}
+	w.packet.DecRef()
+	w.packet = nil
+	return nil
+}
+
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
-	if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
+	if !destination.IsIP() {
+		return E.Cause(os.ErrInvalid, "invalid destination")
+	} else if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
 		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
 	} else if destination.IsIPv6() && (w.sourceNetwork == header.IPv4AddressSizeBits) {
 		return E.New("send IPv6 packet to IPv4 connection")
@@ -166,6 +182,7 @@ type gRequest struct {
 
 type gUDPConn struct {
 	*gonet.UDPConn
+	access sync.Mutex
 	stack  *stack.Stack
 	packet stack.PacketBufferPtr
 }
@@ -189,6 +206,11 @@ func (c *gUDPConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *gUDPConn) Close() error {
+	c.access.Lock()
+	defer c.access.Unlock()
+	if c.packet == nil {
+		return os.ErrClosed
+	}
 	c.packet.DecRef()
 	c.packet = nil
 	return c.UDPConn.Close()

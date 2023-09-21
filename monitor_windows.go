@@ -6,6 +6,7 @@ import (
 
 	"github.com/metacubex/sing-tun/internal/winipcfg"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/sys/windows"
@@ -22,11 +23,12 @@ type networkUpdateMonitor struct {
 
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]
+	logger    logger.Logger
 }
 
-func NewNetworkUpdateMonitor(errorHandler E.Handler) (NetworkUpdateMonitor, error) {
+func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	return &networkUpdateMonitor{
-		errorHandler: errorHandler,
+		logger: logger,
 	}, nil
 }
 

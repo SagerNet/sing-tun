@@ -12,7 +12,9 @@ import (
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -66,6 +68,10 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	return t.tunFile.Write(p)
+}
+
+func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
+	return bufio.NewVectorisedWriter(t.tunFile)
 }
 
 var controlPath string
@@ -315,6 +321,110 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 		if p6 {
 			priority6++
+		}
+	}
+	if len(t.options.IncludeInterface) > 0 {
+		matchPriority := priority + 2*len(t.options.IncludeInterface) + 1
+		for _, includeInterface := range t.options.IncludeInterface {
+			if p4 {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.OifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+			}
+			if p6 {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.OifName = includeInterface
+				it.Goto = matchPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+			}
+		}
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = matchPriority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Family = unix.AF_INET6
+			it.Goto = nopPriority
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = matchPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+		}
+	} else if len(t.options.ExcludeInterface) > 0 {
+		for _, excludeInterface := range t.options.ExcludeInterface {
+			if p4 {
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.IifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+
+				it = netlink.NewRule()
+				it.Priority = priority
+				it.OifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET
+				rules = append(rules, it)
+				priority++
+			}
+			if p6 {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.OifName = excludeInterface
+				it.Goto = nopPriority
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+				priority6++
+			}
 		}
 	}
 
@@ -597,15 +707,16 @@ func (t *NativeTun) resetRules() error {
 	return t.setRules()
 }
 
-func (t *NativeTun) routeUpdate(event int) error {
+func (t *NativeTun) routeUpdate(event int) {
 	if event&EventAndroidVPNUpdate == 0 {
-		return nil
+		return
 	}
 	err := t.resetRules()
 	if err != nil {
-		return E.Cause(err, "reset route")
+		if t.options.Logger != nil {
+			t.options.Logger.Error(E.Cause(err, "reset route"))
+		}
 	}
-	return nil
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() {

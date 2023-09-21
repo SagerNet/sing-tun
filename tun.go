@@ -10,6 +10,7 @@ import (
 
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
+	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ranges"
 )
@@ -22,6 +23,7 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
+	CreateVectorisedWriter() N.VectorisedWriter
 	Close() error
 }
 
@@ -39,6 +41,8 @@ type Options struct {
 	StrictRoute        bool
 	Inet4RouteAddress  []netip.Prefix
 	Inet6RouteAddress  []netip.Prefix
+	IncludeInterface   []string
+	ExcludeInterface   []string
 	IncludeUID         []ranges.Range[uint32]
 	ExcludeUID         []ranges.Range[uint32]
 	IncludeAndroidUser []int
@@ -47,6 +51,7 @@ type Options struct {
 	InterfaceMonitor   DefaultInterfaceMonitor
 	TableIndex         int
 	FileDescriptor     int
+	Logger             logger.Logger
 }
 
 func CalculateInterfaceName(name string) (tunName string) {
