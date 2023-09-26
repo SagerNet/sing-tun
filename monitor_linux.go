@@ -8,6 +8,8 @@ import (
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
+
+	"golang.org/x/sys/unix"
 )
 
 type networkUpdateMonitor struct {
@@ -27,10 +29,18 @@ func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error)
 		close:       make(chan struct{}),
 		logger:      logger,
 	}
+	// check is netlink banned by google
 	if runtime.GOOS == "android" {
-		_, err := netlink.LinkList()
+		netlinkSocket, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_ROUTE)
 		if err != nil {
-			return nil, err
+			return nil, os.ErrInvalid
+		}
+		err = unix.Bind(netlinkSocket, &unix.SockaddrNetlink{
+			Family: unix.AF_NETLINK,
+		})
+		unix.Close(netlinkSocket)
+		if err != nil {
+			return nil, os.ErrInvalid
 		}
 	}
 	return monitor, nil
