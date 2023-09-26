@@ -6,7 +6,6 @@ import (
 	"context"
 	"net/netip"
 	"time"
-	"unsafe"
 
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/canceler"
@@ -130,7 +129,7 @@ func (t *GVisor) Start() error {
 				endpoint.Abort()
 				return
 			}
-			gConn := &gUDPConn{UDPConn: udpConn, stack: ipStack, packet: (*gRequest)(unsafe.Pointer(request)).pkt.IncRef()}
+			gConn := &gUDPConn{UDPConn: udpConn}
 			go func() {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)

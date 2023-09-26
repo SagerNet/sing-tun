@@ -31,9 +31,8 @@ type UDPForwarder struct {
 	udpNat *udpnat.Service[netip.AddrPort]
 
 	// cache
-	cacheProto  tcpip.NetworkProtocolNumber
-	cacheID     stack.TransportEndpointID
-	cachePacket stack.PacketBufferPtr
+	cacheProto tcpip.NetworkProtocolNumber
+	cacheID    stack.TransportEndpointID
 }
 
 func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, udpTimeout int64) *UDPForwarder {
@@ -59,7 +58,6 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt stack.Pack
 		sBuffer.Write(view.AsSlice())
 	})
 	f.cacheID = id
-	f.cachePacket = pkt
 	f.udpNat.NewPacket(
 		f.ctx,
 		upstreamMetadata.Source.AddrPort(),
@@ -76,28 +74,16 @@ func (f *UDPForwarder) newUDPConn(natConn N.PacketConn) N.PacketWriter {
 		source:        f.cacheID.RemoteAddress,
 		sourcePort:    f.cacheID.RemotePort,
 		sourceNetwork: f.cacheProto,
-		packet: f.cachePacket.IncRef(),
 	}
 }
 
 type UDPBackWriter struct {
-	access sync.Mutex
+	access        sync.Mutex
 	stack         *stack.Stack
 	source        tcpip.Address
 	sourcePort    uint16
 	sourceNetwork tcpip.NetworkProtocolNumber
 	packet        stack.PacketBufferPtr
-}
-
-func (w *UDPBackWriter) Close() error {
-	w.access.Lock()
-	defer w.access.Unlock()
-	if w.packet == nil {
-		return os.ErrClosed
-	}
-	w.packet.DecRef()
-	w.packet = nil
-	return nil
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
@@ -164,16 +150,6 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 	return nil
 }
 
-func (w *UDPBackWriter) HandshakeFailure(err error) error {
-	if w.packet == nil {
-		return os.ErrClosed
-	}
-	err = gWriteUnreachable(w.stack, w.packet, err)
-	w.packet.DecRef()
-	w.packet = nil
-	return err
-}
-
 type gRequest struct {
 	stack *stack.Stack
 	id    stack.TransportEndpointID
@@ -182,9 +158,6 @@ type gRequest struct {
 
 type gUDPConn struct {
 	*gonet.UDPConn
-	access sync.Mutex
-	stack  *stack.Stack
-	packet stack.PacketBufferPtr
 }
 
 func (c *gUDPConn) Read(b []byte) (n int, err error) {
@@ -206,27 +179,10 @@ func (c *gUDPConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *gUDPConn) Close() error {
-	c.access.Lock()
-	defer c.access.Unlock()
-	if c.packet == nil {
-		return os.ErrClosed
-	}
-	c.packet.DecRef()
-	c.packet = nil
 	return c.UDPConn.Close()
 }
 
-func (c *gUDPConn) HandshakeFailure(err error) error {
-	if c.packet == nil {
-		return os.ErrClosed
-	}
-	err = gWriteUnreachable(c.stack, c.packet, err)
-	c.packet.DecRef()
-	c.packet = nil
-	return err
-}
-
-func gWriteUnreachable(gStack *stack.Stack, packet stack.PacketBufferPtr, err error) error {
+func gWriteUnreachable(gStack *stack.Stack, packet stack.PacketBufferPtr, err error) (retErr error) {
 	if errors.Is(err, syscall.ENETUNREACH) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
 			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetUnreachable)

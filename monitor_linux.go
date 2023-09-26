@@ -2,6 +2,7 @@ package tun
 
 import (
 	"os"
+	"runtime"
 	"sync"
 
 	"github.com/sagernet/netlink"
@@ -20,12 +21,19 @@ type networkUpdateMonitor struct {
 }
 
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
-	return &networkUpdateMonitor{
+	monitor := &networkUpdateMonitor{
 		routeUpdate: make(chan netlink.RouteUpdate, 2),
 		linkUpdate:  make(chan netlink.LinkUpdate, 2),
 		close:       make(chan struct{}),
 		logger:      logger,
-	}, nil
+	}
+	if runtime.GOOS == "android" {
+		_, err := netlink.LinkList()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return monitor, nil
 }
 
 func (m *networkUpdateMonitor) Start() error {
