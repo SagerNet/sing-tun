@@ -102,6 +102,10 @@ func (e *WintunEndpoint) ARPHardwareType() header.ARPHardwareType {
 func (e *WintunEndpoint) AddHeader(buffer stack.PacketBufferPtr) {
 }
 
+func (e *WintunEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
+	return true
+}
+
 func (e *WintunEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
