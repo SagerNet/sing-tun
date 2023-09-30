@@ -32,6 +32,7 @@ type DefaultInterfaceMonitor interface {
 	Close() error
 	DefaultInterfaceName(destination netip.Addr) string
 	DefaultInterfaceIndex(destination netip.Addr) int
+	DefaultInterface(destination netip.Addr) (string, int)
 	OverrideAndroidVPN() bool
 	AndroidVPNEnabled() bool
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
