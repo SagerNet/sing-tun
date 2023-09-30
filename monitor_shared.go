@@ -150,6 +150,20 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 	return m.defaultInterfaceIndex
 }
 
+func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (string, int) {
+	for _, address := range m.networkAddresses {
+		for _, prefix := range address.addresses {
+			if prefix.Contains(destination) {
+				return address.interfaceName, address.interfaceIndex
+			}
+		}
+	}
+	if m.defaultInterfaceIndex == -1 {
+		m.checkUpdate()
+	}
+	return m.defaultInterfaceName, m.defaultInterfaceIndex
+}
+
 func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
 	return m.options.OverrideAndroidVPN
 }
