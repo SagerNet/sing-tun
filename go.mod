@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/go-ole/go-ole v1.3.0
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
-	github.com/sagernet/gvisor v0.0.0-20230627031050-1ab0276e0dd2
+	github.com/sagernet/gvisor v0.0.0-20230930141345-5fef6f2e17ab
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
 	github.com/sagernet/sing v0.2.15
 	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
