@@ -106,6 +106,10 @@ func (e *DarwinEndpoint) ARPHardwareType() header.ARPHardwareType {
 func (e *DarwinEndpoint) AddHeader(buffer stack.PacketBufferPtr) {
 }
 
+func (e *DarwinEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
+	return true
+}
+
 func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
