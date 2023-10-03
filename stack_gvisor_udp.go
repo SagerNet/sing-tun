@@ -91,7 +91,7 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 		return E.Cause(os.ErrInvalid, "invalid destination")
 	} else if destination.IsIPv4() && w.sourceNetwork == header.IPv6ProtocolNumber {
 		destination = M.SocksaddrFrom(netip.AddrFrom16(destination.Addr.As16()), destination.Port)
-	} else if destination.IsIPv6() && (w.sourceNetwork == header.IPv4AddressSizeBits) {
+	} else if destination.IsIPv6() && (w.sourceNetwork == header.IPv4ProtocolNumber) {
 		return E.New("send IPv6 packet to IPv4 connection")
 	}
 
