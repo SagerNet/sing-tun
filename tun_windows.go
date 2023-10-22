@@ -89,6 +89,9 @@ func (t *NativeTun) configure() error {
 			return E.Cause(err, "set ipv6 dns")
 		}
 	}
+	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
+		_ = luid.DisableDNSRegistration()
+	}
 	if t.options.AutoRoute {
 		if len(t.options.Inet4Address) > 0 {
 			if len(t.options.Inet4RouteAddress) > 0 {

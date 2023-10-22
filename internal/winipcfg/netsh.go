@@ -51,10 +51,11 @@ func runNetsh(cmds []string) error {
 }
 
 const (
-	netshCmdTemplateFlush4 = "interface ipv4 set dnsservers name=%d source=static address=none validate=no register=both"
-	netshCmdTemplateFlush6 = "interface ipv6 set dnsservers name=%d source=static address=none validate=no register=both"
-	netshCmdTemplateAdd4   = "interface ipv4 add dnsservers name=%d address=%s validate=no"
-	netshCmdTemplateAdd6   = "interface ipv6 add dnsservers name=%d address=%s validate=no"
+	netshCmdTemplateFlush4              = "interface ipv4 set dnsservers name=%d source=static address=none validate=no"
+	netshCmdTemplateFlush6              = "interface ipv6 set dnsservers name=%d source=static address=none validate=no"
+	netshCmdTemplateAdd4                = "interface ipv4 add dnsservers name=%d address=%s validate=no"
+	netshCmdTemplateAdd6                = "interface ipv6 add dnsservers name=%d address=%s validate=no"
+	netshCmdTemplateDisableRegistration = "interface ipv6 set dnsservers name=%d register=none"
 )
 
 func (luid LUID) fallbackSetDNSForFamily(family AddressFamily, dnses []netip.Addr) error {
@@ -105,4 +106,14 @@ func (luid LUID) fallbackSetDNSDomain(domain string) error {
 	err = key.SetStringValue("Domain", domain)
 	key.Close()
 	return err
+}
+
+func (luid LUID) fallbackDisableDNSRegistration() error {
+	// the DNS registration setting is shared for both IPv4 and IPv6
+	ipif, err := luid.IPInterface(windows.AF_INET)
+	if err != nil {
+		return err
+	}
+	cmd := fmt.Sprintf(netshCmdTemplateDisableRegistration, ipif.InterfaceIndex)
+	return runNetsh([]string{cmd})
 }
