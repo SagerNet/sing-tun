@@ -572,36 +572,31 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		priority++
 	}
 	if p6 {
-		// FIXME: this match connections from public address
+		if !t.options.StrictRoute {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.IifName = "lo"
+			it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.IifName = "lo"
+			it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+
+			priority6++
+		}
+
 		it = netlink.NewRule()
 		it.Priority = priority6
 		it.Table = t.options.TableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
-
-		/*it = netlink.NewRule()
-		it.Priority = priority
-		it.Invert = true
-		it.IifName = "lo"
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)
-
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IifName = "lo"
-		it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 128) // not working
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)
-
-		it = netlink.NewRule()
-		it.Priority = priority
-		it.IifName = "lo"
-		it.Src = t.options.Inet6Address.Masked()
-		it.Table = tunTableIndex
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)*/
 		priority6++
 	}
 	if p4 {
