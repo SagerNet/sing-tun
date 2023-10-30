@@ -33,25 +33,27 @@ type WinTun interface {
 }
 
 type Options struct {
-	Name               string
-	Inet4Address       []netip.Prefix
-	Inet6Address       []netip.Prefix
-	MTU                uint32
-	AutoRoute          bool
-	StrictRoute        bool
-	Inet4RouteAddress  []netip.Prefix
-	Inet6RouteAddress  []netip.Prefix
-	IncludeInterface   []string
-	ExcludeInterface   []string
-	IncludeUID         []ranges.Range[uint32]
-	ExcludeUID         []ranges.Range[uint32]
-	IncludeAndroidUser []int
-	IncludePackage     []string
-	ExcludePackage     []string
-	InterfaceMonitor   DefaultInterfaceMonitor
-	TableIndex         int
-	FileDescriptor     int
-	Logger             logger.Logger
+	Name                     string
+	Inet4Address             []netip.Prefix
+	Inet6Address             []netip.Prefix
+	MTU                      uint32
+	AutoRoute                bool
+	StrictRoute              bool
+	Inet4RouteAddress        []netip.Prefix
+	Inet6RouteAddress        []netip.Prefix
+	Inet4RouteExcludeAddress []netip.Prefix
+	Inet6RouteExcludeAddress []netip.Prefix
+	IncludeInterface         []string
+	ExcludeInterface         []string
+	IncludeUID               []ranges.Range[uint32]
+	ExcludeUID               []ranges.Range[uint32]
+	IncludeAndroidUser       []int
+	IncludePackage           []string
+	ExcludePackage           []string
+	InterfaceMonitor         DefaultInterfaceMonitor
+	TableIndex               int
+	FileDescriptor           int
+	Logger                   logger.Logger
 }
 
 func CalculateInterfaceName(name string) (tunName string) {

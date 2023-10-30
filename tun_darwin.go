@@ -263,43 +263,16 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 		}
 	}
 	if options.AutoRoute {
-		if len(options.Inet4Address) > 0 {
-			var routes []netip.Prefix
-			if len(options.Inet4RouteAddress) > 0 {
-				routes = append(options.Inet4RouteAddress, netip.PrefixFrom(options.Inet4Address[0].Addr().Next(), 32))
+		var routeRanges []netip.Prefix
+		routeRanges, err = options.BuildAutoRouteRanges()
+		for _, routeRange := range routeRanges {
+			if routeRange.Addr().Is4() {
+				err = addRoute(routeRange, options.Inet4Address[0].Addr())
 			} else {
-				routes = []netip.Prefix{
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 0, 0, 0}), 8),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{2, 0, 0, 0}), 7),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{4, 0, 0, 0}), 6),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{8, 0, 0, 0}), 5),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{16, 0, 0, 0}), 4),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{32, 0, 0, 0}), 3),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{64, 0, 0, 0}), 2),
-					netip.PrefixFrom(netip.AddrFrom4([4]byte{128, 0, 0, 0}), 1),
-				}
+				err = addRoute(routeRange, options.Inet6Address[0].Addr())
 			}
-			for _, subnet := range routes {
-				err = addRoute(subnet, options.Inet4Address[0].Addr())
-				if err != nil {
-					return E.Cause(err, "add ipv4 route ", subnet)
-				}
-			}
-		}
-		if len(options.Inet6Address) > 0 {
-			var routes []netip.Prefix
-			if len(options.Inet6RouteAddress) > 0 {
-				routes = append(options.Inet6RouteAddress, netip.PrefixFrom(options.Inet6Address[0].Addr().Next(), 128))
-			} else {
-				routes = []netip.Prefix{
-					netip.PrefixFrom(netip.AddrFrom16([16]byte{32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), 3),
-				}
-			}
-			for _, subnet := range routes {
-				err = addRoute(subnet, options.Inet6Address[0].Addr())
-				if err != nil {
-					return E.Cause(err, "add ipv6 route ", subnet)
-				}
+			if err != nil {
+				return E.Cause(err, "add route: ", routeRange)
 			}
 		}
 		flushDNSCache()

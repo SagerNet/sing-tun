@@ -188,57 +188,36 @@ func (t *NativeTun) Close() error {
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
 
-func (t *NativeTun) routes(tunLink netlink.Link) []netlink.Route {
-	var routes []netlink.Route
-	if len(t.options.Inet4Address) > 0 {
-		if t.options.AutoRoute {
-			if len(t.options.Inet4RouteAddress) > 0 {
-				for _, addr := range t.options.Inet4RouteAddress {
-					routes = append(routes, netlink.Route{
-						Dst: &net.IPNet{
-							IP:   addr.Addr().AsSlice(),
-							Mask: net.CIDRMask(addr.Bits(), 32),
-						},
-						LinkIndex: tunLink.Attrs().Index,
-						Table:     t.options.TableIndex,
-					})
-				}
-			} else {
-				routes = append(routes, netlink.Route{
-					Dst: &net.IPNet{
-						IP:   net.IPv4zero,
-						Mask: net.CIDRMask(0, 32),
-					},
-					LinkIndex: tunLink.Attrs().Index,
-					Table:     t.options.TableIndex,
-				})
-			}
-		}
+func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
+	return &net.IPNet{
+		IP:   prefix.Addr().AsSlice(),
+		Mask: net.CIDRMask(prefix.Bits(), prefix.Addr().BitLen()),
 	}
-	if len(t.options.Inet6Address) > 0 {
-		if len(t.options.Inet6RouteAddress) > 0 {
-			for _, addr := range t.options.Inet6RouteAddress {
-				routes = append(routes, netlink.Route{
-					Dst: &net.IPNet{
-						IP:   addr.Addr().AsSlice(),
-						Mask: net.CIDRMask(addr.Bits(), 128),
-					},
-					LinkIndex: tunLink.Attrs().Index,
-					Table:     t.options.TableIndex,
-				})
-			}
-		} else {
+}
+
+func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
+	var routes []netlink.Route
+	for _, address := range t.options.Inet6Address {
+		routes = append(routes, netlink.Route{
+			Dst:       prefixToIPNet(address),
+			LinkIndex: tunLink.Attrs().Index,
+			Table:     t.options.TableIndex,
+		})
+	}
+	if t.options.AutoRoute {
+		routeRanges, err := t.options.BuildAutoRouteRanges()
+		if err != nil {
+			return nil, err
+		}
+		for _, routeRange := range routeRanges {
 			routes = append(routes, netlink.Route{
-				Dst: &net.IPNet{
-					IP:   net.IPv6zero,
-					Mask: net.CIDRMask(0, 128),
-				},
+				Dst:       prefixToIPNet(routeRange),
 				LinkIndex: tunLink.Attrs().Index,
 				Table:     t.options.TableIndex,
 			})
 		}
 	}
-	return routes
+	return routes, nil
 }
 
 const (
@@ -615,7 +594,11 @@ func (t *NativeTun) rules() []*netlink.Rule {
 }
 
 func (t *NativeTun) setRoute(tunLink netlink.Link) error {
-	for i, route := range t.routes(tunLink) {
+	routes, err := t.routes(tunLink)
+	if err != nil {
+		return err
+	}
+	for i, route := range routes {
 		err := netlink.RouteAdd(&route)
 		if err != nil {
 			return E.Cause(err, "add route ", i)
@@ -646,8 +629,10 @@ func (t *NativeTun) unsetRoute() error {
 }
 
 func (t *NativeTun) unsetRoute0(tunLink netlink.Link) error {
-	for _, route := range t.routes(tunLink) {
-		_ = netlink.RouteDel(&route)
+	if routes, err := t.routes(tunLink); err == nil {
+		for _, route := range routes {
+			_ = netlink.RouteDel(&route)
+		}
 	}
 	return nil
 }
