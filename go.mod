@@ -10,6 +10,7 @@ require (
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
 	github.com/sagernet/sing v0.2.15
 	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
+	go4.org/netipx v0.0.0-20230824141953-6213f710f925
 	golang.org/x/net v0.17.0
 	golang.org/x/sys v0.13.0
 )

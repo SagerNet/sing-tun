@@ -92,37 +92,18 @@ func (t *NativeTun) configure() error {
 		_ = luid.DisableDNSRegistration()
 	}
 	if t.options.AutoRoute {
-		if len(t.options.Inet4Address) > 0 {
-			if len(t.options.Inet4RouteAddress) > 0 {
-				for _, addr := range t.options.Inet4RouteAddress {
-					err := luid.AddRoute(addr, netip.IPv4Unspecified(), 0)
-					if err != nil {
-						return E.Cause(err, "add ipv4 route: ", addr)
-					}
-				}
+		routeRanges, err := t.options.BuildAutoRouteRanges()
+		if err != nil {
+			return err
+		}
+		for _, routeRange := range routeRanges {
+			if routeRange.Addr().Is4() {
+				err = luid.AddRoute(routeRange, netip.IPv4Unspecified(), 0)
 			} else {
-				err := luid.AddRoute(netip.PrefixFrom(netip.IPv4Unspecified(), 0), netip.IPv4Unspecified(), 0)
-				if err != nil {
-					return E.Cause(err, "set ipv4 route")
-				}
+				err = luid.AddRoute(routeRange, netip.IPv6Unspecified(), 0)
 			}
 		}
-		if len(t.options.Inet6Address) > 0 {
-			if len(t.options.Inet6RouteAddress) > 0 {
-				for _, addr := range t.options.Inet6RouteAddress {
-					err := luid.AddRoute(addr, netip.IPv6Unspecified(), 0)
-					if err != nil {
-						return E.Cause(err, "add ipv6 route: ", addr)
-					}
-				}
-			} else {
-				err := luid.AddRoute(netip.PrefixFrom(netip.IPv6Unspecified(), 0), netip.IPv6Unspecified(), 0)
-				if err != nil {
-					return E.Cause(err, "set ipv6 route")
-				}
-			}
-		}
-		err := windnsapi.FlushResolverCache()
+		err = windnsapi.FlushResolverCache()
 		if err != nil {
 			return err
 		}
