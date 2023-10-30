@@ -2,13 +2,17 @@ package tun
 
 import (
 	"context"
+	"net/netip"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/ranges"
+
+	"go4.org/netipx"
 )
 
 const (
@@ -95,4 +99,75 @@ func buildExcludedRanges(includeRanges []ranges.Range[uint32], excludeRanges []r
 		uidRanges = excludeRanges
 	}
 	return ranges.Merge(uidRanges)
+}
+
+const autoRouteUseSubRanges = runtime.GOOS == "darwin"
+
+func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Prefix, error) {
+	var routeRanges []netip.Prefix
+	if o.AutoRoute && len(o.Inet4Address) > 0 {
+		var inet4Ranges []netip.Prefix
+		if len(o.Inet4RouteAddress) > 0 {
+			inet4Ranges = o.Inet4RouteAddress
+		} else if autoRouteUseSubRanges && !underNetworkExtension {
+			inet4Ranges = []netip.Prefix{
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 0, 0, 0}), 8),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{2, 0, 0, 0}), 7),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{4, 0, 0, 0}), 6),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{8, 0, 0, 0}), 5),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{16, 0, 0, 0}), 4),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{32, 0, 0, 0}), 3),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{64, 0, 0, 0}), 2),
+				netip.PrefixFrom(netip.AddrFrom4([4]byte{128, 0, 0, 0}), 1),
+			}
+		} else {
+			inet4Ranges = []netip.Prefix{netip.PrefixFrom(netip.IPv4Unspecified(), 0)}
+		}
+		if len(o.Inet4RouteExcludeAddress) == 0 {
+			routeRanges = append(routeRanges, inet4Ranges...)
+		} else {
+			var builder netipx.IPSetBuilder
+			for _, inet4Range := range inet4Ranges {
+				builder.AddPrefix(inet4Range)
+			}
+			for _, prefix := range o.Inet4RouteExcludeAddress {
+				builder.RemovePrefix(prefix)
+			}
+			resultSet, err := builder.IPSet()
+			if err != nil {
+				return nil, E.Cause(err, "build IPv4 route address")
+			}
+			routeRanges = append(routeRanges, resultSet.Prefixes()...)
+		}
+	}
+	if len(o.Inet6Address) > 0 {
+		var inet6Ranges []netip.Prefix
+		if len(o.Inet6RouteAddress) > 0 {
+			inet6Ranges = o.Inet6RouteAddress
+		} else if autoRouteUseSubRanges && !underNetworkExtension {
+			inet6Ranges = []netip.Prefix{
+				netip.PrefixFrom(netip.IPv6Unspecified(), 1),
+				netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1),
+			}
+		} else {
+			inet6Ranges = []netip.Prefix{netip.PrefixFrom(netip.IPv6Unspecified(), 0)}
+		}
+		if len(o.Inet6RouteExcludeAddress) == 0 {
+			routeRanges = append(routeRanges, inet6Ranges...)
+		} else {
+			var builder netipx.IPSetBuilder
+			for _, inet6Range := range inet6Ranges {
+				builder.AddPrefix(inet6Range)
+			}
+			for _, prefix := range o.Inet6RouteExcludeAddress {
+				builder.RemovePrefix(prefix)
+			}
+			resultSet, err := builder.IPSet()
+			if err != nil {
+				return nil, E.Cause(err, "build IPv6 route address")
+			}
+			routeRanges = append(routeRanges, resultSet.Prefixes()...)
+		}
+	}
+	return routeRanges, nil
 }
