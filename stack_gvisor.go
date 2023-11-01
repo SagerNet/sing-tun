@@ -70,6 +70,7 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
+	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.tun.CreateVectorisedWriter()}
 	ipStack, err := newGVisorStack(linkEndpoint)
 	if err != nil {
 		return err
