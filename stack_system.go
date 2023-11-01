@@ -233,6 +233,10 @@ func (s *System) acceptLoop(listener net.Listener) {
 }
 
 func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
+	destination := packet.DestinationIP()
+	if destination.IsMulticast() || !destination.IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return s.processIPv4TCP(packet, packet.Payload())
@@ -246,6 +250,9 @@ func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
 }
 
 func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
+	if !packet.DestinationIP().IsGlobalUnicast() {
+		return common.Error(s.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return s.processIPv6TCP(packet, packet.Payload())
