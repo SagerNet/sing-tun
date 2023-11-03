@@ -49,5 +49,4 @@ func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkPro
 		return
 	}
 	_, _ = bufio.WriteVectorised(w.writer, pkt.AsSlices())
-	pkt.DecRef()
 }

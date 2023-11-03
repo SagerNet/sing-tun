@@ -65,10 +65,7 @@ func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logg
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
-	err := m.checkUpdate()
-	if err != nil {
-		m.logger.Error("initialize default interface: ", err)
-	}
+	_ = m.checkUpdate()
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
 }
