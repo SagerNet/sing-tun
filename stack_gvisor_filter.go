@@ -40,12 +40,12 @@ func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkPro
 		}
 	}
 	if network == nil {
-		w.DeliverNetworkPacket(protocol, pkt)
+		w.NetworkDispatcher.DeliverNetworkPacket(protocol, pkt)
 		return
 	}
 	destination := AddrFromAddress(network.DestinationAddress())
 	if destination.IsGlobalUnicast() {
-		w.DeliverNetworkPacket(protocol, pkt)
+		w.NetworkDispatcher.DeliverNetworkPacket(protocol, pkt)
 		return
 	}
 	_, _ = bufio.WriteVectorised(w.writer, pkt.AsSlices())
