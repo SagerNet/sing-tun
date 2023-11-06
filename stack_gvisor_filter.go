@@ -3,6 +3,8 @@
 package tun
 
 import (
+	"net/netip"
+
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
@@ -14,18 +16,20 @@ var _ stack.LinkEndpoint = (*LinkEndpointFilter)(nil)
 
 type LinkEndpointFilter struct {
 	stack.LinkEndpoint
-	Writer N.VectorisedWriter
+	BroadcastAddress netip.Addr
+	Writer           N.VectorisedWriter
 }
 
 func (w *LinkEndpointFilter) Attach(dispatcher stack.NetworkDispatcher) {
-	w.LinkEndpoint.Attach(&networkDispatcherFilter{dispatcher, w.Writer})
+	w.LinkEndpoint.Attach(&networkDispatcherFilter{dispatcher, w.BroadcastAddress, w.Writer})
 }
 
 var _ stack.NetworkDispatcher = (*networkDispatcherFilter)(nil)
 
 type networkDispatcherFilter struct {
 	stack.NetworkDispatcher
-	writer N.VectorisedWriter
+	broadcastAddress netip.Addr
+	writer           N.VectorisedWriter
 }
 
 func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt stack.PacketBufferPtr) {
@@ -44,7 +48,7 @@ func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkPro
 		return
 	}
 	destination := AddrFromAddress(network.DestinationAddress())
-	if destination.IsMulticast() || !destination.IsGlobalUnicast() {
+	if destination == w.broadcastAddress || !destination.IsGlobalUnicast() {
 		_, _ = bufio.WriteVectorised(w.writer, pkt.AsSlices())
 		return
 	}

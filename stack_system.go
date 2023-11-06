@@ -31,6 +31,7 @@ type System struct {
 	inet4Address       netip.Addr
 	inet6ServerAddress netip.Addr
 	inet6Address       netip.Addr
+	broadcastAddr      netip.Addr
 	udpTimeout         int64
 	tcpListener        net.Listener
 	tcpListener6       net.Listener
@@ -60,6 +61,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		logger:          options.Logger,
 		inet4Prefixes:   options.Inet4Address,
 		inet6Prefixes:   options.Inet6Address,
+		broadcastAddr:   BroadcastAddr(options.Inet4Address),
 		bindInterface:   options.ForwarderBindInterface,
 		interfaceFinder: options.InterfaceFinder,
 	}
@@ -234,7 +236,7 @@ func (s *System) acceptLoop(listener net.Listener) {
 
 func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
 	destination := packet.DestinationIP()
-	if destination.IsMulticast() || !destination.IsGlobalUnicast() {
+	if destination == s.broadcastAddr || !destination.IsGlobalUnicast() {
 		return common.Error(s.tun.Write(packet))
 	}
 	switch packet.Protocol() {
