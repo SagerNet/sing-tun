@@ -145,6 +145,10 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 }
 
 func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
+	destination := packet.DestinationIP()
+	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
+		return common.Error(m.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return m.processIPv4TCP(packet, packet.Payload())
@@ -163,6 +167,9 @@ func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
 }
 
 func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) error {
+	if !packet.DestinationIP().IsGlobalUnicast() {
+		return common.Error(m.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return m.processIPv6TCP(packet, packet.Payload())
