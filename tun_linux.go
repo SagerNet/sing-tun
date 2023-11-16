@@ -573,6 +573,17 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	}
 	if p6 {
 		if !t.options.StrictRoute {
+			for _, address := range t.options.Inet6Address {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = "lo"
+				it.Src = address.Masked()
+				it.Table = t.options.TableIndex
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+			}
+			priority6++
+
 			it = netlink.NewRule()
 			it.Priority = priority6
 			it.IifName = "lo"
