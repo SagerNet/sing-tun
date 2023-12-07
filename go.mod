@@ -8,7 +8,7 @@ require (
 	github.com/sagernet/go-tun2socks v1.16.12-0.20220818015926-16cb67876a61
 	github.com/sagernet/gvisor v0.0.0-20231119034329-07cfb6aaf930
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.2.18
+	github.com/sagernet/sing v0.2.19-0.20231207034108-445cd4f41e3f
 	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/net v0.19.0
