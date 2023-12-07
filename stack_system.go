@@ -31,6 +31,7 @@ type System struct {
 	inet4Address       netip.Addr
 	inet6ServerAddress netip.Addr
 	inet6Address       netip.Addr
+	broadcastAddr netip.Addr
 	udpTimeout         int64
 	tcpListener        net.Listener
 	tcpListener6       net.Listener
@@ -60,6 +61,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		logger:          options.Logger,
 		inet4Prefixes:   options.Inet4Address,
 		inet6Prefixes:   options.Inet6Address,
+		broadcastAddr: BroadcastAddr(options.Inet4Address),
 		bindInterface:   options.ForwarderBindInterface,
 		interfaceFinder: options.InterfaceFinder,
 	}
@@ -233,7 +235,8 @@ func (s *System) acceptLoop(listener net.Listener) {
 }
 
 func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
-	if !packet.DestinationIP().IsGlobalUnicast() {
+	destination := packet.DestinationIP()
+	if destination == s.broadcastAddr || !destination.IsGlobalUnicast() {
 		return common.Error(s.tun.Write(packet))
 	}
 	switch packet.Protocol() {
@@ -323,6 +326,9 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if packet.FragmentOffset() != 0 {
 		return E.New("ipv4: udp: fragment dropped")
 	}
+	if !header.Valid() {
+		return E.New("ipv4: udp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
@@ -346,6 +352,9 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 }
 
 func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
+	if !header.Valid() {
+		return E.New("ipv6: udp: invalid packet")
+	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {

@@ -103,13 +103,13 @@ func buildExcludedRanges(includeRanges []ranges.Range[uint32], excludeRanges []r
 
 const autoRouteUseSubRanges = runtime.GOOS == "darwin"
 
-func (o *Options) BuildAutoRouteRanges() ([]netip.Prefix, error) {
+func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Prefix, error) {
 	var routeRanges []netip.Prefix
-	if len(o.Inet4Address) > 0 {
+	if o.AutoRoute && len(o.Inet4Address) > 0 {
 		var inet4Ranges []netip.Prefix
 		if len(o.Inet4RouteAddress) > 0 {
 			inet4Ranges = o.Inet4RouteAddress
-		} else if autoRouteUseSubRanges {
+		} else if autoRouteUseSubRanges && !underNetworkExtension {
 			inet4Ranges = []netip.Prefix{
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{1, 0, 0, 0}), 8),
 				netip.PrefixFrom(netip.AddrFrom4([4]byte{2, 0, 0, 0}), 7),
@@ -144,7 +144,7 @@ func (o *Options) BuildAutoRouteRanges() ([]netip.Prefix, error) {
 		var inet6Ranges []netip.Prefix
 		if len(o.Inet6RouteAddress) > 0 {
 			inet6Ranges = o.Inet6RouteAddress
-		} else if autoRouteUseSubRanges {
+		} else if autoRouteUseSubRanges && !underNetworkExtension {
 			inet6Ranges = []netip.Prefix{
 				netip.PrefixFrom(netip.IPv6Unspecified(), 1),
 				netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1),

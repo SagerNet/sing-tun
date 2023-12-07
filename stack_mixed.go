@@ -73,7 +73,7 @@ func (m *Mixed) Start() error {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(gConn), Addr: M.SocksaddrFromNet(rAddr)}), time.Duration(m.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
 				hErr := m.handler.NewPacketConnection(ctx, conn, metadata)
 				if hErr != nil {
 					endpoint.Abort()
@@ -146,6 +146,10 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 }
 
 func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
+	destination := packet.DestinationIP()
+	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
+		return common.Error(m.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return m.processIPv4TCP(packet, packet.Payload())
@@ -164,6 +168,9 @@ func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
 }
 
 func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) error {
+	if !packet.DestinationIP().IsGlobalUnicast() {
+		return common.Error(m.tun.Write(packet))
+	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
 		return m.processIPv6TCP(packet, packet.Payload())

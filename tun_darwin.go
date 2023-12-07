@@ -264,7 +264,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 	}
 	if options.AutoRoute {
 		var routeRanges []netip.Prefix
-		routeRanges, err = options.BuildAutoRouteRanges()
+		routeRanges, err = options.BuildAutoRouteRanges(false)
 		for _, routeRange := range routeRanges {
 			if routeRange.Addr().Is4() {
 				err = addRoute(routeRange, options.Inet4Address[0].Addr())

@@ -196,28 +196,17 @@ func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
 }
 
 func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
-	var routes []netlink.Route
-	for _, address := range t.options.Inet6Address {
-		routes = append(routes, netlink.Route{
-			Dst:       prefixToIPNet(address),
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return nil, err
+	}
+	return common.Map(routeRanges, func(it netip.Prefix) netlink.Route {
+		return netlink.Route{
+			Dst:       prefixToIPNet(it),
 			LinkIndex: tunLink.Attrs().Index,
 			Table:     t.options.TableIndex,
-		})
-	}
-	if t.options.AutoRoute {
-		routeRanges, err := t.options.BuildAutoRouteRanges()
-		if err != nil {
-			return nil, err
 		}
-		for _, routeRange := range routeRanges {
-			routes = append(routes, netlink.Route{
-				Dst:       prefixToIPNet(routeRange),
-				LinkIndex: tunLink.Attrs().Index,
-				Table:     t.options.TableIndex,
-			})
-		}
-	}
-	return routes, nil
+	}), nil
 }
 
 const (
@@ -561,6 +550,17 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	}
 	if p6 {
 		if !t.options.StrictRoute {
+			for _, address := range t.options.Inet6Address {
+				it = netlink.NewRule()
+				it.Priority = priority6
+				it.IifName = "lo"
+				it.Src = address.Masked()
+				it.Table = t.options.TableIndex
+				it.Family = unix.AF_INET6
+				rules = append(rules, it)
+			}
+			priority6++
+
 			it = netlink.NewRule()
 			it.Priority = priority6
 			it.IifName = "lo"

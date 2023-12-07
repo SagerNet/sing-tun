@@ -35,6 +35,7 @@ type GVisor struct {
 	tunMtu                 uint32
 	endpointIndependentNat bool
 	udpTimeout             int64
+	broadcastAddr netip.Addr
 	handler                Handler
 	logger                 logger.Logger
 	stack                  *stack.Stack
@@ -60,6 +61,7 @@ func NewGVisor(
 		tunMtu:                 options.MTU,
 		endpointIndependentNat: options.EndpointIndependentNat,
 		udpTimeout:             options.UDPTimeout,
+		broadcastAddr: BroadcastAddr(options.Inet4Address),
 		handler:                options.Handler,
 		logger:                 options.Logger,
 	}
@@ -71,7 +73,7 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.tun.CreateVectorisedWriter()}
+	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun.CreateVectorisedWriter()}
 	ipStack, err := newGVisorStack(linkEndpoint)
 	if err != nil {
 		return err
@@ -135,7 +137,7 @@ func (t *GVisor) Start() error {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewPacketConn(&bufio.UnbindPacketConn{ExtendedConn: bufio.NewExtendedConn(gConn), Addr: M.SocksaddrFromNet(rAddr)}), time.Duration(t.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(t.udpTimeout)*time.Second)
 				hErr := t.handler.NewPacketConnection(ctx, conn, metadata)
 				if hErr != nil {
 					endpoint.Abort()

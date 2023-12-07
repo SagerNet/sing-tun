@@ -93,7 +93,7 @@ func (t *NativeTun) configure() error {
 		_ = luid.DisableDNSRegistration()
 	}
 	if t.options.AutoRoute {
-		routeRanges, err := t.options.BuildAutoRouteRanges()
+		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
 		}
