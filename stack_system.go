@@ -22,7 +22,7 @@ type System struct {
 	ctx                context.Context
 	tun                Tun
 	tunName            string
-	mtu                uint32
+	mtu                int
 	handler            Handler
 	logger             logger.Logger
 	inet4Prefixes      []netip.Prefix
@@ -41,6 +41,7 @@ type System struct {
 	udpNat             *udpnat.Service[netip.AddrPort]
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
+	offload            bool
 }
 
 type Session struct {
@@ -54,29 +55,29 @@ func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
 		ctx:             options.Context,
 		tun:             options.Tun,
-		tunName:         options.Name,
-		mtu:             options.MTU,
+		tunName:         options.TunOptions.Name,
+		mtu:             int(options.TunOptions.MTU),
 		udpTimeout:      options.UDPTimeout,
 		handler:         options.Handler,
 		logger:          options.Logger,
-		inet4Prefixes:   options.Inet4Address,
-		inet6Prefixes:   options.Inet6Address,
-		broadcastAddr:   BroadcastAddr(options.Inet4Address),
+		inet4Prefixes:   options.TunOptions.Inet4Address,
+		inet6Prefixes:   options.TunOptions.Inet6Address,
+		broadcastAddr:   BroadcastAddr(options.TunOptions.Inet4Address),
 		bindInterface:   options.ForwarderBindInterface,
 		interfaceFinder: options.InterfaceFinder,
 	}
-	if len(options.Inet4Address) > 0 {
-		if options.Inet4Address[0].Bits() == 32 {
+	if len(options.TunOptions.Inet4Address) > 0 {
+		if options.TunOptions.Inet4Address[0].Bits() == 32 {
 			return nil, E.New("need one more IPv4 address in first prefix for system stack")
 		}
-		stack.inet4ServerAddress = options.Inet4Address[0].Addr()
+		stack.inet4ServerAddress = options.TunOptions.Inet4Address[0].Addr()
 		stack.inet4Address = stack.inet4ServerAddress.Next()
 	}
-	if len(options.Inet6Address) > 0 {
-		if options.Inet6Address[0].Bits() == 128 {
+	if len(options.TunOptions.Inet6Address) > 0 {
+		if options.TunOptions.Inet6Address[0].Bits() == 128 {
 			return nil, E.New("need one more IPv6 address in first prefix for system stack")
 		}
-		stack.inet6ServerAddress = options.Inet6Address[0].Addr()
+		stack.inet6ServerAddress = options.TunOptions.Inet6Address[0].Addr()
 		stack.inet6Address = stack.inet6ServerAddress.Next()
 	}
 	if !stack.inet4Address.IsValid() && !stack.inet6Address.IsValid() {
@@ -144,27 +145,29 @@ func (s *System) tunLoop() {
 		s.wintunLoop(winTun)
 		return
 	}
-	packetBuffer := make([]byte, s.mtu+PacketOffset)
-	for {
-		n, err := s.tun.Read(packetBuffer)
-		if err != nil {
+	if batchTUN, isBatchTUN := s.tun.(BatchTUN); isBatchTUN {
+		batchSize := batchTUN.BatchSize()
+		if batchSize > 1 {
+			s.batchLoop(batchTUN, batchSize)
 			return
+		}
+	}
+	frontHeadroom := s.tun.FrontHeadroom()
+	packetBuffer := make([]byte, s.mtu+frontHeadroom+PacketOffset)
+	for {
+		n, err := s.tun.Read(packetBuffer[frontHeadroom:])
+		if err != nil {
+			if E.IsClosed(err) {
+				return
+			}
+			s.logger.Error(E.Cause(err, "read packet"))
 		}
 		if n < clashtcpip.IPv4PacketMinLength {
 			continue
 		}
-		packet := packetBuffer[PacketOffset:n]
-		switch ipVersion := packet[0] >> 4; ipVersion {
-		case 4:
-			err = s.processIPv4(packet)
-		case 6:
-			err = s.processIPv6(packet)
-		default:
-			err = E.New("ip: unknown version: ", ipVersion)
-		}
-		if err != nil {
-			s.logger.Trace(err)
-		}
+		rawPacket := packetBuffer[:frontHeadroom+n]
+		packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
+		s.processPacket(rawPacket, packet)
 	}
 }
 
@@ -178,18 +181,56 @@ func (s *System) wintunLoop(winTun WinTun) {
 			release()
 			continue
 		}
-		switch ipVersion := packet[0] >> 4; ipVersion {
-		case 4:
-			err = s.processIPv4(packet)
-		case 6:
-			err = s.processIPv6(packet)
-		default:
-			err = E.New("ip: unknown version: ", ipVersion)
-		}
-		if err != nil {
-			s.logger.Trace(err)
-		}
+		s.processPacket(packet, packet)
 		release()
+	}
+}
+
+func (m *System) batchLoop(linuxTUN BatchTUN, batchSize int) {
+	frontHeadroom := m.tun.FrontHeadroom()
+	packetBuffers := make([][]byte, batchSize)
+	readBuffers := make([][]byte, batchSize)
+	packetSizes := make([]int, batchSize)
+	for i := range packetBuffers {
+		packetBuffers[i] = make([]byte, m.mtu+frontHeadroom+PacketOffset)
+		readBuffers[i] = packetBuffers[i][frontHeadroom:]
+	}
+	for {
+		n, err := linuxTUN.BatchRead(readBuffers, packetSizes)
+		if err != nil {
+			if E.IsClosed(err) {
+				return
+			}
+			m.logger.Error(E.Cause(err, "batch read packet"))
+		}
+		if n == 0 {
+			continue
+		}
+		for i := 0; i < n; i++ {
+			packetSize := packetSizes[i]
+			if packetSize < clashtcpip.IPv4PacketMinLength {
+				continue
+			}
+			packetBuffer := packetBuffers[i]
+			rawPacket := packetBuffer[:frontHeadroom+packetSize]
+			packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+packetSize]
+			m.processPacket(rawPacket, packet)
+		}
+	}
+}
+
+func (s *System) processPacket(rawPacket []byte, packet []byte) {
+	var err error
+	switch ipVersion := packet[0] >> 4; ipVersion {
+	case 4:
+		err = s.processIPv4(rawPacket, packet)
+	case 6:
+		err = s.processIPv6(rawPacket, packet)
+	default:
+		err = E.New("ip: unknown version: ", ipVersion)
+	}
+	if err != nil {
+		s.logger.Trace(err)
 	}
 }
 
@@ -234,44 +275,44 @@ func (s *System) acceptLoop(listener net.Listener) {
 	}
 }
 
-func (s *System) processIPv4(packet clashtcpip.IPv4Packet) error {
+func (s *System) processIPv4(rawPacket []byte, packet clashtcpip.IPv4Packet) error {
 	destination := packet.DestinationIP()
 	if destination == s.broadcastAddr || !destination.IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
-		return s.processIPv4TCP(packet, packet.Payload())
+		return s.processIPv4TCP(rawPacket, packet, packet.Payload())
 	case clashtcpip.UDP:
-		return s.processIPv4UDP(packet, packet.Payload())
+		return s.processIPv4UDP(rawPacket, packet, packet.Payload())
 	case clashtcpip.ICMP:
-		return s.processIPv4ICMP(packet, packet.Payload())
+		return s.processIPv4ICMP(rawPacket, packet, packet.Payload())
 	default:
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 }
 
-func (s *System) processIPv6(packet clashtcpip.IPv6Packet) error {
+func (s *System) processIPv6(rawPacket []byte, packet clashtcpip.IPv6Packet) error {
 	if !packet.DestinationIP().IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
-		return s.processIPv6TCP(packet, packet.Payload())
+		return s.processIPv6TCP(rawPacket, packet, packet.Payload())
 	case clashtcpip.UDP:
-		return s.processIPv6UDP(packet, packet.Payload())
+		return s.processIPv6UDP(rawPacket, packet, packet.Payload())
 	case clashtcpip.ICMPv6:
-		return s.processIPv6ICMP(packet, packet.Payload())
+		return s.processIPv6ICMP(rawPacket, packet, packet.Payload())
 	default:
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 }
 
-func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.TCPPacket) error {
+func (s *System) processIPv4TCP(rawPacket []byte, packet clashtcpip.IPv4Packet, header clashtcpip.TCPPacket) error {
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	} else if source.Addr() == s.inet4ServerAddress && source.Port() == s.tcpPort {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
@@ -290,14 +331,14 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	}
 	header.ResetChecksum(packet.PseudoSum())
 	packet.ResetChecksum()
-	return common.Error(s.tun.Write(packet))
+	return common.Error(s.tun.Write(rawPacket))
 }
 
-func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.TCPPacket) error {
+func (s *System) processIPv6TCP(rawPacket []byte, packet clashtcpip.IPv6Packet, header clashtcpip.TCPPacket) error {
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	} else if source.Addr() == s.inet6ServerAddress && source.Port() == s.tcpPort6 {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
@@ -316,10 +357,10 @@ func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	}
 	header.ResetChecksum(packet.PseudoSum())
 	packet.ResetChecksum()
-	return common.Error(s.tun.Write(packet))
+	return common.Error(s.tun.Write(rawPacket))
 }
 
-func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.UDPPacket) error {
+func (s *System) processIPv4UDP(rawPacket []byte, packet clashtcpip.IPv4Packet, header clashtcpip.UDPPacket) error {
 	if packet.Flags()&clashtcpip.FlagMoreFragment != 0 {
 		return E.New("ipv4: fragment dropped")
 	}
@@ -332,7 +373,7 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 	data := buf.As(header.Payload())
 	if data.Len() == 0 {
@@ -346,19 +387,19 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter4{s.tun, headerCopy, source}
+		return &systemUDPPacketWriter4{s.tun, s.tun.FrontHeadroom() + PacketOffset, headerCopy, source}
 	})
 	return nil
 }
 
-func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
+func (s *System) processIPv6UDP(rawPacket []byte, packet clashtcpip.IPv6Packet, header clashtcpip.UDPPacket) error {
 	if !header.Valid() {
 		return E.New("ipv6: udp: invalid packet")
 	}
 	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
 	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
-		return common.Error(s.tun.Write(packet))
+		return common.Error(s.tun.Write(rawPacket))
 	}
 	data := buf.As(header.Payload())
 	if data.Len() == 0 {
@@ -372,12 +413,12 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		headerLen := len(packet) - int(header.Length()) + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter6{s.tun, headerCopy, source}
+		return &systemUDPPacketWriter6{s.tun, s.tun.FrontHeadroom() + PacketOffset, headerCopy, source}
 	})
 	return nil
 }
 
-func (s *System) processIPv4ICMP(packet clashtcpip.IPv4Packet, header clashtcpip.ICMPPacket) error {
+func (s *System) processIPv4ICMP(rawPacket []byte, packet clashtcpip.IPv4Packet, header clashtcpip.ICMPPacket) error {
 	if header.Type() != clashtcpip.ICMPTypePingRequest || header.Code() != 0 {
 		return nil
 	}
@@ -387,10 +428,10 @@ func (s *System) processIPv4ICMP(packet clashtcpip.IPv4Packet, header clashtcpip
 	packet.SetDestinationIP(sourceAddress)
 	header.ResetChecksum()
 	packet.ResetChecksum()
-	return common.Error(s.tun.Write(packet))
+	return common.Error(s.tun.Write(rawPacket))
 }
 
-func (s *System) processIPv6ICMP(packet clashtcpip.IPv6Packet, header clashtcpip.ICMPv6Packet) error {
+func (s *System) processIPv6ICMP(rawPacket []byte, packet clashtcpip.IPv6Packet, header clashtcpip.ICMPv6Packet) error {
 	if header.Type() != clashtcpip.ICMPv6EchoRequest || header.Code() != 0 {
 		return nil
 	}
@@ -400,102 +441,20 @@ func (s *System) processIPv6ICMP(packet clashtcpip.IPv6Packet, header clashtcpip
 	packet.SetDestinationIP(sourceAddress)
 	header.ResetChecksum(packet.PseudoSum())
 	packet.ResetChecksum()
-	return common.Error(s.tun.Write(packet))
-}
-
-type systemTCPDirectPacketWriter4 struct {
-	tun    Tun
-	source netip.AddrPort
-}
-
-func (w *systemTCPDirectPacketWriter4) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv4Packet(p)
-	header := clashtcpip.TCPPacket(packet.Payload())
-	packet.SetDestinationIP(w.source.Addr())
-	header.SetDestinationPort(w.source.Port())
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
-}
-
-type systemTCPDirectPacketWriter6 struct {
-	tun    Tun
-	source netip.AddrPort
-}
-
-func (w *systemTCPDirectPacketWriter6) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv6Packet(p)
-	header := clashtcpip.TCPPacket(packet.Payload())
-	packet.SetDestinationIP(w.source.Addr())
-	header.SetDestinationPort(w.source.Port())
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
-}
-
-type systemUDPDirectPacketWriter4 struct {
-	tun    Tun
-	source netip.AddrPort
-}
-
-func (w *systemUDPDirectPacketWriter4) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv4Packet(p)
-	header := clashtcpip.UDPPacket(packet.Payload())
-	packet.SetDestinationIP(w.source.Addr())
-	header.SetDestinationPort(w.source.Port())
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
-}
-
-type systemUDPDirectPacketWriter6 struct {
-	tun    Tun
-	source netip.AddrPort
-}
-
-func (w *systemUDPDirectPacketWriter6) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv6Packet(p)
-	header := clashtcpip.UDPPacket(packet.Payload())
-	packet.SetDestinationIP(w.source.Addr())
-	header.SetDestinationPort(w.source.Port())
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
-}
-
-type systemICMPDirectPacketWriter4 struct {
-	tun    Tun
-	source netip.Addr
-}
-
-func (w *systemICMPDirectPacketWriter4) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv4Packet(p)
-	packet.SetDestinationIP(w.source)
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
-}
-
-type systemICMPDirectPacketWriter6 struct {
-	tun    Tun
-	source netip.Addr
-}
-
-func (w *systemICMPDirectPacketWriter6) WritePacket(p []byte) error {
-	packet := clashtcpip.IPv6Packet(p)
-	packet.SetDestinationIP(w.source)
-	packet.ResetChecksum()
-	return common.Error(w.tun.Write(packet))
+	return common.Error(s.tun.Write(rawPacket))
 }
 
 type systemUDPPacketWriter4 struct {
-	tun    Tun
-	header []byte
-	source netip.AddrPort
+	tun           Tun
+	frontHeadroom int
+	header        []byte
+	source        netip.AddrPort
 }
 
 func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.NewSize(len(w.header) + buffer.Len())
+	newPacket := buf.NewSize(w.frontHeadroom + len(w.header) + buffer.Len())
 	defer newPacket.Release()
+	newPacket.Resize(w.frontHeadroom, 0)
 	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())
 	ipHdr := clashtcpip.IPv4Packet(newPacket.Bytes())
@@ -508,18 +467,25 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetLength(uint16(buffer.Len() + clashtcpip.UDPHeaderSize))
 	udpHdr.ResetChecksum(ipHdr.PseudoSum())
 	ipHdr.ResetChecksum()
+	if PacketOffset > 0 {
+		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
+	} else {
+		newPacket.Advance(-w.frontHeadroom)
+	}
 	return common.Error(w.tun.Write(newPacket.Bytes()))
 }
 
 type systemUDPPacketWriter6 struct {
-	tun    Tun
-	header []byte
-	source netip.AddrPort
+	tun           Tun
+	frontHeadroom int
+	header        []byte
+	source        netip.AddrPort
 }
 
 func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	newPacket := buf.NewSize(len(w.header) + buffer.Len())
+	newPacket := buf.NewSize(w.frontHeadroom + len(w.header) + buffer.Len())
 	defer newPacket.Release()
+	newPacket.Resize(w.frontHeadroom, 0)
 	newPacket.Write(w.header)
 	newPacket.Write(buffer.Bytes())
 	ipHdr := clashtcpip.IPv6Packet(newPacket.Bytes())
@@ -532,5 +498,10 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetSourcePort(destination.Port)
 	udpHdr.SetLength(udpLen)
 	udpHdr.ResetChecksum(ipHdr.PseudoSum())
+	if PacketOffset > 0 {
+		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET6
+	} else {
+		newPacket.Advance(-w.frontHeadroom)
+	}
 	return common.Error(w.tun.Write(newPacket.Bytes()))
 }

@@ -23,7 +23,7 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
-	CreateVectorisedWriter() N.VectorisedWriter
+	N.FrontHeadroom
 	Close() error
 }
 
@@ -32,11 +32,18 @@ type WinTun interface {
 	ReadPacket() ([]byte, func(), error)
 }
 
+type BatchTUN interface {
+	BatchSize() int
+	BatchRead(buffers [][]byte, readN []int) (n int, err error)
+}
+
 type Options struct {
 	Name                     string
 	Inet4Address             []netip.Prefix
 	Inet6Address             []netip.Prefix
 	MTU                      uint32
+	GSO                      bool
+	GSOMaxSize               uint32
 	AutoRoute                bool
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix

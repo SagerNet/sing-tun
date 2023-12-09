@@ -36,7 +36,7 @@ func (e *DarwinEndpoint) LinkAddress() tcpip.LinkAddress {
 }
 
 func (e *DarwinEndpoint) Capabilities() stack.LinkEndpointCapabilities {
-	return stack.CapabilityNone
+	return stack.CapabilityRXChecksumOffload
 }
 
 func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
@@ -112,14 +112,7 @@ func (e *DarwinEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
 func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
-		var packetHeader []byte
-		switch packet.NetworkProtocolNumber {
-		case header.IPv4ProtocolNumber:
-			packetHeader = packetHeader4[:]
-		case header.IPv6ProtocolNumber:
-			packetHeader = packetHeader6[:]
-		}
-		_, err := bufio.WriteVectorised(e.tun.tunWriter, append([][]byte{packetHeader}, packet.AsSlices()...))
+		_, err := bufio.WriteVectorised(e.tun, packet.AsSlices())
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}
