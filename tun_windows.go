@@ -19,7 +19,6 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/windnsapi"
 
 	"golang.org/x/sys/windows"
@@ -64,6 +63,10 @@ func New(options Options) (WinTun, error) {
 		return nil, err
 	}
 	return nativeTun, nil
+}
+
+func (t *NativeTun) FrontHeadroom() int {
+	return 0
 }
 
 func (t *NativeTun) configure() error {
@@ -452,10 +455,6 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 		return 0, nil // Dropping when ring is full.
 	}
 	return 0, fmt.Errorf("write failed: %w", err)
-}
-
-func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
-	return t
 }
 
 func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {

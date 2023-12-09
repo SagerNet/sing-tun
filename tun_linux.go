@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"io"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -12,9 +13,7 @@ import (
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -28,11 +27,15 @@ type NativeTun struct {
 	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
 	options           Options
 	ruleIndex6        []int
+	gsoEnabled        bool
+	gsoBuffer         []byte
+	tcp4GROTable      *tcpGROTable
+	tcp6GROTable      *tcpGROTable
 }
 
 func New(options Options) (Tun, error) {
 	if options.FileDescriptor == 0 {
-		tunFd, err := open(options.Name)
+		tunFd, err := open(options.Name, options.GSO)
 		if err != nil {
 			return nil, err
 		}
@@ -62,16 +65,58 @@ func New(options Options) (Tun, error) {
 	}
 }
 
+func (t *NativeTun) FrontHeadroom() int {
+	if t.gsoEnabled {
+		return virtioNetHdrLen
+	}
+	return 0
+}
+
+func (t *NativeTun) UpstreamWriter() io.Writer {
+	return t.tunFile
+}
+
+func (t *NativeTun) WriterReplaceable() bool {
+	return !t.gsoEnabled
+}
+
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	return t.tunFile.Read(p)
+	if t.gsoEnabled {
+		n, err = t.tunFile.Read(t.gsoBuffer)
+		if err != nil {
+			return
+		}
+		var sizes [1]int
+		n, err = handleVirtioRead(t.gsoBuffer[:n], [][]byte{p}, sizes[:], 0)
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			return
+		}
+		n = sizes[0]
+		return
+	} else {
+		return t.tunFile.Read(p)
+	}
 }
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
+	if t.gsoEnabled {
+		defer func() {
+			t.tcp4GROTable.reset()
+			t.tcp6GROTable.reset()
+		}()
+		var toWrite []int
+		err = handleGRO([][]byte{p}, virtioNetHdrLen, t.tcp4GROTable, t.tcp6GROTable, &toWrite)
+		if err != nil {
+			return
+		}
+		if len(toWrite) == 0 {
+			return
+		}
+	}
 	return t.tunFile.Write(p)
-}
-
-func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
-	return bufio.NewVectorisedWriter(t.tunFile)
 }
 
 var controlPath string
@@ -86,7 +131,7 @@ func init() {
 	}
 }
 
-func open(name string) (int, error) {
+func open(name string, vnetHdr bool) (int, error) {
 	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
 	if err != nil {
 		return -1, err
@@ -100,6 +145,9 @@ func open(name string) (int, error) {
 
 	copy(ifr.name[:], name)
 	ifr.flags = unix.IFF_TUN | unix.IFF_NO_PI
+	if vnetHdr {
+		ifr.flags |= unix.IFF_VNET_HDR
+	}
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))
 	if errno != 0 {
 		unix.Close(fd)
@@ -142,6 +190,28 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		}
 	}
 
+	if t.options.GSO {
+		vnethdrEnabled, err := checkVNETHDREnabled(uint16(t.tunFd), t.options.Name)
+		if err != nil {
+			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+		}
+		if !vnethdrEnabled {
+			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
+		}
+		const (
+			// TODO: support TSO with ECN bits
+			tunOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
+		)
+		err = unix.IoctlSetInt(t.tunFd, unix.TUNSETOFFLOAD, tunOffloads)
+		if err != nil {
+			return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
+		}
+		t.gsoEnabled = true
+		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(t.options.GSOMaxSize))
+		t.tcp4GROTable = newTCPGROTable()
+		t.tcp6GROTable = newTCPGROTable()
+	}
+
 	err = netlink.LinkSetUp(tunLink)
 	if err != nil {
 		return err
@@ -179,6 +249,18 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
 	}
 	return nil
+}
+
+func checkVNETHDREnabled(fd uint16, name string) (bool, error) {
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		return false, err
+	}
+	err = unix.IoctlIfreq(int(fd), unix.TUNGETIFF, ifr)
+	if err != nil {
+		return false, os.NewSyscallError("TUNGETIFF", err)
+	}
+	return ifr.Uint16()&unix.IFF_VNET_HDR != 0, nil
 }
 
 func (t *NativeTun) Close() error {

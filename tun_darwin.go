@@ -72,39 +72,22 @@ func New(options Options) (Tun, error) {
 	return nativeTun, nil
 }
 
-func (t *NativeTun) Read(p []byte) (n int, err error) {
-	/*n, err = t.tunFile.Read(p)
-	if n < 4 {
-		return 0, err
-	}
+func (t *NativeTun) FrontHeadroom() int {
+	return 0
+}
 
-	copy(p[:], p[4:])
-	return n - 4, err*/
+func (t *NativeTun) Read(p []byte) (n int, err error) {
 	return t.tunFile.Read(p)
+}
+
+func (t *NativeTun) Write(p []byte) (n int, err error) {
+	return t.tunFile.Write(p)
 }
 
 var (
 	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
 	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
 )
-
-func (t *NativeTun) Write(p []byte) (n int, err error) {
-	var packetHeader []byte
-	if p[0]>>4 == 4 {
-		packetHeader = packetHeader4[:]
-	} else {
-		packetHeader = packetHeader6[:]
-	}
-	_, err = bufio.WriteVectorised(t.tunWriter, [][]byte{packetHeader, p})
-	if err == nil {
-		n = len(p)
-	}
-	return
-}
-
-func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
-	return t
-}
 
 func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 	var packetHeader []byte
