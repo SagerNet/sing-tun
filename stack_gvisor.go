@@ -31,7 +31,6 @@ const defaultNIC tcpip.NICID = 1
 type GVisor struct {
 	ctx                    context.Context
 	tun                    GVisorTun
-	tunMtu                 uint32
 	endpointIndependentNat bool
 	udpTimeout             int64
 	broadcastAddr          netip.Addr
@@ -57,10 +56,9 @@ func NewGVisor(
 	gStack := &GVisor{
 		ctx:                    options.Context,
 		tun:                    gTun,
-		tunMtu:                 options.MTU,
 		endpointIndependentNat: options.EndpointIndependentNat,
 		udpTimeout:             options.UDPTimeout,
-		broadcastAddr:          BroadcastAddr(options.Inet4Address),
+		broadcastAddr:          BroadcastAddr(options.TunOptions.Inet4Address),
 		handler:                options.Handler,
 		logger:                 options.Logger,
 	}
@@ -72,7 +70,7 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun.CreateVectorisedWriter()}
+	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
 	ipStack, err := newGVisorStack(linkEndpoint)
 	if err != nil {
 		return err

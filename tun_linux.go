@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
@@ -22,17 +24,29 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var _ LinuxTUN = (*NativeTun)(nil)
+
 type NativeTun struct {
 	tunFd             int
 	tunFile           *os.File
+	tunWriter         N.VectorisedWriter
 	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
 	options           Options
 	ruleIndex6        []int
+	gsoEnabled        bool
+	gsoBuffer         []byte
+	gsoToWrite        []int
+	gsoReadAccess     sync.Mutex
+	tcpGROAccess      sync.Mutex
+	tcp4GROTable      *tcpGROTable
+	tcp6GROTable      *tcpGROTable
+	txChecksumOffload bool
 }
 
 func New(options Options) (Tun, error) {
+	var nativeTun *NativeTun
 	if options.FileDescriptor == 0 {
-		tunFd, err := open(options.Name)
+		tunFd, err := open(options.Name, options.GSO)
 		if err != nil {
 			return nil, err
 		}
@@ -40,38 +54,125 @@ func New(options Options) (Tun, error) {
 		if err != nil {
 			return nil, E.Errors(err, unix.Close(tunFd))
 		}
-		nativeTun := &NativeTun{
+		nativeTun = &NativeTun{
 			tunFd:   tunFd,
 			tunFile: os.NewFile(uintptr(tunFd), "tun"),
 			options: options,
 		}
-		runtime.SetFinalizer(nativeTun.tunFile, nil)
 		err = nativeTun.configure(tunLink)
 		if err != nil {
 			return nil, E.Errors(err, unix.Close(tunFd))
 		}
-		return nativeTun, nil
 	} else {
-		nativeTun := &NativeTun{
+		nativeTun = &NativeTun{
 			tunFd:   options.FileDescriptor,
 			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
 			options: options,
 		}
-		runtime.SetFinalizer(nativeTun.tunFile, nil)
-		return nativeTun, nil
 	}
+	var ok bool
+	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
+	if !ok {
+		panic("create vectorised writer")
+	}
+	return nativeTun, nil
+}
+
+func (t *NativeTun) FrontHeadroom() int {
+	if t.gsoEnabled {
+		return virtioNetHdrLen
+	}
+	return 0
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	return t.tunFile.Read(p)
+	if t.gsoEnabled {
+		n, err = t.tunFile.Read(t.gsoBuffer)
+		if err != nil {
+			return
+		}
+		var sizes [1]int
+		n, err = handleVirtioRead(t.gsoBuffer[:n], [][]byte{p}, sizes[:], 0)
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			return
+		}
+		n = sizes[0]
+		return
+	} else {
+		return t.tunFile.Read(p)
+	}
 }
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
+	if t.gsoEnabled {
+		err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
+		if err != nil {
+			return
+		}
+		n = len(p)
+		return
+	}
 	return t.tunFile.Write(p)
 }
 
-func (t *NativeTun) CreateVectorisedWriter() N.VectorisedWriter {
-	return bufio.NewVectorisedWriter(t.tunFile)
+func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
+	if t.gsoEnabled {
+		n := buf.LenMulti(buffers)
+		buffer := buf.NewSize(virtioNetHdrLen + n)
+		buffer.Truncate(virtioNetHdrLen)
+		buf.CopyMulti(buffer.Extend(n), buffers)
+		_, err := t.tunFile.Write(buffer.Bytes())
+		buffer.Release()
+		return err
+	} else {
+		return t.tunWriter.WriteVectorised(buffers)
+	}
+}
+
+func (t *NativeTun) BatchSize() int {
+	if !t.gsoEnabled {
+		return 1
+	}
+	batchSize := int(gsoMaxSize/t.options.MTU) * 2
+	if batchSize > idealBatchSize {
+		batchSize = idealBatchSize
+	}
+	return batchSize
+}
+
+func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
+	t.gsoReadAccess.Lock()
+	defer t.gsoReadAccess.Unlock()
+	n, err = t.tunFile.Read(t.gsoBuffer)
+	if err != nil {
+		return
+	}
+	return handleVirtioRead(t.gsoBuffer[:n], buffers, readN, offset)
+}
+
+func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) error {
+	t.tcpGROAccess.Lock()
+	defer func() {
+		t.tcp4GROTable.reset()
+		t.tcp6GROTable.reset()
+		t.tcpGROAccess.Unlock()
+	}()
+	t.gsoToWrite = t.gsoToWrite[:0]
+	err := handleGRO(buffers, offset, t.tcp4GROTable, t.tcp6GROTable, &t.gsoToWrite)
+	if err != nil {
+		return err
+	}
+	offset -= virtioNetHdrLen
+	for _, bufferIndex := range t.gsoToWrite {
+		_, err = t.tunFile.Write(buffers[bufferIndex][offset:])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var controlPath string
@@ -86,7 +187,7 @@ func init() {
 	}
 }
 
-func open(name string) (int, error) {
+func open(name string, vnetHdr bool) (int, error) {
 	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
 	if err != nil {
 		return -1, err
@@ -100,6 +201,9 @@ func open(name string) (int, error) {
 
 	copy(ifr.name[:], name)
 	ifr.flags = unix.IFF_TUN | unix.IFF_NO_PI
+	if vnetHdr {
+		ifr.flags |= unix.IFF_VNET_HDR
+	}
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))
 	if errno != 0 {
 		unix.Close(fd)
@@ -140,6 +244,46 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 				return err
 			}
 		}
+	}
+
+	if t.options.GSO {
+		var vnetHdrEnabled bool
+		vnetHdrEnabled, err = checkVNETHDREnabled(t.tunFd, t.options.Name)
+		if err != nil {
+			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+		}
+		if !vnetHdrEnabled {
+			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
+		}
+		err = setTCPOffload(t.tunFd)
+		if err != nil {
+			return err
+		}
+		t.gsoEnabled = true
+		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
+		t.tcp4GROTable = newTCPGROTable()
+		t.tcp6GROTable = newTCPGROTable()
+	}
+
+	var rxChecksumOffload bool
+	rxChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GRXCSUM)
+	if err == nil && !rxChecksumOffload {
+		_ = setChecksumOffload(t.options.Name, unix.ETHTOOL_SRXCSUM)
+	}
+
+	if t.options._TXChecksumOffload {
+		var txChecksumOffload bool
+		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
+		if err != nil {
+			return err
+		}
+		if err == nil && !txChecksumOffload {
+			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
+			if err != nil {
+				return err
+			}
+		}
+		t.txChecksumOffload = true
 	}
 
 	err = netlink.LinkSetUp(tunLink)
@@ -186,6 +330,10 @@ func (t *NativeTun) Close() error {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
+}
+
+func (t *NativeTun) TXChecksumOffload() bool {
+	return t.txChecksumOffload
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {

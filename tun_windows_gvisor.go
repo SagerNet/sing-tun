@@ -35,7 +35,7 @@ func (e *WintunEndpoint) LinkAddress() tcpip.LinkAddress {
 }
 
 func (e *WintunEndpoint) Capabilities() stack.LinkEndpointCapabilities {
-	return stack.CapabilityNone
+	return stack.CapabilityRXChecksumOffload
 }
 
 func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {

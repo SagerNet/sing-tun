@@ -19,10 +19,7 @@ type Stack interface {
 type StackOptions struct {
 	Context                context.Context
 	Tun                    Tun
-	Name                   string
-	MTU                    uint32
-	Inet4Address           []netip.Prefix
-	Inet6Address           []netip.Prefix
+	TunOptions             Options
 	EndpointIndependentNat bool
 	UDPTimeout             int64
 	Handler                Handler
@@ -37,7 +34,7 @@ func NewStack(
 ) (Stack, error) {
 	switch stack {
 	case "":
-		if WithGVisor {
+		if WithGVisor && !options.TunOptions.GSO {
 			return NewMixed(options)
 		} else {
 			return NewSystem(options)
@@ -48,8 +45,6 @@ func NewStack(
 		return NewMixed(options)
 	case "system":
 		return NewSystem(options)
-	case "lwip":
-		return NewLWIP(options)
 	default:
 		return nil, E.New("unknown stack: ", stack)
 	}
