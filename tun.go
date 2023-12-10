@@ -23,7 +23,7 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
-	CreateVectorisedWriter() N.VectorisedWriter
+	N.FrontHeadroom
 	Close() error
 }
 
@@ -37,6 +37,8 @@ type Options struct {
 	Inet4Address             []netip.Prefix
 	Inet6Address             []netip.Prefix
 	MTU                      uint32
+	GSO                      bool
+	GSOMaxSize               uint32
 	AutoRoute                bool
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix

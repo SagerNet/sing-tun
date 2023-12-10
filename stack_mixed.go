@@ -39,7 +39,7 @@ func NewMixed(
 	}
 	return &Mixed{
 		System:                 system.(*System),
-		writer:                 options.Tun.CreateVectorisedWriter(),
+		writer:                 bufio.NewVectorisedWriter(options.Tun),
 		endpointIndependentNat: options.EndpointIndependentNat,
 	}, nil
 }
@@ -96,21 +96,26 @@ func (m *Mixed) tunLoop() {
 		m.wintunLoop(winTun)
 		return
 	}
-	packetBuffer := make([]byte, m.mtu+PacketOffset)
+	frontHeadroom := m.tun.FrontHeadroom()
+	packetBuffer := make([]byte, m.bufferSize+frontHeadroom+PacketOffset)
 	for {
-		n, err := m.tun.Read(packetBuffer)
+		n, err := m.tun.Read(packetBuffer[frontHeadroom:])
 		if err != nil {
-			return
+			if E.IsClosed(err) {
+				return
+			}
+			m.logger.Error(E.Cause(err, "read packet"))
 		}
 		if n < clashtcpip.IPv4PacketMinLength {
 			continue
 		}
-		packet := packetBuffer[PacketOffset:n]
+		rawPacket := packetBuffer[:frontHeadroom+n]
+		packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
 		switch ipVersion := packet[0] >> 4; ipVersion {
 		case 4:
-			err = m.processIPv4(packet)
+			err = m.processIPv4(rawPacket, packet)
 		case 6:
-			err = m.processIPv6(packet)
+			err = m.processIPv6(rawPacket, packet)
 		default:
 			err = E.New("ip: unknown version: ", ipVersion)
 		}
@@ -132,9 +137,9 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 		}
 		switch ipVersion := packet[0] >> 4; ipVersion {
 		case 4:
-			err = m.processIPv4(packet)
+			err = m.processIPv4(packet, packet)
 		case 6:
-			err = m.processIPv6(packet)
+			err = m.processIPv6(packet, packet)
 		default:
 			err = E.New("ip: unknown version: ", ipVersion)
 		}
@@ -145,14 +150,14 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
+func (m *Mixed) processIPv4(rawPacket []byte, packet clashtcpip.IPv4Packet) error {
 	destination := packet.DestinationIP()
 	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
-		return common.Error(m.tun.Write(packet))
+		return common.Error(m.tun.Write(rawPacket))
 	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
-		return m.processIPv4TCP(packet, packet.Payload())
+		return m.processIPv4TCP(rawPacket, packet, packet.Payload())
 	case clashtcpip.UDP:
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(packet),
@@ -161,19 +166,19 @@ func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) error {
 		pkt.DecRef()
 		return nil
 	case clashtcpip.ICMP:
-		return m.processIPv4ICMP(packet, packet.Payload())
+		return m.processIPv4ICMP(rawPacket, packet, packet.Payload())
 	default:
-		return common.Error(m.tun.Write(packet))
+		return common.Error(m.tun.Write(rawPacket))
 	}
 }
 
-func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) error {
+func (m *Mixed) processIPv6(rawPacket []byte, packet clashtcpip.IPv6Packet) error {
 	if !packet.DestinationIP().IsGlobalUnicast() {
-		return common.Error(m.tun.Write(packet))
+		return common.Error(m.tun.Write(rawPacket))
 	}
 	switch packet.Protocol() {
 	case clashtcpip.TCP:
-		return m.processIPv6TCP(packet, packet.Payload())
+		return m.processIPv6TCP(rawPacket, packet, packet.Payload())
 	case clashtcpip.UDP:
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(packet),
@@ -182,9 +187,9 @@ func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) error {
 		pkt.DecRef()
 		return nil
 	case clashtcpip.ICMPv6:
-		return m.processIPv6ICMP(packet, packet.Payload())
+		return m.processIPv6ICMP(rawPacket, packet, packet.Payload())
 	default:
-		return common.Error(m.tun.Write(packet))
+		return common.Error(m.tun.Write(rawPacket))
 	}
 }
 

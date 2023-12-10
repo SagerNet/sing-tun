@@ -83,7 +83,6 @@ type UDPBackWriter struct {
 	source        tcpip.Address
 	sourcePort    uint16
 	sourceNetwork tcpip.NetworkProtocolNumber
-	packet        stack.PacketBufferPtr
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
@@ -148,12 +147,6 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 
 	route.Stats().UDP.PacketsSent.Increment()
 	return nil
-}
-
-type gRequest struct {
-	stack *stack.Stack
-	id    stack.TransportEndpointID
-	pkt   stack.PacketBufferPtr
 }
 
 type gUDPConn struct {
