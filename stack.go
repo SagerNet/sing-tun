@@ -28,14 +28,6 @@ type StackOptions struct {
 	InterfaceFinder        control.InterfaceFinder
 }
 
-func (o *StackOptions) BufferSize() uint32 {
-	if o.TunOptions.GSO {
-		return o.TunOptions.GSOMaxSize
-	} else {
-		return o.TunOptions.MTU
-	}
-}
-
 func NewStack(
 	stack string,
 	options StackOptions,

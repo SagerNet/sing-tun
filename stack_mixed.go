@@ -48,7 +48,7 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	endpoint := channel.New(1024, m.mtu, "")
+	endpoint := channel.New(1024, uint32(m.mtu), "")
 	ipStack, err := newGVisorStack(endpoint)
 	if err != nil {
 		return err
@@ -95,8 +95,16 @@ func (m *Mixed) tunLoop() {
 		m.wintunLoop(winTun)
 		return
 	}
+
+	if batchTUN, isBatchTUN := m.tun.(BatchTUN); isBatchTUN {
+		batchSize := batchTUN.BatchSize()
+		if batchSize > 1 {
+			m.batchLoop(batchTUN, batchSize)
+			return
+		}
+	}
 	frontHeadroom := m.tun.FrontHeadroom()
-	packetBuffer := make([]byte, m.bufferSize+frontHeadroom+PacketOffset)
+	packetBuffer := make([]byte, m.mtu+frontHeadroom+PacketOffset)
 	for {
 		n, err := m.tun.Read(packetBuffer[frontHeadroom:])
 		if err != nil {
@@ -110,17 +118,7 @@ func (m *Mixed) tunLoop() {
 		}
 		rawPacket := packetBuffer[:frontHeadroom+n]
 		packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
-		switch ipVersion := packet[0] >> 4; ipVersion {
-		case 4:
-			err = m.processIPv4(rawPacket, packet)
-		case 6:
-			err = m.processIPv6(rawPacket, packet)
-		default:
-			err = E.New("ip: unknown version: ", ipVersion)
-		}
-		if err != nil {
-			m.logger.Trace(err)
-		}
+		m.processPacket(rawPacket, packet)
 	}
 }
 
@@ -134,18 +132,53 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 			release()
 			continue
 		}
-		switch ipVersion := packet[0] >> 4; ipVersion {
-		case 4:
-			err = m.processIPv4(packet, packet)
-		case 6:
-			err = m.processIPv6(packet, packet)
-		default:
-			err = E.New("ip: unknown version: ", ipVersion)
-		}
-		if err != nil {
-			m.logger.Trace(err)
-		}
+		m.processPacket(packet, packet)
 		release()
+	}
+}
+
+func (m *Mixed) batchLoop(linuxTUN BatchTUN, batchSize int) {
+	frontHeadroom := m.tun.FrontHeadroom()
+	packetBuffers := make([][]byte, batchSize)
+	for i := range packetBuffers {
+		packetBuffers[i] = make([]byte, m.mtu+frontHeadroom+PacketOffset)
+	}
+	packetSizes := make([]int, batchSize)
+	for {
+		n, err := linuxTUN.BatchRead(packetBuffers, packetSizes)
+		if err != nil {
+			if E.IsClosed(err) {
+				return
+			}
+			m.logger.Error(E.Cause(err, "batch read packet"))
+		}
+		if n == 0 {
+			continue
+		}
+		for i := 0; i < n; i++ {
+			packetBuffer := packetBuffers[i][:packetSizes[i]]
+			if n < clashtcpip.IPv4PacketMinLength {
+				continue
+			}
+			rawPacket := packetBuffer[:frontHeadroom+n]
+			packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
+			m.processPacket(rawPacket, packet)
+		}
+	}
+}
+
+func (m *Mixed) processPacket(rawPacket []byte, packet []byte) {
+	var err error
+	switch ipVersion := packet[0] >> 4; ipVersion {
+	case 4:
+		err = m.processIPv4(rawPacket, packet)
+	case 6:
+		err = m.processIPv6(rawPacket, packet)
+	default:
+		err = E.New("ip: unknown version: ", ipVersion)
+	}
+	if err != nil {
+		m.logger.Trace(err)
 	}
 }
 

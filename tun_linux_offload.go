@@ -23,7 +23,7 @@ import (
 
 const (
 	tcpFlagsOffset = 13
-	idealBatchSize = 1
+	idealBatchSize = 128
 )
 
 const (
