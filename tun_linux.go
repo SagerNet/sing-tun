@@ -21,6 +21,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var _ BatchTUN = (*NativeTun)(nil)
+
 type NativeTun struct {
 	tunFd             int
 	tunFile           *os.File
@@ -117,6 +119,29 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 		}
 	}
 	return t.tunFile.Write(p)
+}
+
+func (t *NativeTun) BatchSize() int {
+	if !t.gsoEnabled {
+		return 1
+	}
+	return idealBatchSize
+}
+
+func (t *NativeTun) BatchRead(buffers [][]byte, readN []int) (n int, err error) {
+	if t.gsoEnabled {
+		n, err = t.tunFile.Read(t.gsoBuffer)
+		if err != nil {
+			return
+		}
+		n, err = handleVirtioRead(t.gsoBuffer[:n], buffers, readN, 0)
+		if err != nil {
+			return
+		}
+		return
+	} else {
+		return 0, os.ErrInvalid
+	}
 }
 
 var controlPath string

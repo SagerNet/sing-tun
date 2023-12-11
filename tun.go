@@ -32,6 +32,11 @@ type WinTun interface {
 	ReadPacket() ([]byte, func(), error)
 }
 
+type BatchTUN interface {
+	BatchSize() int
+	BatchRead(buffers [][]byte, readN []int) (n int, err error)
+}
+
 type Options struct {
 	Name                     string
 	Inet4Address             []netip.Prefix
