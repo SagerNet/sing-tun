@@ -52,13 +52,13 @@ func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *DarwinEndpoint) dispatchLoop() {
-	packetBuffer := make([]byte, e.tun.mtu+4)
+	packetBuffer := make([]byte, e.tun.mtu+PacketOffset)
 	for {
 		n, err := e.tun.tunFile.Read(packetBuffer)
 		if err != nil {
 			break
 		}
-		packet := packetBuffer[4:n]
+		packet := packetBuffer[PacketOffset:n]
 		var networkProtocol tcpip.NetworkProtocolNumber
 		switch header.IPVersion(packet) {
 		case header.IPv4Version:
@@ -113,7 +113,7 @@ func (e *DarwinEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
 func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
-		_, err := bufio.WriteVectorised(e.tun.tunWriter, packet.AsSlices())
+		_, err := bufio.WriteVectorised(e.tun, packet.AsSlices())
 		if err != nil {
 			return n, &tcpip.ErrAborted{}
 		}

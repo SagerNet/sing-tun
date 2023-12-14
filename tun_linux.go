@@ -1,19 +1,22 @@
 package tun
 
 import (
-	"io"
 	"math/rand"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -26,16 +29,19 @@ var _ BatchTUN = (*NativeTun)(nil)
 type NativeTun struct {
 	tunFd             int
 	tunFile           *os.File
+	tunWriter         N.VectorisedWriter
 	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
 	options           Options
 	ruleIndex6        []int
 	gsoEnabled        bool
 	gsoBuffer         []byte
+	tcpGROAccess      sync.Mutex
 	tcp4GROTable      *tcpGROTable
 	tcp6GROTable      *tcpGROTable
 }
 
 func New(options Options) (Tun, error) {
+	var nativeTun *NativeTun
 	if options.FileDescriptor == 0 {
 		tunFd, err := open(options.Name, options.GSO)
 		if err != nil {
@@ -45,26 +51,28 @@ func New(options Options) (Tun, error) {
 		if err != nil {
 			return nil, E.Errors(err, unix.Close(tunFd))
 		}
-		nativeTun := &NativeTun{
+		nativeTun = &NativeTun{
 			tunFd:   tunFd,
 			tunFile: os.NewFile(uintptr(tunFd), "tun"),
 			options: options,
 		}
-		runtime.SetFinalizer(nativeTun.tunFile, nil)
 		err = nativeTun.configure(tunLink)
 		if err != nil {
 			return nil, E.Errors(err, unix.Close(tunFd))
 		}
-		return nativeTun, nil
 	} else {
-		nativeTun := &NativeTun{
+		nativeTun = &NativeTun{
 			tunFd:   options.FileDescriptor,
 			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
 			options: options,
 		}
-		runtime.SetFinalizer(nativeTun.tunFile, nil)
-		return nativeTun, nil
 	}
+	var ok bool
+	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
+	if !ok {
+		panic("create vectorised writer")
+	}
+	return nativeTun, nil
 }
 
 func (t *NativeTun) FrontHeadroom() int {
@@ -72,14 +80,6 @@ func (t *NativeTun) FrontHeadroom() int {
 		return virtioNetHdrLen
 	}
 	return 0
-}
-
-func (t *NativeTun) UpstreamWriter() io.Writer {
-	return t.tunFile
-}
-
-func (t *NativeTun) WriterReplaceable() bool {
-	return !t.gsoEnabled
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
@@ -105,27 +105,39 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	if t.gsoEnabled {
-		defer func() {
-			t.tcp4GROTable.reset()
-			t.tcp6GROTable.reset()
-		}()
-		var toWrite []int
-		err = handleGRO([][]byte{p}, virtioNetHdrLen, t.tcp4GROTable, t.tcp6GROTable, &toWrite)
+		err = t.BatchWrite([][]byte{p})
 		if err != nil {
 			return
 		}
-		if len(toWrite) == 0 {
-			return
-		}
+		n = len(p)
+		return
 	}
 	return t.tunFile.Write(p)
+}
+
+func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
+	if t.gsoEnabled {
+		n := buf.LenMulti(buffers)
+		buffer := buf.NewSize(virtioNetHdrLen + n)
+		buffer.Truncate(virtioNetHdrLen)
+		buf.CopyMulti(buffer.Extend(n), buffers)
+		_, err := t.tunFile.Write(buffer.Bytes())
+		buffer.Release()
+		return err
+	} else {
+		return t.tunWriter.WriteVectorised(buffers)
+	}
 }
 
 func (t *NativeTun) BatchSize() int {
 	if !t.gsoEnabled {
 		return 1
 	}
-	return idealBatchSize
+	batchSize := int(t.options.GSOMaxSize/t.options.MTU) * 2
+	if batchSize > idealBatchSize {
+		batchSize = idealBatchSize
+	}
+	return batchSize
 }
 
 func (t *NativeTun) BatchRead(buffers [][]byte, readN []int) (n int, err error) {
@@ -142,6 +154,27 @@ func (t *NativeTun) BatchRead(buffers [][]byte, readN []int) (n int, err error) 
 	} else {
 		return 0, os.ErrInvalid
 	}
+}
+
+func (t *NativeTun) BatchWrite(buffers [][]byte) error {
+	t.tcpGROAccess.Lock()
+	defer func() {
+		t.tcp4GROTable.reset()
+		t.tcp6GROTable.reset()
+		t.tcpGROAccess.Unlock()
+	}()
+	var toWrite []int
+	err := handleGRO(buffers, virtioNetHdrLen, t.tcp4GROTable, t.tcp6GROTable, &toWrite)
+	if err != nil {
+		return err
+	}
+	for _, bufferIndex := range toWrite {
+		_, err = t.tunFile.Write(buffers[bufferIndex])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var controlPath string

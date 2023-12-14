@@ -23,6 +23,7 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
+	N.VectorisedWriter
 	N.FrontHeadroom
 	Close() error
 }
@@ -33,8 +34,10 @@ type WinTun interface {
 }
 
 type BatchTUN interface {
+	Tun
 	BatchSize() int
 	BatchRead(buffers [][]byte, readN []int) (n int, err error)
+	BatchWrite(buffers [][]byte) error
 }
 
 type Options struct {

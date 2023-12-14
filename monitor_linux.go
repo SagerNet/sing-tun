@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/netlink"
+	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 
@@ -22,6 +23,12 @@ type networkUpdateMonitor struct {
 	logger    logger.Logger
 }
 
+var ErrNetlinkBanned = E.New(
+	"netlink socket in Android is banned by Google, " +
+		"use the root or system (ADB) user to run sing-box, " +
+		"or switch to the sing-box Adnroid graphical interface client",
+)
+
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	monitor := &networkUpdateMonitor{
 		routeUpdate: make(chan netlink.RouteUpdate, 2),
@@ -33,14 +40,14 @@ func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error)
 	if runtime.GOOS == "android" {
 		netlinkSocket, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_ROUTE)
 		if err != nil {
-			return nil, os.ErrInvalid
+			return nil, ErrNetlinkBanned
 		}
 		err = unix.Bind(netlinkSocket, &unix.SockaddrNetlink{
 			Family: unix.AF_NETLINK,
 		})
 		unix.Close(netlinkSocket)
 		if err != nil {
-			return nil, os.ErrInvalid
+			return nil, ErrNetlinkBanned
 		}
 	}
 	return monitor, nil
