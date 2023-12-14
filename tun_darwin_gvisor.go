@@ -51,13 +51,13 @@ func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *DarwinEndpoint) dispatchLoop() {
-	packetBuffer := make([]byte, e.tun.mtu+4)
+	packetBuffer := make([]byte, e.tun.mtu+PacketOffset)
 	for {
 		n, err := e.tun.tunFile.Read(packetBuffer)
 		if err != nil {
 			break
 		}
-		packet := packetBuffer[4:n]
+		packet := packetBuffer[PacketOffset:n]
 		var networkProtocol tcpip.NetworkProtocolNumber
 		switch header.IPVersion(packet) {
 		case header.IPv4Version:

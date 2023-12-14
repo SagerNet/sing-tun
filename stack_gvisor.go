@@ -70,7 +70,7 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, bufio.NewVectorisedWriter(t.tun)}
+	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
 	ipStack, err := newGVisorStack(linkEndpoint)
 	if err != nil {
 		return err
