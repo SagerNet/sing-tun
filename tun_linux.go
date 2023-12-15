@@ -24,7 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var _ BatchTUN = (*NativeTun)(nil)
+var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
 	tunFd             int
@@ -40,6 +40,7 @@ type NativeTun struct {
 	tcpGROAccess      sync.Mutex
 	tcp4GROTable      *tcpGROTable
 	tcp6GROTable      *tcpGROTable
+	txChecksumOffload bool
 }
 
 func New(options Options) (Tun, error) {
@@ -246,25 +247,43 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	}
 
 	if t.options.GSO {
-		vnethdrEnabled, err := checkVNETHDREnabled(uint16(t.tunFd), t.options.Name)
+		var vnetHdrEnabled bool
+		vnetHdrEnabled, err = checkVNETHDREnabled(t.tunFd, t.options.Name)
 		if err != nil {
 			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
 		}
-		if !vnethdrEnabled {
+		if !vnetHdrEnabled {
 			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
 		}
-		const (
-			// TODO: support TSO with ECN bits
-			tunOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
-		)
-		err = unix.IoctlSetInt(t.tunFd, unix.TUNSETOFFLOAD, tunOffloads)
+		err = setTCPOffload(t.tunFd)
 		if err != nil {
-			return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
+			return err
 		}
 		t.gsoEnabled = true
 		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
 		t.tcp4GROTable = newTCPGROTable()
 		t.tcp6GROTable = newTCPGROTable()
+	}
+
+	var rxChecksumOffload bool
+	rxChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GRXCSUM)
+	if err == nil && !rxChecksumOffload {
+		_ = setChecksumOffload(t.options.Name, unix.ETHTOOL_SRXCSUM)
+	}
+
+	if !t.options._TXChecksumOffload {
+		var txChecksumOffload bool
+		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
+		if err != nil {
+			return err
+		}
+		if err == nil && !txChecksumOffload {
+			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
+			if err != nil {
+				return err
+			}
+		}
+		t.txChecksumOffload = true
 	}
 
 	err = netlink.LinkSetUp(tunLink)
@@ -306,23 +325,15 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	return nil
 }
 
-func checkVNETHDREnabled(fd uint16, name string) (bool, error) {
-	ifr, err := unix.NewIfreq(name)
-	if err != nil {
-		return false, err
-	}
-	err = unix.IoctlIfreq(int(fd), unix.TUNGETIFF, ifr)
-	if err != nil {
-		return false, os.NewSyscallError("TUNGETIFF", err)
-	}
-	return ifr.Uint16()&unix.IFF_VNET_HDR != 0, nil
-}
-
 func (t *NativeTun) Close() error {
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
+}
+
+func (t *NativeTun) TXChecksumOffload() bool {
+	return t.txChecksumOffload
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
