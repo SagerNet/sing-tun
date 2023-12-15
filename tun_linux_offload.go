@@ -22,6 +22,7 @@ import (
 )
 
 const (
+	gsoMaxSize     = 65536
 	tcpFlagsOffset = 13
 	idealBatchSize = 128
 )

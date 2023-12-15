@@ -46,7 +46,6 @@ type Options struct {
 	Inet6Address             []netip.Prefix
 	MTU                      uint32
 	GSO                      bool
-	GSOMaxSize               uint32
 	AutoRoute                bool
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix

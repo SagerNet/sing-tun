@@ -133,7 +133,7 @@ func (t *NativeTun) BatchSize() int {
 	if !t.gsoEnabled {
 		return 1
 	}
-	batchSize := int(t.options.GSOMaxSize/t.options.MTU) * 2
+	batchSize := int(gsoMaxSize/t.options.MTU) * 2
 	if batchSize > idealBatchSize {
 		batchSize = idealBatchSize
 	}
@@ -266,7 +266,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 			return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
 		}
 		t.gsoEnabled = true
-		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(t.options.GSOMaxSize))
+		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
 		t.tcp4GROTable = newTCPGROTable()
 		t.tcp6GROTable = newTCPGROTable()
 	}
