@@ -35,6 +35,8 @@ type NativeTun struct {
 	ruleIndex6        []int
 	gsoEnabled        bool
 	gsoBuffer         []byte
+	gsoToWrite        []int
+	gsoReadAccess     sync.Mutex
 	tcpGROAccess      sync.Mutex
 	tcp4GROTable      *tcpGROTable
 	tcp6GROTable      *tcpGROTable
@@ -105,7 +107,7 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	if t.gsoEnabled {
-		err = t.BatchWrite([][]byte{p})
+		err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
 		if err != nil {
 			return
 		}
@@ -140,37 +142,31 @@ func (t *NativeTun) BatchSize() int {
 	return batchSize
 }
 
-func (t *NativeTun) BatchRead(buffers [][]byte, readN []int) (n int, err error) {
-	if t.gsoEnabled {
-		n, err = t.tunFile.Read(t.gsoBuffer)
-		if err != nil {
-			return
-		}
-		n, err = handleVirtioRead(t.gsoBuffer[:n], buffers, readN, 0)
-		if err != nil {
-			return
-		}
-
+func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
+	t.gsoReadAccess.Lock()
+	defer t.gsoReadAccess.Unlock()
+	n, err = t.tunFile.Read(t.gsoBuffer)
+	if err != nil {
 		return
-	} else {
-		return 0, os.ErrInvalid
 	}
+	return handleVirtioRead(t.gsoBuffer[:n], buffers, readN, offset)
 }
 
-func (t *NativeTun) BatchWrite(buffers [][]byte) error {
+func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) error {
 	t.tcpGROAccess.Lock()
 	defer func() {
 		t.tcp4GROTable.reset()
 		t.tcp6GROTable.reset()
 		t.tcpGROAccess.Unlock()
 	}()
-	var toWrite []int
-	err := handleGRO(buffers, virtioNetHdrLen, t.tcp4GROTable, t.tcp6GROTable, &toWrite)
+	t.gsoToWrite = t.gsoToWrite[:0]
+	err := handleGRO(buffers, offset, t.tcp4GROTable, t.tcp6GROTable, &t.gsoToWrite)
 	if err != nil {
 		return err
 	}
-	for _, bufferIndex := range toWrite {
-		_, err = t.tunFile.Write(buffers[bufferIndex])
+	offset -= virtioNetHdrLen
+	for _, bufferIndex := range t.gsoToWrite {
+		_, err = t.tunFile.Write(buffers[bufferIndex][offset:])
 		if err != nil {
 			return err
 		}

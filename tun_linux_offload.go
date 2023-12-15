@@ -750,8 +750,12 @@ func checksumNoFold(b []byte, initial uint64) uint64 {
 }
 
 func checksumFold(b []byte, initial uint64) uint16 {
-	r := clashtcpip.Checksum(uint32(initial), b)
-	return binary.BigEndian.Uint16(r[:])
+	ac := checksumNoFold(b, initial)
+	ac = (ac >> 16) + (ac & 0xffff)
+	ac = (ac >> 16) + (ac & 0xffff)
+	ac = (ac >> 16) + (ac & 0xffff)
+	ac = (ac >> 16) + (ac & 0xffff)
+	return uint16(ac)
 }
 
 func pseudoHeaderChecksumNoFold(protocol uint8, srcAddr, dstAddr []byte, totalLen uint16) uint64 {

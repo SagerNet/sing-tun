@@ -36,8 +36,8 @@ type WinTun interface {
 type BatchTUN interface {
 	Tun
 	BatchSize() int
-	BatchRead(buffers [][]byte, readN []int) (n int, err error)
-	BatchWrite(buffers [][]byte) error
+	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
+	BatchWrite(buffers [][]byte, offset int) error
 }
 
 type Options struct {
