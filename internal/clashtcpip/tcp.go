@@ -50,6 +50,10 @@ func (p TCPPacket) SetChecksum(sum [2]byte) {
 	p[17] = sum[1]
 }
 
+func (p TCPPacket) OffloadChecksum() {
+	p.SetChecksum(zeroChecksum)
+}
+
 func (p TCPPacket) ResetChecksum(psum uint32) {
 	p.SetChecksum(zeroChecksum)
 	p.SetChecksum(Checksum(psum, p))
