@@ -111,9 +111,9 @@ func (s *System) start() error {
 	var listener net.ListenConfig
 	if s.bindInterface {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
-			err := control.BindToInterface(s.interfaceFinder, s.tunName, -1)(network, address, conn)
-			if err != nil {
-				s.logger.Warn("bind forwarder to interface: ", err)
+			bindErr := control.BindToInterface0(s.interfaceFinder, conn, network, address, s.tunName, -1, true)
+			if bindErr != nil {
+				s.logger.Warn("bind forwarder to interface: ", bindErr)
 			}
 			return nil
 		})
