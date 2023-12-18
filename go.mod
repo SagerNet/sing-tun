@@ -7,7 +7,7 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/metacubex/gvisor v0.0.0-20231209122014-3e43224c7bbc
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.2.20-0.20231211084415-35e7014b0898
+	github.com/sagernet/sing v0.3.0-beta.4
 	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/net v0.19.0

@@ -45,6 +45,10 @@ func (p UDPPacket) SetChecksum(sum [2]byte) {
 	p[7] = sum[1]
 }
 
+func (p UDPPacket) OffloadChecksum() {
+	p.SetChecksum(zeroChecksum)
+}
+
 func (p UDPPacket) ResetChecksum(psum uint32) {
 	p.SetChecksum(zeroChecksum)
 	p.SetChecksum(Checksum(psum, p))

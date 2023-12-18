@@ -24,7 +24,6 @@ type Handler interface {
 type Tun interface {
 	io.ReadWriter
 	N.VectorisedWriter
-	N.FrontHeadroom
 	Close() error
 }
 
@@ -33,11 +32,13 @@ type WinTun interface {
 	ReadPacket() ([]byte, func(), error)
 }
 
-type BatchTUN interface {
+type LinuxTUN interface {
 	Tun
+	N.FrontHeadroom
 	BatchSize() int
-	BatchRead(buffers [][]byte, readN []int) (n int, err error)
-	BatchWrite(buffers [][]byte) error
+	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
+	BatchWrite(buffers [][]byte, offset int) error
+	TXChecksumOffload() bool
 }
 
 type Options struct {
@@ -46,7 +47,6 @@ type Options struct {
 	Inet6Address             []netip.Prefix
 	MTU                      uint32
 	GSO                      bool
-	GSOMaxSize               uint32
 	AutoRoute                bool
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix
@@ -64,6 +64,9 @@ type Options struct {
 	TableIndex               int
 	FileDescriptor           int
 	Logger                   logger.Logger
+
+	// No work for TCP, do not use.
+	_TXChecksumOffload bool
 }
 
 func CalculateInterfaceName(name string) (tunName string) {

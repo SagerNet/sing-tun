@@ -66,10 +66,6 @@ func New(options Options) (WinTun, error) {
 	return nativeTun, nil
 }
 
-func (t *NativeTun) FrontHeadroom() int {
-	return 0
-}
-
 func (t *NativeTun) configure() error {
 	luid := winipcfg.LUID(t.adapter.LUID())
 	if len(t.options.Inet4Address) > 0 {

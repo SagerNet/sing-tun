@@ -41,6 +41,8 @@ type System struct {
 	udpNat             *udpnat.Service[netip.AddrPort]
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
+	frontHeadroom      int
+	txChecksumOffload  bool
 }
 
 type Session struct {
@@ -109,9 +111,9 @@ func (s *System) start() error {
 	var listener net.ListenConfig
 	if s.bindInterface {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
-			err := control.BindToInterface(s.interfaceFinder, s.tunName, -1)(network, address, conn)
-			if err != nil {
-				s.logger.Warn("bind forwarder to interface: ", err)
+			bindErr := control.BindToInterface0(s.interfaceFinder, conn, network, address, s.tunName, -1, true)
+			if bindErr != nil {
+				s.logger.Warn("bind forwarder to interface: ", bindErr)
 			}
 			return nil
 		})
@@ -144,17 +146,18 @@ func (s *System) tunLoop() {
 		s.wintunLoop(winTun)
 		return
 	}
-	if batchTUN, isBatchTUN := s.tun.(BatchTUN); isBatchTUN {
-		batchSize := batchTUN.BatchSize()
+	if linuxTUN, isLinuxTUN := s.tun.(LinuxTUN); isLinuxTUN {
+		s.frontHeadroom = linuxTUN.FrontHeadroom()
+		s.txChecksumOffload = linuxTUN.TXChecksumOffload()
+		batchSize := linuxTUN.BatchSize()
 		if batchSize > 1 {
-			s.batchLoop(batchTUN, batchSize)
+			s.batchLoop(linuxTUN, batchSize)
 			return
 		}
 	}
-	frontHeadroom := s.tun.FrontHeadroom()
-	packetBuffer := make([]byte, s.mtu+frontHeadroom+PacketOffset)
+	packetBuffer := make([]byte, s.mtu+PacketOffset)
 	for {
-		n, err := s.tun.Read(packetBuffer[frontHeadroom:])
+		n, err := s.tun.Read(packetBuffer)
 		if err != nil {
 			if E.IsClosed(err) {
 				return
@@ -164,8 +167,8 @@ func (s *System) tunLoop() {
 		if n < clashtcpip.IPv4PacketMinLength {
 			continue
 		}
-		rawPacket := packetBuffer[:frontHeadroom+n]
-		packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
+		rawPacket := packetBuffer[:n]
+		packet := packetBuffer[PacketOffset:n]
 		if s.processPacket(packet) {
 			_, err = s.tun.Write(rawPacket)
 			if err != nil {
@@ -195,18 +198,15 @@ func (s *System) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (s *System) batchLoop(linuxTUN BatchTUN, batchSize int) {
-	frontHeadroom := s.tun.FrontHeadroom()
+func (s *System) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
-	readBuffers := make([][]byte, batchSize)
 	writeBuffers := make([][]byte, batchSize)
 	packetSizes := make([]int, batchSize)
 	for i := range packetBuffers {
-		packetBuffers[i] = make([]byte, s.mtu+frontHeadroom+PacketOffset)
-		readBuffers[i] = packetBuffers[i][frontHeadroom:]
+		packetBuffers[i] = make([]byte, s.mtu+s.frontHeadroom)
 	}
 	for {
-		n, err := linuxTUN.BatchRead(readBuffers, packetSizes)
+		n, err := linuxTUN.BatchRead(packetBuffers, s.frontHeadroom, packetSizes)
 		if err != nil {
 			if E.IsClosed(err) {
 				return
@@ -222,13 +222,13 @@ func (s *System) batchLoop(linuxTUN BatchTUN, batchSize int) {
 				continue
 			}
 			packetBuffer := packetBuffers[i]
-			packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+packetSize]
+			packet := packetBuffer[s.frontHeadroom : s.frontHeadroom+packetSize]
 			if s.processPacket(packet) {
-				writeBuffers = append(writeBuffers, packetBuffer[:frontHeadroom+packetSize])
+				writeBuffers = append(writeBuffers, packetBuffer[:s.frontHeadroom+packetSize])
 			}
 		}
 		if len(writeBuffers) > 0 {
-			err = linuxTUN.BatchWrite(writeBuffers)
+			err = linuxTUN.BatchWrite(writeBuffers, s.frontHeadroom)
 			if err != nil {
 				s.logger.Trace(E.Cause(err, "batch write packet"))
 			}
@@ -354,8 +354,13 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		packet.SetDestinationIP(s.inet4ServerAddress)
 		header.SetDestinationPort(s.tcpPort)
 	}
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
+	if !s.txChecksumOffload {
+		header.ResetChecksum(packet.PseudoSum())
+		packet.ResetChecksum()
+	} else {
+		header.OffloadChecksum()
+		packet.ResetChecksum()
+	}
 	return nil
 }
 
@@ -380,8 +385,11 @@ func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		packet.SetDestinationIP(s.inet6ServerAddress)
 		header.SetDestinationPort(s.tcpPort6)
 	}
-	header.ResetChecksum(packet.PseudoSum())
-	packet.ResetChecksum()
+	if !s.txChecksumOffload {
+		header.ResetChecksum(packet.PseudoSum())
+	} else {
+		header.OffloadChecksum()
+	}
 	return nil
 }
 
@@ -412,7 +420,13 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter4{s.tun, s.tun.FrontHeadroom() + PacketOffset, headerCopy, source}
+		return &systemUDPPacketWriter4{
+			s.tun,
+			s.frontHeadroom + PacketOffset,
+			headerCopy,
+			source,
+			s.txChecksumOffload,
+		}
 	})
 	return nil
 }
@@ -438,7 +452,13 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		headerLen := len(packet) - int(header.Length()) + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter6{s.tun, s.tun.FrontHeadroom() + PacketOffset, headerCopy, source}
+		return &systemUDPPacketWriter6{
+			s.tun,
+			s.frontHeadroom + PacketOffset,
+			headerCopy,
+			source,
+			s.txChecksumOffload,
+		}
 	})
 	return nil
 }
@@ -470,10 +490,11 @@ func (s *System) processIPv6ICMP(packet clashtcpip.IPv6Packet, header clashtcpip
 }
 
 type systemUDPPacketWriter4 struct {
-	tun           Tun
-	frontHeadroom int
-	header        []byte
-	source        netip.AddrPort
+	tun               Tun
+	frontHeadroom     int
+	header            []byte
+	source            netip.AddrPort
+	txChecksumOffload bool
 }
 
 func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
@@ -490,8 +511,13 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetDestinationPort(udpHdr.SourcePort())
 	udpHdr.SetSourcePort(destination.Port)
 	udpHdr.SetLength(uint16(buffer.Len() + clashtcpip.UDPHeaderSize))
-	udpHdr.ResetChecksum(ipHdr.PseudoSum())
-	ipHdr.ResetChecksum()
+	if !w.txChecksumOffload {
+		udpHdr.ResetChecksum(ipHdr.PseudoSum())
+		ipHdr.ResetChecksum()
+	} else {
+		udpHdr.OffloadChecksum()
+		ipHdr.ResetChecksum()
+	}
 	if PacketOffset > 0 {
 		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
 	} else {
@@ -501,10 +527,11 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 }
 
 type systemUDPPacketWriter6 struct {
-	tun           Tun
-	frontHeadroom int
-	header        []byte
-	source        netip.AddrPort
+	tun               Tun
+	frontHeadroom     int
+	header            []byte
+	source            netip.AddrPort
+	txChecksumOffload bool
 }
 
 func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
@@ -522,7 +549,11 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetDestinationPort(udpHdr.SourcePort())
 	udpHdr.SetSourcePort(destination.Port)
 	udpHdr.SetLength(udpLen)
-	udpHdr.ResetChecksum(ipHdr.PseudoSum())
+	if !w.txChecksumOffload {
+		udpHdr.ResetChecksum(ipHdr.PseudoSum())
+	} else {
+		udpHdr.OffloadChecksum()
+	}
 	if PacketOffset > 0 {
 		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET6
 	} else {

@@ -92,17 +92,18 @@ func (m *Mixed) tunLoop() {
 		m.wintunLoop(winTun)
 		return
 	}
-	if batchTUN, isBatchTUN := m.tun.(BatchTUN); isBatchTUN {
-		batchSize := batchTUN.BatchSize()
+	if linuxTUN, isLinuxTUN := m.tun.(LinuxTUN); isLinuxTUN {
+		m.frontHeadroom = linuxTUN.FrontHeadroom()
+		m.txChecksumOffload = linuxTUN.TXChecksumOffload()
+		batchSize := linuxTUN.BatchSize()
 		if batchSize > 1 {
-			m.batchLoop(batchTUN, batchSize)
+			m.batchLoop(linuxTUN, batchSize)
 			return
 		}
 	}
-	frontHeadroom := m.tun.FrontHeadroom()
-	packetBuffer := make([]byte, m.mtu+frontHeadroom+PacketOffset)
+	packetBuffer := make([]byte, m.mtu+PacketOffset)
 	for {
-		n, err := m.tun.Read(packetBuffer[frontHeadroom:])
+		n, err := m.tun.Read(packetBuffer)
 		if err != nil {
 			if E.IsClosed(err) {
 				return
@@ -112,8 +113,8 @@ func (m *Mixed) tunLoop() {
 		if n < clashtcpip.IPv4PacketMinLength {
 			continue
 		}
-		rawPacket := packetBuffer[:frontHeadroom+n]
-		packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+n]
+		rawPacket := packetBuffer[:n]
+		packet := packetBuffer[PacketOffset:n]
 		if m.processPacket(packet) {
 			_, err = m.tun.Write(rawPacket)
 			if err != nil {
@@ -143,18 +144,15 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (m *Mixed) batchLoop(linuxTUN BatchTUN, batchSize int) {
-	frontHeadroom := m.tun.FrontHeadroom()
+func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
-	readBuffers := make([][]byte, batchSize)
 	writeBuffers := make([][]byte, batchSize)
 	packetSizes := make([]int, batchSize)
 	for i := range packetBuffers {
-		packetBuffers[i] = make([]byte, m.mtu+frontHeadroom+PacketOffset)
-		readBuffers[i] = packetBuffers[i][frontHeadroom:]
+		packetBuffers[i] = make([]byte, m.mtu+m.frontHeadroom)
 	}
 	for {
-		n, err := linuxTUN.BatchRead(readBuffers, packetSizes)
+		n, err := linuxTUN.BatchRead(packetBuffers, m.frontHeadroom, packetSizes)
 		if err != nil {
 			if E.IsClosed(err) {
 				return
@@ -170,13 +168,13 @@ func (m *Mixed) batchLoop(linuxTUN BatchTUN, batchSize int) {
 				continue
 			}
 			packetBuffer := packetBuffers[i]
-			packet := packetBuffer[frontHeadroom+PacketOffset : frontHeadroom+packetSize]
+			packet := packetBuffer[m.frontHeadroom : m.frontHeadroom+packetSize]
 			if m.processPacket(packet) {
-				writeBuffers = append(writeBuffers, packetBuffer[:frontHeadroom+packetSize])
+				writeBuffers = append(writeBuffers, packetBuffer[:m.frontHeadroom+packetSize])
 			}
 		}
 		if len(writeBuffers) > 0 {
-			err = linuxTUN.BatchWrite(writeBuffers)
+			err = linuxTUN.BatchWrite(writeBuffers, m.frontHeadroom)
 			if err != nil {
 				m.logger.Trace(E.Cause(err, "batch write packet"))
 			}

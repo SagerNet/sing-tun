@@ -24,7 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var _ BatchTUN = (*NativeTun)(nil)
+var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
 	tunFd             int
@@ -35,9 +35,12 @@ type NativeTun struct {
 	ruleIndex6        []int
 	gsoEnabled        bool
 	gsoBuffer         []byte
+	gsoToWrite        []int
+	gsoReadAccess     sync.Mutex
 	tcpGROAccess      sync.Mutex
 	tcp4GROTable      *tcpGROTable
 	tcp6GROTable      *tcpGROTable
+	txChecksumOffload bool
 }
 
 func New(options Options) (Tun, error) {
@@ -105,7 +108,7 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
 	if t.gsoEnabled {
-		err = t.BatchWrite([][]byte{p})
+		err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
 		if err != nil {
 			return
 		}
@@ -133,43 +136,38 @@ func (t *NativeTun) BatchSize() int {
 	if !t.gsoEnabled {
 		return 1
 	}
-	batchSize := int(t.options.GSOMaxSize/t.options.MTU) * 2
+	batchSize := int(gsoMaxSize/t.options.MTU) * 2
 	if batchSize > idealBatchSize {
 		batchSize = idealBatchSize
 	}
 	return batchSize
 }
 
-func (t *NativeTun) BatchRead(buffers [][]byte, readN []int) (n int, err error) {
-	if t.gsoEnabled {
-		n, err = t.tunFile.Read(t.gsoBuffer)
-		if err != nil {
-			return
-		}
-		n, err = handleVirtioRead(t.gsoBuffer[:n], buffers, readN, 0)
-		if err != nil {
-			return
-		}
+func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
+	t.gsoReadAccess.Lock()
+	defer t.gsoReadAccess.Unlock()
+	n, err = t.tunFile.Read(t.gsoBuffer)
+	if err != nil {
 		return
-	} else {
-		return 0, os.ErrInvalid
 	}
+	return handleVirtioRead(t.gsoBuffer[:n], buffers, readN, offset)
 }
 
-func (t *NativeTun) BatchWrite(buffers [][]byte) error {
+func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) error {
 	t.tcpGROAccess.Lock()
 	defer func() {
 		t.tcp4GROTable.reset()
 		t.tcp6GROTable.reset()
 		t.tcpGROAccess.Unlock()
 	}()
-	var toWrite []int
-	err := handleGRO(buffers, virtioNetHdrLen, t.tcp4GROTable, t.tcp6GROTable, &toWrite)
+	t.gsoToWrite = t.gsoToWrite[:0]
+	err := handleGRO(buffers, offset, t.tcp4GROTable, t.tcp6GROTable, &t.gsoToWrite)
 	if err != nil {
 		return err
 	}
-	for _, bufferIndex := range toWrite {
-		_, err = t.tunFile.Write(buffers[bufferIndex])
+	offset -= virtioNetHdrLen
+	for _, bufferIndex := range t.gsoToWrite {
+		_, err = t.tunFile.Write(buffers[bufferIndex][offset:])
 		if err != nil {
 			return err
 		}
@@ -249,25 +247,43 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	}
 
 	if t.options.GSO {
-		vnethdrEnabled, err := checkVNETHDREnabled(uint16(t.tunFd), t.options.Name)
+		var vnetHdrEnabled bool
+		vnetHdrEnabled, err = checkVNETHDREnabled(t.tunFd, t.options.Name)
 		if err != nil {
 			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
 		}
-		if !vnethdrEnabled {
+		if !vnetHdrEnabled {
 			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
 		}
-		const (
-			// TODO: support TSO with ECN bits
-			tunOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
-		)
-		err = unix.IoctlSetInt(t.tunFd, unix.TUNSETOFFLOAD, tunOffloads)
+		err = setTCPOffload(t.tunFd)
 		if err != nil {
-			return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
+			return err
 		}
 		t.gsoEnabled = true
-		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(t.options.GSOMaxSize))
+		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
 		t.tcp4GROTable = newTCPGROTable()
 		t.tcp6GROTable = newTCPGROTable()
+	}
+
+	var rxChecksumOffload bool
+	rxChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GRXCSUM)
+	if err == nil && !rxChecksumOffload {
+		_ = setChecksumOffload(t.options.Name, unix.ETHTOOL_SRXCSUM)
+	}
+
+	if t.options._TXChecksumOffload {
+		var txChecksumOffload bool
+		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
+		if err != nil {
+			return err
+		}
+		if err == nil && !txChecksumOffload {
+			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
+			if err != nil {
+				return err
+			}
+		}
+		t.txChecksumOffload = true
 	}
 
 	err = netlink.LinkSetUp(tunLink)
@@ -309,23 +325,15 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	return nil
 }
 
-func checkVNETHDREnabled(fd uint16, name string) (bool, error) {
-	ifr, err := unix.NewIfreq(name)
-	if err != nil {
-		return false, err
-	}
-	err = unix.IoctlIfreq(int(fd), unix.TUNGETIFF, ifr)
-	if err != nil {
-		return false, os.NewSyscallError("TUNGETIFF", err)
-	}
-	return ifr.Uint16()&unix.IFF_VNET_HDR != 0, nil
-}
-
 func (t *NativeTun) Close() error {
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
+}
+
+func (t *NativeTun) TXChecksumOffload() bool {
+	return t.txChecksumOffload
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {

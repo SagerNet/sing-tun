@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -68,12 +67,7 @@ func New(options Options) (Tun, error) {
 	if !ok {
 		panic("create vectorised writer")
 	}
-	runtime.SetFinalizer(nativeTun.tunFile, nil)
 	return nativeTun, nil
-}
-
-func (t *NativeTun) FrontHeadroom() int {
-	return 0
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {

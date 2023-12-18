@@ -14,13 +14,15 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
 		return fdbased.New(&fdbased.Options{
 			FDs:               []int{t.tunFd},
 			MTU:               t.options.MTU,
-			GSOMaxSize:        t.options.GSOMaxSize,
+			GSOMaxSize:        gsoMaxSize,
 			RXChecksumOffload: true,
+			TXChecksumOffload: t.txChecksumOffload,
 		})
 	}
 	return fdbased.New(&fdbased.Options{
 		FDs:               []int{t.tunFd},
 		MTU:               t.options.MTU,
 		RXChecksumOffload: true,
+		TXChecksumOffload: t.txChecksumOffload,
 	})
 }
