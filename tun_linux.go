@@ -450,27 +450,11 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 				priority++
-
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.OifName = includeInterface
-				it.Goto = matchPriority
-				it.Family = unix.AF_INET
-				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
 				it.Priority = priority6
 				it.IifName = includeInterface
-				it.Goto = matchPriority
-				it.Family = unix.AF_INET6
-				rules = append(rules, it)
-				priority6++
-
-				it = netlink.NewRule()
-				it.Priority = priority6
-				it.OifName = includeInterface
 				it.Goto = matchPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
@@ -515,27 +499,11 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 				priority++
-
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.OifName = excludeInterface
-				it.Goto = nopPriority
-				it.Family = unix.AF_INET
-				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
 				it.Priority = priority6
 				it.IifName = excludeInterface
-				it.Goto = nopPriority
-				it.Family = unix.AF_INET6
-				rules = append(rules, it)
-				priority6++
-
-				it = netlink.NewRule()
-				it.Priority = priority6
-				it.OifName = excludeInterface
 				it.Goto = nopPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
