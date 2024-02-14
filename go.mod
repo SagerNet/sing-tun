@@ -10,7 +10,7 @@ require (
 	github.com/sagernet/sing v0.3.0
 	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/net v0.20.0
+	golang.org/x/net v0.21.0
 	golang.org/x/sys v0.17.0
 )
 
