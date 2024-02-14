@@ -56,7 +56,7 @@ func (m *Mixed) Start() error {
 			if err != nil {
 				return
 			}
-			udpConn := gonet.NewUDPConn(ipStack, &wq, endpoint)
+			udpConn := gonet.NewUDPConn(&wq, endpoint)
 			lAddr := udpConn.RemoteAddr()
 			rAddr := udpConn.LocalAddr()
 			if lAddr == nil || rAddr == nil {
