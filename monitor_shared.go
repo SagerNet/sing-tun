@@ -132,9 +132,6 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) s
 			}
 		}
 	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
-	}
 	return m.defaultInterfaceName
 }
 
@@ -146,9 +143,6 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 			}
 		}
 	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
-	}
 	return m.defaultInterfaceIndex
 }
 
@@ -159,9 +153,6 @@ func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (stri
 				return address.interfaceName, address.interfaceIndex
 			}
 		}
-	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
 	}
 	return m.defaultInterfaceName, m.defaultInterfaceIndex
 }
