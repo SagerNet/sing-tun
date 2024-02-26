@@ -170,6 +170,8 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 		Port: 80,
 	})
 	result := make(chan netip.Addr, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		for {
 			sockname, sockErr := unix.Getsockname(socketFd)
@@ -182,8 +184,13 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 			}
 			addr := netip.AddrFrom4(sockaddr.Addr)
 			if addr.IsUnspecified() {
-				time.Sleep(time.Millisecond)
-				continue
+				select {
+				case <-done:
+					break
+				default:
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
 			}
 			result <- addr
 			break
@@ -193,7 +200,7 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 	select {
 	case selectedAddr = <-result:
 	case <-time.After(time.Second):
-		return nil, os.ErrDeadlineExceeded
+		return nil, nil
 	}
 	interfaces, err := net.Interfaces()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"time"
 
@@ -71,7 +72,9 @@ func (m *defaultInterfaceMonitor) Start() error {
 }
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
-	time.Sleep(time.Second)
+	if runtime.GOOS == "android" {
+		time.Sleep(time.Second)
+	}
 	err := m.updateInterfaces()
 	if err != nil {
 		m.logger.Error("update interfaces: ", err)
@@ -81,6 +84,8 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 		m.defaultInterfaceName = ""
 		m.defaultInterfaceIndex = -1
 		m.emit(EventNoRoute)
+	} else if err != nil {
+		m.logger.Error("check interface: ", err)
 	}
 }
 
