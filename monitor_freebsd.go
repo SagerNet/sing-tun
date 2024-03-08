@@ -150,10 +150,6 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			m.emit(EventInterfaceUpdate)
 
 			return nil
-			// msg, _ := json.MarshalIndent(routeMessage, "", "  ")
-			// fmt.Printf("def routeMessage: %s\r\n", msg)
-			// fmt.Printf("def interface: %s\r\n", routeInterface.Name)
-
 		}
 	}
 

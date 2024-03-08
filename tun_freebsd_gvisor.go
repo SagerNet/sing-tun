@@ -3,10 +3,10 @@
 package tun
 
 import (
-	"github.com/metacubex/gvisor/pkg/buffer"
-	"github.com/metacubex/gvisor/pkg/tcpip"
-	"github.com/metacubex/gvisor/pkg/tcpip/header"
-	"github.com/metacubex/gvisor/pkg/tcpip/stack"
+	"github.com/sagernet/gvisor/pkg/buffer"
+	"github.com/sagernet/gvisor/pkg/tcpip"
+	"github.com/sagernet/gvisor/pkg/tcpip/header"
+	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/sing/common/bufio"
 )
 

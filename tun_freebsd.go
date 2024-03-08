@@ -3,7 +3,6 @@ package tun
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -61,19 +60,19 @@ type NativeTun struct {
 
 func New(options Options) (Tun, error) {
 	if len(options.Name) > unix.IFNAMSIZ-1 {
-		return nil, errors.New("interface name too long")
+		return nil, E.New("tun name too long: ", options.Name)
 	}
 
 	// See if interface already exists
 	if iface, _ := net.InterfaceByName(options.Name); iface != nil {
 		if err := destoryIf(options.Name); err != nil {
-			return nil, fmt.Errorf("unable able to destory already existed interface %s: %s", options.Name, err)
+			return nil, E.New("unable able to destory already existed interface: ", options.Name)
 		}
 	}
 
 	tunFile, err := os.OpenFile("/dev/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, E.New("unable able to open /dev/tun: ", err)
 	}
 
 	tun := &NativeTun{
@@ -267,7 +266,7 @@ func fdevName(theFile *os.File) (string, error) {
 	})
 
 	if errno != 0 {
-		return "", fmt.Errorf("unable to get tun if name: %w", errno)
+		return "", os.NewSyscallError("TUNGIFNAME", errno)
 	}
 	return unix.ByteSliceToString(ifreq.Name[:]), nil
 }
@@ -282,7 +281,7 @@ func enableIfHeadMode(theFile *os.File) error {
 	})
 
 	if errno != 0 {
-		return fmt.Errorf("unable to put into IFHEAD mode: %w", errno)
+		return os.NewSyscallError("TUNSIFHEAD", errno)
 	}
 	return nil
 }
@@ -296,7 +295,7 @@ func setIfMode(theFile *os.File, mode int) error {
 	})
 
 	if errno != 0 {
-		return fmt.Errorf("unable to set if mode %d: %w", mode, errno)
+		return os.NewSyscallError("TUNSIFMODE", errno)
 	}
 	return nil
 }
@@ -329,14 +328,14 @@ func disableLinkLocalV6(name string) error {
 
 		_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(_SIOCGIFINFO_IN6), uintptr(unsafe.Pointer(&ndireq)))
 		if errno != 0 {
-			return fmt.Errorf("unable to get ND6 flags for %s: %w", name, errno)
+			return os.NewSyscallError("SIOCGIFINFO_IN6", errno)
 		}
 
 		ndireq.Flags = ndireq.Flags &^ _ND6_IFF_AUTO_LINKLOCAL
 		ndireq.Flags = ndireq.Flags | _ND6_IFF_NO_DAD
 		_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(_SIOCSIFINFO_IN6), uintptr(unsafe.Pointer(&ndireq)))
 		if errno != 0 {
-			return fmt.Errorf("unable to set ND6 flags for %s: %w", name, errno)
+			return os.NewSyscallError("SIOCSIFINFO_IN6", errno)
 		}
 		return nil
 	})
@@ -359,7 +358,7 @@ func setIfName(targetIfName, name string) error {
 	return useSocket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0, func(socketFd int) error {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(unix.SIOCSIFNAME), uintptr(unsafe.Pointer(&ifr)))
 		if errno != 0 {
-			return fmt.Errorf("failed to rename %s to %s: %w", targetIfName, name, errno)
+			return os.NewSyscallError("SIOCSIFNAME", errno)
 		}
 		return nil
 	})
@@ -372,7 +371,7 @@ func becomeCtrlProc(theFile *os.File) error {
 		_, _, errno = unix.Syscall(unix.SYS_IOCTL, fd, _TUNSIFPID, uintptr(0))
 	})
 	if errno != 0 {
-		return fmt.Errorf("unable to become controlling TUN process: %w", errno)
+		return os.NewSyscallError("TUNSIFPID", errno)
 	}
 	return nil
 }
@@ -390,7 +389,7 @@ func setMTU(ifName string, n uint32) error {
 	return useSocket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0, func(socketFd int) error {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(unix.SIOCSIFMTU), uintptr(unsafe.Pointer(&ifr)))
 		if errno != 0 {
-			return fmt.Errorf("failed to set MTU on %s: %w", ifName, errno)
+			return os.NewSyscallError("SIOCSIFMTU", errno)
 		}
 		return nil
 	})
@@ -407,19 +406,18 @@ func getMTU(ifName string) (int, error) {
 	}{}
 	copy(ifr.Name[:], ifName)
 
-	err := useSocket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0, func(socketFd int) error {
+	if err := useSocket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0, func(socketFd int) error {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(unix.SIOCGIFMTU), uintptr(unsafe.Pointer(&ifr)))
 		if errno != 0 {
-			return fmt.Errorf("failed to get MTU on %s: %w", ifName, errno)
+			return os.NewSyscallError("SIOCGIFMTU", errno)
 		}
 		return nil
-	})
-
-	if err != nil {
+	}); err == nil {
+		return int(*(*int32)(unsafe.Pointer(&ifr.MTU))), nil
+	} else {
 		return 0, err
 	}
 
-	return int(*(*int32)(unsafe.Pointer(&ifr.MTU))), nil
 }
 
 // setIpV4 set v4 ip for specific interface, but the
@@ -464,7 +462,7 @@ func setIpV4(ifName string, addresses []netip.Prefix) error {
 				uintptr(unsafe.Pointer(&ifr)),
 			)
 			if errno != 0 {
-				return fmt.Errorf("failed to set v4 address on interface %s: %s", ifName, errno)
+				return os.NewSyscallError("SIOCAIFADDR", errno)
 			}
 		}
 
@@ -533,7 +531,7 @@ func setIpV6(ifName string, addresses []netip.Prefix) error {
 				uintptr(unsafe.Pointer(&in6_ifreq)),
 			)
 			if errno != 0 {
-				return fmt.Errorf("failed to set v6 address on interface %s: %v", ifName, errno)
+				return os.NewSyscallError("SIOCAIFADDR_IN6", errno)
 			}
 
 		}
@@ -561,7 +559,7 @@ func ifUp(ifName string) error {
 			uintptr(unsafe.Pointer(&ifrFlags)),
 		)
 		if errno != 0 {
-			return fmt.Errorf("failed to activate %s interface: %v", ifName, errno)
+			return os.NewSyscallError("SIOCSIFFLAGS", errno)
 		}
 
 		return nil
@@ -577,7 +575,7 @@ func destoryIf(name string) error {
 	return useSocket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0, func(socketFd int) error {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(socketFd), uintptr(unix.SIOCIFDESTROY), uintptr(unsafe.Pointer(&ifr[0])))
 		if errno != 0 {
-			return fmt.Errorf("failed to destroy interface %s: %w", name, errno)
+			return os.NewSyscallError("SIOCIFDESTROY", errno)
 		}
 
 		return nil
@@ -661,13 +659,13 @@ func addRoute(destination netip.Prefix, gateway netip.Addr) (func() error, error
 
 		request, err := routeMessage.Marshal()
 		if err != nil {
-			return err
+			return E.New("route message marshal error: ", err)
 		}
 		err = useSocket(unix.AF_ROUTE, unix.SOCK_RAW, 0, func(socketFd int) error {
 			return common.Error(unix.Write(socketFd, request))
 		})
 		if err != nil {
-			return fmt.Errorf("unable to delete route %s: %s", desc, err)
+			return E.New("unable to delete route ", desc, ": ", err)
 		}
 		return nil
 	}, nil
