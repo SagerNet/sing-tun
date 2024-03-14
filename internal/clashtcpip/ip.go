@@ -30,7 +30,7 @@ const (
 
 const (
 	FlagDontFragment = 1 << 1
-	FlagMoreFragment = 1 << 2
+	FlagMoreFragment = 1
 )
 
 const (
