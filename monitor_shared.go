@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"runtime"
 	"sync"
 	"time"
 
@@ -44,6 +43,7 @@ type defaultInterfaceMonitor struct {
 	defaultInterfaceIndex int
 	androidVPNEnabled     bool
 	networkMonitor        NetworkUpdateMonitor
+	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
@@ -72,9 +72,13 @@ func (m *defaultInterfaceMonitor) Start() error {
 }
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
-	if runtime.GOOS == "android" {
-		time.Sleep(time.Second)
+	if m.checkUpdateTimer != nil {
+		m.checkUpdateTimer.Stop()
 	}
+	m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
+}
+
+func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	err := m.updateInterfaces()
 	if err != nil {
 		m.logger.Error("update interfaces: ", err)
