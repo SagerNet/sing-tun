@@ -6,8 +6,8 @@ github.com/go-ole/go-ole v1.3.0/go.mod h1:5LS6F96DhAwUc7C+1HLexzMXY1xGRSryjyPPKW
 github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
 github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
-github.com/sagernet/gvisor v0.0.0-20240214044702-a3d61928a32f h1:7hj/CcCkUiC6gfhX4D+QNyodmhfurW2L2Q4qzJ1bPnI=
-github.com/sagernet/gvisor v0.0.0-20240214044702-a3d61928a32f/go.mod h1:bLmnT/4M4+yKB6F7JtRsbUr+YJ64yXwFIygjyYDFQzQ=
+github.com/sagernet/gvisor v0.0.0-20240315080113-799fb6b6d311 h1:eUQ6kJZXK77xYZeeNrBb/7JMv0S0Wkk7EpmKUb3fsfc=
+github.com/sagernet/gvisor v0.0.0-20240315080113-799fb6b6d311/go.mod h1:mDrXZSv401qiaFiiIUC59Zp4VG5f4nqXFqDmp5o3hYI=
 github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97 h1:iL5gZI3uFp0X6EslacyapiRz7LLSJyr4RajF/BhMVyE=
 github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97/go.mod h1:xLnfdiJbSp8rNqYEdIW/6eDO4mVoogml14Bh2hSiFpM=
 github.com/sagernet/sing v0.3.8 h1:gm4JKalPhydMYX2zFOTnnd4TXtM/16WFRqSjMepYQQk=

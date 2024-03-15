@@ -102,10 +102,10 @@ func (e *DarwinEndpoint) ARPHardwareType() header.ARPHardwareType {
 	return header.ARPHardwareNone
 }
 
-func (e *DarwinEndpoint) AddHeader(buffer stack.PacketBufferPtr) {
+func (e *DarwinEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 }
 
-func (e *DarwinEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
+func (e *DarwinEndpoint) ParseHeader(ptr *stack.PacketBuffer) bool {
 	return true
 }
 
