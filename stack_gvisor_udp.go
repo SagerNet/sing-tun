@@ -42,7 +42,7 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, u
 	}
 }
 
-func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt stack.PacketBufferPtr) bool {
+func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
 	var upstreamMetadata M.Metadata
 	upstreamMetadata.Source = M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	upstreamMetadata.Destination = M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
@@ -174,7 +174,7 @@ func (c *gUDPConn) Close() error {
 	return c.UDPConn.Close()
 }
 
-func gWriteUnreachable(gStack *stack.Stack, packet stack.PacketBufferPtr, err error) (retErr error) {
+func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer, err error) (retErr error) {
 	if errors.Is(err, syscall.ENETUNREACH) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
 			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetUnreachable)
@@ -197,7 +197,7 @@ func gWriteUnreachable(gStack *stack.Stack, packet stack.PacketBufferPtr, err er
 	return nil
 }
 
-func gWriteUnreachable4(gStack *stack.Stack, packet stack.PacketBufferPtr, icmpCode stack.RejectIPv4WithICMPType) error {
+func gWriteUnreachable4(gStack *stack.Stack, packet *stack.PacketBuffer, icmpCode stack.RejectIPv4WithICMPType) error {
 	err := gStack.NetworkProtocolInstance(header.IPv4ProtocolNumber).(stack.RejectIPv4WithHandler).SendRejectionError(packet, icmpCode, true)
 	if err != nil {
 		return wrapStackError(err)
@@ -205,7 +205,7 @@ func gWriteUnreachable4(gStack *stack.Stack, packet stack.PacketBufferPtr, icmpC
 	return nil
 }
 
-func gWriteUnreachable6(gStack *stack.Stack, packet stack.PacketBufferPtr, icmpCode stack.RejectIPv6WithICMPType) error {
+func gWriteUnreachable6(gStack *stack.Stack, packet *stack.PacketBuffer, icmpCode stack.RejectIPv6WithICMPType) error {
 	err := gStack.NetworkProtocolInstance(header.IPv6ProtocolNumber).(stack.RejectIPv6WithHandler).SendRejectionError(packet, icmpCode, true)
 	if err != nil {
 		return wrapStackError(err)
