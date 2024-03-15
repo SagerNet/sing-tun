@@ -8,7 +8,6 @@ require (
 	github.com/sagernet/gvisor v0.0.0-20240315080113-799fb6b6d311
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
 	github.com/sagernet/sing v0.3.6
-	github.com/scjalliance/comshim v0.0.0-20230315213746-5e51f40bd3b9
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/net v0.22.0
 	golang.org/x/sys v0.18.0
