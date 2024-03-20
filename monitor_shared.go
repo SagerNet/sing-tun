@@ -43,6 +43,7 @@ type defaultInterfaceMonitor struct {
 	defaultInterfaceIndex int
 	androidVPNEnabled     bool
 	networkMonitor        NetworkUpdateMonitor
+	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
@@ -71,7 +72,13 @@ func (m *defaultInterfaceMonitor) Start() error {
 }
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
-	time.Sleep(time.Second)
+	if m.checkUpdateTimer != nil {
+		m.checkUpdateTimer.Stop()
+	}
+	m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
+}
+
+func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	err := m.updateInterfaces()
 	if err != nil {
 		m.logger.Error("update interfaces: ", err)
@@ -81,6 +88,8 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 		m.defaultInterfaceName = ""
 		m.defaultInterfaceIndex = -1
 		m.emit(EventNoRoute)
+	} else if err != nil {
+		m.logger.Error("check interface: ", err)
 	}
 }
 
@@ -127,9 +136,6 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) s
 			}
 		}
 	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
-	}
 	return m.defaultInterfaceName
 }
 
@@ -141,9 +147,6 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 			}
 		}
 	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
-	}
 	return m.defaultInterfaceIndex
 }
 
@@ -154,9 +157,6 @@ func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (stri
 				return address.interfaceName, address.interfaceIndex
 			}
 		}
-	}
-	if m.defaultInterfaceIndex == -1 {
-		m.checkUpdate()
 	}
 	return m.defaultInterfaceName, m.defaultInterfaceIndex
 }

@@ -32,7 +32,7 @@ type networkDispatcherFilter struct {
 	writer           N.VectorisedWriter
 }
 
-func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt stack.PacketBufferPtr) {
+func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
 	var network header.Network
 	if protocol == header.IPv4ProtocolNumber {
 		if headerPackets, loaded := pkt.Data().PullUp(header.IPv4MinimumSize); loaded {

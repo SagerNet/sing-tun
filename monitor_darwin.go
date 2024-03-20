@@ -42,7 +42,7 @@ func (m *networkUpdateMonitor) loopUpdate() {
 		select {
 		case <-m.done:
 			return
-		case <-time.After(time.Second):
+		default:
 		}
 		err := m.loopUpdate0()
 		if err != nil {
@@ -67,7 +67,16 @@ func (m *networkUpdateMonitor) loopUpdate1(routeSocketFile *os.File) {
 	defer routeSocketFile.Close()
 	buffer := buf.NewPacket()
 	defer buffer.Release()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-m.done:
+			routeSocketFile.Close()
+		case <-done:
+		}
+	}()
 	n, err := routeSocketFile.Read(buffer.FreeBytes())
+	close(done)
 	if err != nil {
 		return
 	}
@@ -92,60 +101,62 @@ func (m *networkUpdateMonitor) Close() error {
 }
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
-	ribMessage, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		return err
-	}
-	routeMessages, err := route.ParseRIB(route.RIBTypeRoute, ribMessage)
-	if err != nil {
-		return err
-	}
-	var defaultInterface *net.Interface
-	for _, rawRouteMessage := range routeMessages {
-		routeMessage := rawRouteMessage.(*route.RouteMessage)
-		if len(routeMessage.Addrs) <= unix.RTAX_NETMASK {
-			continue
-		}
-		destination, isIPv4Destination := routeMessage.Addrs[unix.RTAX_DST].(*route.Inet4Addr)
-		if !isIPv4Destination {
-			continue
-		}
-		if destination.IP != netip.IPv4Unspecified().As4() {
-			continue
-		}
-		mask, isIPv4Mask := routeMessage.Addrs[unix.RTAX_NETMASK].(*route.Inet4Addr)
-		if !isIPv4Mask {
-			continue
-		}
-		ones, _ := net.IPMask(mask.IP[:]).Size()
-		if ones != 0 {
-			continue
-		}
-		routeInterface, err := net.InterfaceByIndex(routeMessage.Index)
+	var (
+		defaultInterface *net.Interface
+		err              error
+	)
+	if m.options.UnderNetworkExtension {
+		defaultInterface, err = getDefaultInterfaceBySocket()
 		if err != nil {
 			return err
 		}
-		if routeMessage.Flags&unix.RTF_UP == 0 {
-			continue
+	} else {
+		ribMessage, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+		if err != nil {
+			return err
 		}
-		if routeMessage.Flags&unix.RTF_GATEWAY == 0 {
-			continue
+		routeMessages, err := route.ParseRIB(route.RIBTypeRoute, ribMessage)
+		if err != nil {
+			return err
 		}
-		if routeMessage.Flags&unix.RTF_IFSCOPE != 0 {
-			// continue
-		}
-		if routeInterface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		defaultInterface = routeInterface
-		break
-	}
-	if defaultInterface == nil {
-		if m.options.UnderNetworkExtension {
-			defaultInterface, err = getDefaultInterfaceBySocket()
+		for _, rawRouteMessage := range routeMessages {
+			routeMessage := rawRouteMessage.(*route.RouteMessage)
+			if len(routeMessage.Addrs) <= unix.RTAX_NETMASK {
+				continue
+			}
+			destination, isIPv4Destination := routeMessage.Addrs[unix.RTAX_DST].(*route.Inet4Addr)
+			if !isIPv4Destination {
+				continue
+			}
+			if destination.IP != netip.IPv4Unspecified().As4() {
+				continue
+			}
+			mask, isIPv4Mask := routeMessage.Addrs[unix.RTAX_NETMASK].(*route.Inet4Addr)
+			if !isIPv4Mask {
+				continue
+			}
+			ones, _ := net.IPMask(mask.IP[:]).Size()
+			if ones != 0 {
+				continue
+			}
+			routeInterface, err := net.InterfaceByIndex(routeMessage.Index)
 			if err != nil {
 				return err
 			}
+			if routeMessage.Flags&unix.RTF_UP == 0 {
+				continue
+			}
+			if routeMessage.Flags&unix.RTF_GATEWAY == 0 {
+				continue
+			}
+			if routeMessage.Flags&unix.RTF_IFSCOPE != 0 {
+				// continue
+			}
+			if routeInterface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			defaultInterface = routeInterface
+			break
 		}
 	}
 	if defaultInterface == nil {
@@ -173,6 +184,8 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 		Port: 80,
 	})
 	result := make(chan netip.Addr, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		for {
 			sockname, sockErr := unix.Getsockname(socketFd)
@@ -185,8 +198,13 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 			}
 			addr := netip.AddrFrom4(sockaddr.Addr)
 			if addr.IsUnspecified() {
-				time.Sleep(time.Millisecond)
-				continue
+				select {
+				case <-done:
+					break
+				default:
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
 			}
 			result <- addr
 			break
@@ -196,7 +214,7 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 	select {
 	case selectedAddr = <-result:
 	case <-time.After(time.Second):
-		return nil, os.ErrDeadlineExceeded
+		return nil, nil
 	}
 	interfaces, err := net.Interfaces()
 	if err != nil {

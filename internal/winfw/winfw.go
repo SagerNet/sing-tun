@@ -12,7 +12,6 @@ import (
 
 	"github.com/go-ole/go-ole"
 	"github.com/go-ole/go-ole/oleutil"
-	"github.com/scjalliance/comshim"
 )
 
 // Firewall related API constants.
@@ -250,7 +249,10 @@ func FirewallRuleExistsByName(rules *ole.IDispatch, name string) (bool, error) {
 // then:
 // dispatch firewallAPIRelease(u, fwp)
 func firewallAPIInit() (*ole.IUnknown, *ole.IDispatch, error) {
-	comshim.Add(1)
+	err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+	if err != nil {
+		return nil, nil, fmt.Errorf("Failed to initialize COM: %s", err)
+	}
 
 	unknown, err := oleutil.CreateObject("HNetCfg.FwPolicy2")
 	if err != nil {
@@ -270,5 +272,5 @@ func firewallAPIInit() (*ole.IUnknown, *ole.IDispatch, error) {
 func firewallAPIRelease(u *ole.IUnknown, fwp *ole.IDispatch) {
 	fwp.Release()
 	u.Release()
-	comshim.Done()
+	ole.CoUninitialize()
 }
