@@ -6,6 +6,7 @@ build:
 	GOOS=linux GOARCH=386 go build -v -tags with_gvisor .
 	GOOS=linux GOARCH=arm go build -v -tags with_gvisor .
 	GOOS=windows GOARCH=amd64 go build -v -tags with_gvisor .
+	GOOS=freebsd GOARCH=amd64 go build -v -tags with_gvisor .
 
 fmt:
 	@gofumpt -l -w .
