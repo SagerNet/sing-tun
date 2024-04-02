@@ -136,11 +136,13 @@ func (t *NativeTun) BatchSize() int {
 	if !t.gsoEnabled {
 		return 1
 	}
+	/* // Not works on some devices: https://github.com/SagerNet/sing-box/issues/1605
 	batchSize := int(gsoMaxSize/t.options.MTU) * 2
 	if batchSize > idealBatchSize {
 		batchSize = idealBatchSize
 	}
-	return batchSize
+	return batchSize*/
+	return idealBatchSize
 }
 
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
