@@ -72,10 +72,11 @@ func (m *defaultInterfaceMonitor) Start() error {
 }
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
-	if m.checkUpdateTimer != nil {
-		m.checkUpdateTimer.Stop()
+	if m.checkUpdateTimer == nil {
+		m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
+	} else {
+		m.checkUpdateTimer.Reset(time.Second)
 	}
-	m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
 }
 
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
