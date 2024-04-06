@@ -7,10 +7,10 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/sagernet/gvisor v0.0.0-20231209105102-8d27a30e436e
 	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.3.2
+	github.com/sagernet/sing v0.3.8
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/net v0.21.0
-	golang.org/x/sys v0.17.0
+	golang.org/x/net v0.24.0
+	golang.org/x/sys v0.19.0
 )
 
 require (
