@@ -599,6 +599,26 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority6++
 		}
+		if p4 && !t.options.StrictRoute {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 && !t.options.StrictRoute {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
 	}
 
 	if p4 {
