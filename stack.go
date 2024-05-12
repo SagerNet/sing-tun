@@ -26,6 +26,7 @@ type StackOptions struct {
 	Logger                 logger.Logger
 	ForwarderBindInterface bool
 	InterfaceFinder        control.InterfaceFinder
+	EnforceBindInterface   bool
 }
 
 func NewStack(

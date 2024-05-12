@@ -41,6 +41,7 @@ type System struct {
 	udpNat             *udpnat.Service[netip.AddrPort]
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
+	enforceBind        bool
 	frontHeadroom      int
 	txChecksumOffload  bool
 }
@@ -66,6 +67,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		broadcastAddr:   BroadcastAddr(options.TunOptions.Inet4Address),
 		bindInterface:   options.ForwarderBindInterface,
 		interfaceFinder: options.InterfaceFinder,
+		enforceBind:     options.EnforceBindInterface,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
 		if options.TunOptions.Inet4Address[0].Bits() == 32 {
@@ -109,17 +111,24 @@ func (s *System) start() error {
 		return E.Cause(err, "fix windows firewall for system stack")
 	}
 	var listener net.ListenConfig
-	if s.bindInterface {
+	if s.bindInterface || s.enforceBind {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
 			bindErr := control.BindToInterface0(s.interfaceFinder, conn, network, address, s.tunName, -1, true)
 			if bindErr != nil {
 				s.logger.Warn("bind forwarder to interface: ", bindErr)
 			}
+			if s.enforceBind {
+				return bindErr
+			}
 			return nil
 		})
 	}
 	if s.inet4Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+		address := net.JoinHostPort(s.inet4ServerAddress.String(), "0")
+		if s.enforceBind {
+			address = "0.0.0.0:0"
+		}
+		tcpListener, err := listener.Listen(s.ctx, "tcp4", address)
 		if err != nil {
 			return err
 		}
@@ -128,7 +137,11 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	if s.inet6Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+		address := net.JoinHostPort(s.inet6ServerAddress.String(), "0")
+		if s.enforceBind {
+			address = "[:]:0"
+		}
+		tcpListener, err := listener.Listen(s.ctx, "tcp6", address)
 		if err != nil {
 			return err
 		}
