@@ -573,15 +573,16 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			}
 			priority++
 		}
-		/*if p6 {
+		if p4 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Dst = t.options.Inet6Address.Masked()
-			it.Table = tunTableIndex
-			it.Family = unix.AF_INET6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
 			rules = append(rules, it)
-		}*/
-		if p4 && !t.options.StrictRoute {
+
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IPProto = syscall.IPPROTO_ICMP
@@ -593,31 +594,20 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p6 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+
+			it = netlink.NewRule()
+			it.Priority = priority6
 			it.IPProto = syscall.IPPROTO_ICMPV6
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
 			priority6++
-		}
-		if p4 && !t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		}
-		if p6 && !t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
 		}
 	}
 
