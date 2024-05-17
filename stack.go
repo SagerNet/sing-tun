@@ -25,6 +25,7 @@ type StackOptions struct {
 	Handler                Handler
 	Logger                 logger.Logger
 	ForwarderBindInterface bool
+	IncludeAllNetworks     bool
 	InterfaceFinder        control.InterfaceFinder
 }
 
@@ -34,7 +35,9 @@ func NewStack(
 ) (Stack, error) {
 	switch stack {
 	case "":
-		if WithGVisor && !options.TunOptions.GSO {
+		if options.IncludeAllNetworks {
+			return NewGVisor(options)
+		} else if WithGVisor && !options.TunOptions.GSO {
 			return NewMixed(options)
 		} else {
 			return NewSystem(options)
@@ -42,8 +45,14 @@ func NewStack(
 	case "gvisor":
 		return NewGVisor(options)
 	case "mixed":
+		if options.IncludeAllNetworks {
+			return nil, ErrIncludeAllNetworks
+		}
 		return NewMixed(options)
 	case "system":
+		if options.IncludeAllNetworks {
+			return nil, ErrIncludeAllNetworks
+		}
 		return NewSystem(options)
 	default:
 		return nil, E.New("unknown stack: ", stack)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/sagernet/netlink"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -67,6 +68,9 @@ func (m *networkUpdateMonitor) Start() error {
 }
 
 func (m *networkUpdateMonitor) loopUpdate() {
+	const minDuration = time.Second
+	timer := time.NewTimer(minDuration)
+	defer timer.Stop()
 	for {
 		select {
 		case <-m.close:
@@ -75,6 +79,12 @@ func (m *networkUpdateMonitor) loopUpdate() {
 		case <-m.linkUpdate:
 		}
 		m.emit()
+		select {
+		case <-m.close:
+			return
+		case <-timer.C:
+			timer.Reset(minDuration)
+		}
 	}
 }
 

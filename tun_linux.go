@@ -136,11 +136,13 @@ func (t *NativeTun) BatchSize() int {
 	if !t.gsoEnabled {
 		return 1
 	}
+	/* // Not works on some devices: https://github.com/SagerNet/sing-box/issues/1605
 	batchSize := int(gsoMaxSize/t.options.MTU) * 2
 	if batchSize > idealBatchSize {
 		batchSize = idealBatchSize
 	}
-	return batchSize
+	return batchSize*/
+	return idealBatchSize
 }
 
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
@@ -571,15 +573,16 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			}
 			priority++
 		}
-		/*if p6 {
+		if p4 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Dst = t.options.Inet6Address.Masked()
-			it.Table = tunTableIndex
-			it.Family = unix.AF_INET6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
 			rules = append(rules, it)
-		}*/
-		if p4 {
+
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IPProto = syscall.IPPROTO_ICMP
@@ -588,7 +591,16 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority++
 		}
-		if p6 {
+		if p6 && !t.options.StrictRoute {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+
 			it = netlink.NewRule()
 			it.Priority = priority6
 			it.IPProto = syscall.IPPROTO_ICMPV6
@@ -596,26 +608,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
 			priority6++
-		}
-		if p4 {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		}
-		if p6 {
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
 		}
 	}
 
@@ -818,9 +810,9 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() {
 	if len(t.options.Inet6Address) > 0 {
 		dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
 	}
-	shell.Exec(ctlPath, "domain", t.options.Name, "~.").Start()
+	go shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
 	if t.options.AutoRoute {
-		shell.Exec(ctlPath, "default-route", t.options.Name, "true").Start()
-		shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Start()
+		go shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
+		go shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
 	}
 }
