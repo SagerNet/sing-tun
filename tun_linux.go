@@ -829,9 +829,9 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() {
 	if len(t.options.Inet6Address) > 0 {
 		dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
 	}
-	shell.Exec(ctlPath, "domain", t.options.Name, "~.").Start()
+	go shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
 	if t.options.AutoRoute {
-		shell.Exec(ctlPath, "default-route", t.options.Name, "true").Start()
-		shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Start()
+		go shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
+		go shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
 	}
 }
