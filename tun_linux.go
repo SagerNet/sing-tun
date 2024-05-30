@@ -516,7 +516,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
 		const protectedFromVPN = 0x20000
-		if p4 || t.options.StrictRoute {
+		if p4 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
@@ -528,7 +528,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority++
 		}
-		if p6 || t.options.StrictRoute {
+		if p6 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
@@ -590,7 +590,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority6++
 		}
-		if p4 && !t.options.StrictRoute {
+		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.Invert = true
@@ -599,7 +599,20 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.SuppressPrefixlen = 0
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-
+			priority++
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+		}
+		if p4 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IPProto = syscall.IPPROTO_ICMP
@@ -611,15 +624,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p6 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority6
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			it = netlink.NewRule()
-			it.Priority = priority6
 			it.IPProto = syscall.IPPROTO_ICMPV6
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
@@ -627,80 +631,62 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			priority6++
 		}
 	}
-
 	if p4 {
-		if t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Table = t.options.TableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		} else {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.IifName = "lo"
-			it.Table = t.options.TableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.IifName = "lo"
+		it.Table = t.options.TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
 
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+		it.Table = t.options.TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+
+		for _, address := range t.options.Inet4Address {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+			it.Src = address.Masked()
 			it.Table = t.options.TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-
-			for _, address := range t.options.Inet4Address {
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET
-				rules = append(rules, it)
-			}
 		}
 		priority++
 	}
 	if p6 {
-		if !t.options.StrictRoute {
-			for _, address := range t.options.Inet6Address {
-				it = netlink.NewRule()
-				it.Priority = priority6
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET6
-				rules = append(rules, it)
-			}
-			priority6++
-
+		for _, address := range t.options.Inet6Address {
 			it = netlink.NewRule()
 			it.Priority = priority6
 			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
-			it.Goto = nopPriority
+			it.Src = address.Masked()
+			it.Table = t.options.TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
-			it.Goto = nopPriority
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			priority6++
 		}
+		priority6++
 
 		it = netlink.NewRule()
 		it.Priority = priority6
-		it.Table = t.options.TableIndex
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
+		it.Goto = nopPriority
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+
 		priority6++
 	}
 	if p4 {
