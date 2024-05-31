@@ -109,9 +109,11 @@ func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Pref
 		var inet4Ranges []netip.Prefix
 		if len(o.Inet4RouteAddress) > 0 {
 			inet4Ranges = o.Inet4RouteAddress
-			for _, address := range o.Inet4Address {
-				if address.Bits() < 32 {
-					inet4Ranges = append(inet4Ranges, netipx.RangeOfPrefix(address).Prefixes()...)
+			if runtime.GOOS == "darwin" {
+				for _, address := range o.Inet4Address {
+					if address.Bits() < 32 {
+						inet4Ranges = append(inet4Ranges, address.Masked())
+					}
 				}
 			}
 		} else if autoRouteUseSubRanges && !underNetworkExtension {
@@ -149,9 +151,11 @@ func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Pref
 		var inet6Ranges []netip.Prefix
 		if len(o.Inet6RouteAddress) > 0 {
 			inet6Ranges = o.Inet6RouteAddress
-			for _, address := range o.Inet6Address {
-				if address.Bits() < 32 {
-					inet6Ranges = append(inet6Ranges, netipx.RangeOfPrefix(address).Prefixes()...)
+			if runtime.GOOS == "darwin" {
+				for _, address := range o.Inet6Address {
+					if address.Bits() < 32 {
+						inet6Ranges = append(inet6Ranges, address.Masked())
+					}
 				}
 			}
 		} else if autoRouteUseSubRanges && !underNetworkExtension {
