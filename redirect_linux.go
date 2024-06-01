@@ -2,15 +2,16 @@ package tun
 
 import (
 	"context"
+	"net/netip"
+	"os"
+	"os/exec"
+	"runtime"
+
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
-	"net/netip"
-	"os"
-	"os/exec"
-	"runtime"
 
 	"golang.org/x/sys/unix"
 )
@@ -39,6 +40,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		ctx:                    options.Context,
 		handler:                options.Handler,
 		logger:                 options.Logger,
+		tableName:              options.TableName,
 		useNFTables:            runtime.GOOS != "android" && !options.DisableNFTables,
 		customRedirectPortFunc: options.CustomRedirectPort,
 	}

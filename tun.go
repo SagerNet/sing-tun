@@ -48,6 +48,8 @@ type Options struct {
 	MTU                      uint32
 	GSO                      bool
 	AutoRoute                bool
+	DNSServers               []netip.Addr
+	IPRoute2RuleIndex        int
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix
 	Inet6RouteAddress        []netip.Prefix
@@ -67,6 +69,9 @@ type Options struct {
 
 	// No work for TCP, do not use.
 	_TXChecksumOffload bool
+
+	// For library usages.
+	EXP_DisableDNSHijack bool
 }
 
 func CalculateInterfaceName(name string) (tunName string) {

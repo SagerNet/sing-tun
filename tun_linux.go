@@ -359,11 +359,6 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 	}), nil
 }
 
-const (
-	ruleStart = 9000
-	ruleEnd   = ruleStart + 10
-)
-
 func (t *NativeTun) nextIndex6() int {
 	ruleList, err := netlink.RuleList(netlink.FAMILY_V6)
 	if err != nil {
@@ -411,9 +406,14 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	var it *netlink.Rule
 
 	excludeRanges := t.options.ExcludedRanges()
+
+	ruleStart := t.options.IPRoute2RuleIndex
+	if ruleStart == 0 {
+		ruleStart = 9000
+	}
 	priority := ruleStart
 	priority6 := priority
-	nopPriority := ruleEnd
+	nopPriority := ruleStart + 10
 
 	for _, excludeRange := range excludeRanges {
 		if p4 {
@@ -788,6 +788,11 @@ func (t *NativeTun) unsetRules() error {
 			return err
 		}
 		for _, rule := range ruleList {
+			ruleStart := t.options.IPRoute2RuleIndex
+			if ruleStart == 0 {
+				ruleStart = 9000
+			}
+			ruleEnd := ruleStart + 10
 			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
 				ruleToDel := netlink.NewRule()
 				ruleToDel.Family = rule.Family
@@ -820,20 +825,28 @@ func (t *NativeTun) routeUpdate(event int) {
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() {
+	if t.options.EXP_DisableDNSHijack {
+		return
+	}
 	ctlPath, err := exec.LookPath("resolvectl")
 	if err != nil {
 		return
 	}
-	var dnsServer []netip.Addr
-	if len(t.options.Inet4Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+	dnsServer := t.options.DNSServers
+	if len(dnsServer) == 0 {
+		if len(t.options.Inet4Address) > 0 {
+			dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+		}
+		if len(t.options.Inet6Address) > 0 {
+			dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+		}
 	}
-	if len(t.options.Inet6Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+	if len(dnsServer) == 0 {
+		return
 	}
-	go shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
-	if t.options.AutoRoute {
-		go shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
-		go shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
-	}
+	go func() {
+		_ = shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
+		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
+		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
+	}()
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
+	"github.com/sagernet/sing/common"
 	F "github.com/sagernet/sing/common/format"
 
 	"golang.org/x/sys/unix"
@@ -138,34 +139,39 @@ func (r *autoRedirect) setupNFTables(family int) error {
 		}
 	}
 
-	var dnsServerAddress netip.Addr
-	if table.Family == nftables.TableFamilyIPv4 {
-		dnsServerAddress = r.tunOptions.Inet4Address[0].Addr().Next()
-	} else {
-		dnsServerAddress = r.tunOptions.Inet6Address[0].Addr().Next()
-	}
-
-	if len(r.tunOptions.IncludeInterface) > 0 || len(r.tunOptions.IncludeUID) > 0 {
-		for _, name := range r.tunOptions.IncludeInterface {
-			nft.AddRule(&nftables.Rule{
-				Table: table,
-				Chain: chainPreRouting,
-				Exprs: nftablesRuleIfName(expr.MetaKeyIIFNAME, name, append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServerAddress)...)...),
-			})
-		}
-		for _, uidRange := range r.tunOptions.IncludeUID {
-			nft.AddRule(&nftables.Rule{
-				Table: table,
-				Chain: chainPreRouting,
-				Exprs: nftablesRuleMetaUInt32Range(expr.MetaKeySKUID, uidRange, append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServerAddress)...)...),
-			})
-		}
-	} else {
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chainPreRouting,
-			Exprs: append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServerAddress)...),
+	if !r.tunOptions.EXP_DisableDNSHijack {
+		dnsServer := common.Find(r.tunOptions.DNSServers, func(it netip.Addr) bool {
+			return it.Is4() == (family == unix.AF_INET)
 		})
+		if !dnsServer.IsValid() {
+			if family == unix.AF_INET {
+				dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
+			} else {
+				dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
+			}
+		}
+		if len(r.tunOptions.IncludeInterface) > 0 || len(r.tunOptions.IncludeUID) > 0 {
+			for _, name := range r.tunOptions.IncludeInterface {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chainPreRouting,
+					Exprs: nftablesRuleIfName(expr.MetaKeyIIFNAME, name, append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServer)...)...),
+				})
+			}
+			for _, uidRange := range r.tunOptions.IncludeUID {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chainPreRouting,
+					Exprs: nftablesRuleMetaUInt32Range(expr.MetaKeySKUID, uidRange, append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServer)...)...),
+				})
+			}
+		} else {
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chainPreRouting,
+				Exprs: append(routeExprs, nftablesRuleHijackDNS(table.Family, dnsServer)...),
+			})
+		}
 	}
 
 	nft.AddRule(&nftables.Rule{
