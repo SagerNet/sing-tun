@@ -42,6 +42,7 @@ type defaultInterfaceMonitor struct {
 	defaultInterfaceName  string
 	defaultInterfaceIndex int
 	androidVPNEnabled     bool
+	noRoute               bool
 	networkMonitor        NetworkUpdateMonitor
 	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
@@ -86,11 +87,16 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
-		m.defaultInterfaceName = ""
-		m.defaultInterfaceIndex = -1
-		m.emit(EventNoRoute)
+		if !m.noRoute {
+			m.noRoute = true
+			m.defaultInterfaceName = ""
+			m.defaultInterfaceIndex = -1
+			m.emit(EventNoRoute)
+		}
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
+	} else {
+		m.noRoute = false
 	}
 }
 
