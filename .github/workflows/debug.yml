@@ -11,34 +11,86 @@ on:
       - '!.github/workflows/debug.yml'
   pull_request:
     branches:
+      - main
       - dev
 
 jobs:
   build:
-    name: Debug build
+    name: Linux Debug build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Get latest go version
-        id: version
-        run: |
-          echo ::set-output name=go_version::$(curl -s https://raw.githubusercontent.com/actions/go-versions/main/versions-manifest.json | grep -oE '"version": "[0-9]{1}.[0-9]{1,}(.[0-9]{1,})?"' | head -1 | cut -d':' -f2 | sed 's/ //g; s/"//g')
       - name: Setup Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v4
         with:
-          go-version: ${{ steps.version.outputs.go_version }}
-      - name: Add cache to Go proxy
+          go-version: ^1.22
+      - name: Build
         run: |
-          version=`git rev-parse HEAD`
-          mkdir build
-          pushd build
-          go mod init build
-          go get -v github.com/sagernet/sing-tun@$version
-          popd
+          make test
+  build_go120:
+    name: Linux Debug build (Go 1.20)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ~1.20
         continue-on-error: true
       - name: Build
         run: |
-          go build -v .
+          make test
+  build_go121:
+    name: Linux Debug build (Go 1.21)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ~1.21
+        continue-on-error: true
+      - name: Build
+        run: |
+          make test
+  build__windows:
+    name: Windows Debug build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.22
+        continue-on-error: true
+      - name: Build
+        run: |
+          make test
+  build_darwin:
+    name: macOS Debug build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.22
+        continue-on-error: true
+      - name: Build
+        run: |
+          make test

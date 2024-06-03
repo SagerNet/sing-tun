@@ -1,6 +1,6 @@
 module github.com/sagernet/sing-tun
 
-go 1.18
+go 1.20
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0
@@ -10,7 +10,7 @@ require (
 	github.com/sagernet/nftables v0.3.0-beta.2
 	github.com/sagernet/sing v0.5.0-alpha.9
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/net v0.24.0
+	golang.org/x/net v0.26.0
 	golang.org/x/sys v0.21.0
 )
 
