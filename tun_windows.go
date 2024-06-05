@@ -305,7 +305,7 @@ func (t *NativeTun) configure() error {
 
 			blockDNSFilter4 := winsys.FWPM_FILTER0{}
 			blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
-			blockDNSFilter4.NumFilterConditions = 2
+			blockDNSFilter4.NumFilterConditions = 1
 			blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
 			blockDNSFilter4.SubLayerKey = subLayerKey
 			blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
@@ -319,7 +319,7 @@ func (t *NativeTun) configure() error {
 
 			blockDNSFilter6 := winsys.FWPM_FILTER0{}
 			blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
-			blockDNSFilter6.NumFilterConditions = 2
+			blockDNSFilter6.NumFilterConditions = 1
 			blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
 			blockDNSFilter6.SubLayerKey = subLayerKey
 			blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
