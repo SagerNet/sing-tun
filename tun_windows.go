@@ -114,6 +114,9 @@ func (t *NativeTun) configure() error {
 				err = luid.AddRoute(routeRange, netip.IPv6Unspecified(), 0)
 			}
 		}
+		if err != nil {
+			return err
+		}
 		err = windnsapi.FlushResolverCache()
 		if err != nil {
 			return err
