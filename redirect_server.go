@@ -74,7 +74,7 @@ func (s *redirectServer) loopIn() {
 		}
 		var metadata M.Metadata
 		metadata.Protocol = ProtocolRedirect
-		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr())
+		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
 		destination, err := control.GetOriginalDestination(conn)
 		if err != nil {
 			_ = conn.SetLinger(0)
@@ -82,7 +82,7 @@ func (s *redirectServer) loopIn() {
 			s.logger.Error("process connection from ", metadata.Source, ": invalid connection: ", err)
 			continue
 		}
-		metadata.Destination = M.SocksaddrFromNetIP(destination)
+		metadata.Destination = M.SocksaddrFromNetIP(destination).Unwrap()
 		go s.handler.NewConnection(s.ctx, conn, metadata)
 	}
 }
