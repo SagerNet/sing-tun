@@ -29,8 +29,9 @@ func (r *autoRedirect) setupIPTables() error {
 }
 
 func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
-	tableNameOutput := r.tableName + "-output"
+	tableNameInput := r.tableName + "-input"
 	tableNameForward := r.tableName + "-forward"
+	tableNameOutput := r.tableName + "-output"
 	tableNamePreRouteing := r.tableName + "-prerouting"
 	redirectPort := r.redirectPort()
 	// OUTPUT
@@ -50,6 +51,25 @@ func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 	}
 	if r.androidSu {
 		return nil
+	}
+	// INPUT
+	err = r.runShell(iptablesPath, "-N", tableNameInput)
+	if err != nil {
+		return err
+	}
+	err = r.runShell(iptablesPath, "-A", tableNameInput,
+		"-i", r.tunOptions.Name, "-j", "ACCEPT")
+	if err != nil {
+		return err
+	}
+	err = r.runShell(iptablesPath, "-A", tableNameInput,
+		"-o", r.tunOptions.Name, "-j", "ACCEPT")
+	if err != nil {
+		return err
+	}
+	err = r.runShell(iptablesPath, "-I FORWARD -j", tableNameInput)
+	if err != nil {
+		return err
 	}
 	// FORWARD
 	err = r.runShell(iptablesPath, "-N", tableNameForward)

@@ -41,6 +41,11 @@ type LinuxTUN interface {
 	TXChecksumOffload() bool
 }
 
+const (
+	DefaultIPRoute2TableIndex = 2022
+	DefaultIPRoute2RuleIndex  = 9000
+)
+
 type Options struct {
 	Name                     string
 	Inet4Address             []netip.Prefix
@@ -49,7 +54,11 @@ type Options struct {
 	GSO                      bool
 	AutoRoute                bool
 	DNSServers               []netip.Addr
+	IPRoute2TableIndex       int
 	IPRoute2RuleIndex        int
+	AutoRedirectMarkMode     bool
+	AutoRedirectInputMark    uint32
+	AutoRedirectOutputMark   uint32
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix
 	Inet6RouteAddress        []netip.Prefix
@@ -63,7 +72,6 @@ type Options struct {
 	IncludePackage           []string
 	ExcludePackage           []string
 	InterfaceMonitor         DefaultInterfaceMonitor
-	TableIndex               int
 	FileDescriptor           int
 	Logger                   logger.Logger
 

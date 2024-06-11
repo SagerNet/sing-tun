@@ -6,12 +6,17 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/common/x/list"
+
+	"go4.org/netipx"
 )
 
 type autoRedirect struct {
@@ -20,6 +25,10 @@ type autoRedirect struct {
 	handler                Handler
 	logger                 logger.Logger
 	tableName              string
+	networkMonitor         NetworkUpdateMonitor
+	networkListener        *list.Element[NetworkUpdateCallback]
+	interfaceFinder        control.InterfaceFinder
+	localAddresses         []netip.Prefix
 	customRedirectPortFunc func() int
 	customRedirectPort     int
 	redirectServer         *redirectServer
@@ -30,6 +39,8 @@ type autoRedirect struct {
 	useNFTables            bool
 	androidSu              bool
 	suPath                 string
+	routeAddressSet        *[]*netipx.IPSet
+	routeExcludeAddressSet *[]*netipx.IPSet
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -38,9 +49,13 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		ctx:                    options.Context,
 		handler:                options.Handler,
 		logger:                 options.Logger,
+		networkMonitor:         options.NetworkMonitor,
+		interfaceFinder:        options.InterfaceFinder,
 		tableName:              options.TableName,
 		useNFTables:            runtime.GOOS != "android" && !options.DisableNFTables,
 		customRedirectPortFunc: options.CustomRedirectPort,
+		routeAddressSet:        options.RouteAddressSet,
+		routeExcludeAddressSet: options.RouteExcludeAddressSet,
 	}
 	var err error
 	if runtime.GOOS == "android" {
@@ -116,11 +131,18 @@ func (r *autoRedirect) Start() error {
 		}
 		r.redirectServer = server
 	}
+	startAt := time.Now()
+	var err error
 	if r.useNFTables {
-		return r.setupNFTables()
+		err = r.setupNFTables()
 	} else {
-		return r.setupIPTables()
+		err = r.setupIPTables()
 	}
+	if err != nil {
+		return err
+	}
+	r.logger.Debug("auto-redirect configured in ", time.Since(startAt))
+	return nil
 }
 
 func (r *autoRedirect) Close() error {
@@ -132,6 +154,15 @@ func (r *autoRedirect) Close() error {
 	return common.Close(
 		common.PtrOrNil(r.redirectServer),
 	)
+}
+
+func (r *autoRedirect) UpdateRouteAddressSet() {
+	if r.useNFTables {
+		err := r.nftablesUpdateRouteAddressSet()
+		if err != nil {
+			r.logger.Error("update route address set: ", err)
+		}
+	}
 }
 
 func (r *autoRedirect) initializeNFTables() error {
