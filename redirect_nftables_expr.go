@@ -48,37 +48,54 @@ func nftablesRuleMetaUInt32Range(key expr.MetaKey, uidRange ranges.Range[uint32]
 }
 
 func nftablesRuleDestinationAddress(address netip.Prefix, exprs ...expr.Any) []expr.Any {
-	var newExprs []expr.Any
+	newExprs := []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyNFPROTO,
+			Register: 1,
+		},
+	}
 	if address.Addr().Is4() {
-		newExprs = append(newExprs, &expr.Payload{
-			OperationType:  expr.PayloadLoad,
-			DestRegister:   1,
-			SourceRegister: 0,
-			Base:           expr.PayloadBaseNetworkHeader,
-			Offset:         16,
-			Len:            4,
-		}, &expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            4,
-			Xor:            make([]byte, 4),
-			Mask:           net.CIDRMask(address.Bits(), 32),
-		})
+		newExprs = append(newExprs,
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{unix.NFPROTO_IPV4},
+			},
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         16,
+				Len:            4,
+			}, &expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            4,
+				Xor:            make([]byte, 4),
+				Mask:           net.CIDRMask(address.Bits(), 32),
+			})
 	} else {
-		newExprs = append(newExprs, &expr.Payload{
-			OperationType:  expr.PayloadLoad,
-			DestRegister:   1,
-			SourceRegister: 0,
-			Base:           expr.PayloadBaseNetworkHeader,
-			Offset:         24,
-			Len:            16,
-		}, &expr.Bitwise{
-			SourceRegister: 1,
-			DestRegister:   1,
-			Len:            16,
-			Xor:            make([]byte, 16),
-			Mask:           net.CIDRMask(address.Bits(), 128),
-		})
+		newExprs = append(newExprs,
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{unix.NFPROTO_IPV6},
+			},
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         24,
+				Len:            16,
+			}, &expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            16,
+				Xor:            make([]byte, 16),
+				Mask:           net.CIDRMask(address.Bits(), 128),
+			})
 	}
 	newExprs = append(newExprs, &expr.Cmp{
 		Op:       expr.CmpOpEq,
@@ -91,6 +108,15 @@ func nftablesRuleDestinationAddress(address netip.Prefix, exprs ...expr.Any) []e
 
 func nftablesRuleHijackDNS(family nftables.TableFamily, dnsServerAddress netip.Addr) []expr.Any {
 	return []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyNFPROTO,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{uint8(family)},
+		},
 		&expr.Meta{
 			Key:      expr.MetaKeyL4PROTO,
 			Register: 1,

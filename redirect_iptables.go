@@ -10,23 +10,28 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
-
-	"golang.org/x/sys/unix"
 )
 
-func (r *autoRedirect) iptablesPathForFamily(family int) string {
-	if family == unix.AF_INET {
-		return r.iptablesPath
-	} else {
-		return r.ip6tablesPath
+func (r *autoRedirect) setupIPTables() error {
+	if r.enableIPv4 {
+		err := r.setupIPTablesForFamily(r.iptablesPath)
+		if err != nil {
+			return err
+		}
 	}
+	if r.enableIPv6 {
+		err := r.setupIPTablesForFamily(r.ip6tablesPath)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (r *autoRedirect) setupIPTables(family int) error {
+func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 	tableNameOutput := r.tableName + "-output"
 	tableNameForward := r.tableName + "-forward"
 	tableNamePreRouteing := r.tableName + "-prerouting"
-	iptablesPath := r.iptablesPathForFamily(family)
 	redirectPort := r.redirectPort()
 	// OUTPUT
 	err := r.runShell(iptablesPath, "-t nat -N", tableNameOutput)
@@ -74,7 +79,7 @@ func (r *autoRedirect) setupIPTables(family int) error {
 		routeAddress        []netip.Prefix
 		routeExcludeAddress []netip.Prefix
 	)
-	if family == unix.AF_INET {
+	if iptablesPath == r.iptablesPath {
 		routeAddress = r.tunOptions.Inet4RouteAddress
 		routeExcludeAddress = r.tunOptions.Inet4RouteExcludeAddress
 	} else {
@@ -112,10 +117,10 @@ func (r *autoRedirect) setupIPTables(family int) error {
 	}
 	if !r.tunOptions.EXP_DisableDNSHijack {
 		dnsServer := common.Find(r.tunOptions.DNSServers, func(it netip.Addr) bool {
-			return it.Is4() == (family == unix.AF_INET)
+			return it.Is4() == (iptablesPath == r.iptablesPath)
 		})
 		if !dnsServer.IsValid() {
-			if family == unix.AF_INET {
+			if iptablesPath == r.iptablesPath {
 				dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
 			} else {
 				dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
@@ -199,11 +204,19 @@ func (r *autoRedirect) setupIPTables(family int) error {
 	return nil
 }
 
-func (r *autoRedirect) cleanupIPTables(family int) {
+func (r *autoRedirect) cleanupIPTables() {
+	if r.enableIPv4 {
+		r.cleanupIPTablesForFamily(r.iptablesPath)
+	}
+	if r.enableIPv6 {
+		r.cleanupIPTablesForFamily(r.ip6tablesPath)
+	}
+}
+
+func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
 	tableNameOutput := r.tableName + "-output"
 	tableNameForward := r.tableName + "-forward"
 	tableNamePreRouteing := r.tableName + "-prerouting"
-	iptablesPath := r.iptablesPathForFamily(family)
 	_ = r.runShell(iptablesPath, "-t nat -D OUTPUT -j", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -F", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -X", tableNameOutput)

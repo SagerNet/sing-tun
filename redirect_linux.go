@@ -12,8 +12,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
-
-	"golang.org/x/sys/unix"
 )
 
 type autoRedirect struct {
@@ -118,11 +116,19 @@ func (r *autoRedirect) Start() error {
 		}
 		r.redirectServer = server
 	}
-	return r.setupTables()
+	if r.useNFTables {
+		return r.setupNFTables()
+	} else {
+		return r.setupIPTables()
+	}
 }
 
 func (r *autoRedirect) Close() error {
-	r.cleanupTables()
+	if r.useNFTables {
+		r.cleanupNFTables()
+	} else {
+		r.cleanupIPTables()
+	}
 	return common.Close(
 		common.PtrOrNil(r.redirectServer),
 	)
@@ -134,7 +140,7 @@ func (r *autoRedirect) initializeNFTables() error {
 		return err
 	}
 	defer nft.CloseLasting()
-	_, err = nft.ListTablesOfFamily(unix.AF_INET)
+	_, err = nft.ListTablesOfFamily(nftables.TableFamilyIPv4)
 	if err != nil {
 		return err
 	}
@@ -147,41 +153,4 @@ func (r *autoRedirect) redirectPort() uint16 {
 		return uint16(r.customRedirectPort)
 	}
 	return M.AddrPortFromNet(r.redirectServer.listener.Addr()).Port()
-}
-
-func (r *autoRedirect) setupTables() error {
-	var setupTables func(int) error
-	if r.useNFTables {
-		setupTables = r.setupNFTables
-	} else {
-		setupTables = r.setupIPTables
-	}
-	if r.enableIPv4 {
-		err := setupTables(unix.AF_INET)
-		if err != nil {
-			return err
-		}
-	}
-	if r.enableIPv6 {
-		err := setupTables(unix.AF_INET6)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *autoRedirect) cleanupTables() {
-	var cleanupTables func(int)
-	if r.useNFTables {
-		cleanupTables = r.cleanupNFTables
-	} else {
-		cleanupTables = r.cleanupIPTables
-	}
-	if r.enableIPv4 {
-		cleanupTables(unix.AF_INET)
-	}
-	if r.enableIPv6 {
-		cleanupTables(unix.AF_INET6)
-	}
 }
