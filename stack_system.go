@@ -18,6 +18,8 @@ import (
 	"github.com/sagernet/sing/common/udpnat"
 )
 
+var ErrIncludeAllNetworks = E.New("`system` and `mixed` stack are not available when `includeAllNetworks` is enabled. See https://github.com/SagerNet/sing-tun/issues/25")
+
 type System struct {
 	ctx                context.Context
 	tun                Tun

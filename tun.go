@@ -41,6 +41,11 @@ type LinuxTUN interface {
 	TXChecksumOffload() bool
 }
 
+const (
+	DefaultIPRoute2TableIndex = 2022
+	DefaultIPRoute2RuleIndex  = 9000
+)
+
 type Options struct {
 	Name                     string
 	Inet4Address             []netip.Prefix
@@ -48,6 +53,12 @@ type Options struct {
 	MTU                      uint32
 	GSO                      bool
 	AutoRoute                bool
+	DNSServers               []netip.Addr
+	IPRoute2TableIndex       int
+	IPRoute2RuleIndex        int
+	AutoRedirectMarkMode     bool
+	AutoRedirectInputMark    uint32
+	AutoRedirectOutputMark   uint32
 	StrictRoute              bool
 	Inet4RouteAddress        []netip.Prefix
 	Inet6RouteAddress        []netip.Prefix
@@ -61,12 +72,14 @@ type Options struct {
 	IncludePackage           []string
 	ExcludePackage           []string
 	InterfaceMonitor         DefaultInterfaceMonitor
-	TableIndex               int
 	FileDescriptor           int
 	Logger                   logger.Logger
 
 	// No work for TCP, do not use.
 	_TXChecksumOffload bool
+
+	// For library usages.
+	EXP_DisableDNSHijack bool
 }
 
 func CalculateInterfaceName(name string) (tunName string) {
@@ -85,7 +98,7 @@ func CalculateInterfaceName(name string) (tunName string) {
 	for _, netInterface := range interfaces {
 		if strings.HasPrefix(netInterface.Name, tunName) {
 			index, parseErr := strconv.ParseInt(netInterface.Name[len(tunName):], 10, 16)
-			if parseErr == nil {
+			if parseErr == nil && int(index) >= tunIndex {
 				tunIndex = int(index) + 1
 			}
 		}

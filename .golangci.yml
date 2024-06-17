@@ -6,6 +6,10 @@ linters:
 #    - gci
     - staticcheck
 
+issues:
+  exclude-dirs:
+    - internal
+
 linters-settings:
 #  gci:
 #    sections:

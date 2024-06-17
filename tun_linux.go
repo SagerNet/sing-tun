@@ -293,10 +293,10 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		return err
 	}
 
-	if t.options.TableIndex == 0 {
+	if t.options.IPRoute2TableIndex == 0 {
 		for {
-			t.options.TableIndex = int(rand.Uint32())
-			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.TableIndex}, netlink.RT_FILTER_TABLE)
+			t.options.IPRoute2TableIndex = int(rand.Uint32())
+			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
 			if len(routeList) == 0 || fErr != nil {
 				break
 			}
@@ -354,15 +354,10 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 		return netlink.Route{
 			Dst:       prefixToIPNet(it),
 			LinkIndex: tunLink.Attrs().Index,
-			Table:     t.options.TableIndex,
+			Table:     t.options.IPRoute2TableIndex,
 		}
 	}), nil
 }
-
-const (
-	ruleStart = 9000
-	ruleEnd   = ruleStart + 10
-)
 
 func (t *NativeTun) nextIndex6() int {
 	ruleList, err := netlink.RuleList(netlink.FAMILY_V6)
@@ -385,7 +380,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if len(t.options.Inet6Address) > 0 {
 			it := netlink.NewRule()
 			it.Priority = t.nextIndex6()
-			it.Table = t.options.TableIndex
+			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			it.OifName = t.options.Name
 			return []*netlink.Rule{it}
@@ -411,10 +406,64 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	var it *netlink.Rule
 
 	excludeRanges := t.options.ExcludedRanges()
+
+	ruleStart := t.options.IPRoute2RuleIndex
 	priority := ruleStart
 	priority6 := priority
-	nopPriority := ruleEnd
 
+	if t.options.AutoRedirectMarkMode {
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Goto = priority + 2
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Mark = t.options.AutoRedirectInputMark
+			it.MarkSet = true
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Goto = priority6 + 2
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Mark = t.options.AutoRedirectInputMark
+			it.MarkSet = true
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+		return rules
+	}
+
+	nopPriority := ruleStart + 10
 	for _, excludeRange := range excludeRanges {
 		if p4 {
 			it = netlink.NewRule()
@@ -516,7 +565,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
 		const protectedFromVPN = 0x20000
-		if p4 || t.options.StrictRoute {
+		if p4 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
@@ -528,7 +577,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority++
 		}
-		if p6 || t.options.StrictRoute {
+		if p6 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
@@ -567,30 +616,59 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it = netlink.NewRule()
 				it.Priority = priority
 				it.Dst = address.Masked()
-				it.Table = t.options.TableIndex
+				it.Table = t.options.IPRoute2TableIndex
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 			}
 			priority++
-		}
-		/*if p6 {
+
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Dst = t.options.Inet6Address.Masked()
-			it.Table = tunTableIndex
+			it.Table = t.options.IPRoute2TableIndex
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Table = t.options.IPRoute2TableIndex
+			it.SuppressPrefixlen = 0
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
-		}*/
+			priority6++
+		}
 		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p4 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IPProto = syscall.IPPROTO_ICMP
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-			priority++
 		}
 		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+
+		if p6 && !t.options.StrictRoute {
 			it = netlink.NewRule()
 			it.Priority = priority6
 			it.IPProto = syscall.IPPROTO_ICMPV6
@@ -599,108 +677,82 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority6++
 		}
-		if p4 {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		}
-		if p6 {
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-		}
 	}
-
 	if p4 {
-		if t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Table = t.options.TableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		} else {
-			if runtime.GOOS == "android" {
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.IifName = t.options.Name
-				it.Table = 254 //main
-				it.Family = unix.AF_INET
-				it.SuppressPrefixlen = 0
-				rules = append(rules, it)
-			}
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.IifName = "lo"
-			it.Table = t.options.TableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = t.options.Name
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+		priority++
 
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.IifName = "lo"
+		it.Table = t.options.IPRoute2TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+		it.Table = t.options.IPRoute2TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+
+		for _, address := range t.options.Inet4Address {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
-			it.Table = t.options.TableIndex
+			it.Src = address.Masked()
+			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-
-			for _, address := range t.options.Inet4Address {
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET
-				rules = append(rules, it)
-			}
 		}
 		priority++
 	}
 	if p6 {
-		if !t.options.StrictRoute {
-			for _, address := range t.options.Inet6Address {
-				it = netlink.NewRule()
-				it.Priority = priority6
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET6
-				rules = append(rules, it)
-			}
-			priority6++
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
-			it.Goto = nopPriority
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
-			it.Goto = nopPriority
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			priority6++
-		}
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = t.options.Name
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
 
 		it = netlink.NewRule()
 		it.Priority = priority6
-		it.Table = t.options.TableIndex
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+		priority6++
+
+		for _, address := range t.options.Inet6Address {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.IifName = "lo"
+			it.Src = address.Masked()
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+		priority6++
+
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.Table = t.options.IPRoute2TableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
 		priority6++
@@ -786,6 +838,8 @@ func (t *NativeTun) unsetRules() error {
 			return err
 		}
 		for _, rule := range ruleList {
+			ruleStart := t.options.IPRoute2RuleIndex
+			ruleEnd := ruleStart + 10
 			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
 				ruleToDel := netlink.NewRule()
 				ruleToDel.Family = rule.Family
@@ -818,20 +872,28 @@ func (t *NativeTun) routeUpdate(event int) {
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() {
+	if t.options.EXP_DisableDNSHijack {
+		return
+	}
 	ctlPath, err := exec.LookPath("resolvectl")
 	if err != nil {
 		return
 	}
-	var dnsServer []netip.Addr
-	if len(t.options.Inet4Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+	dnsServer := t.options.DNSServers
+	if len(dnsServer) == 0 {
+		if len(t.options.Inet4Address) > 0 {
+			dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+		}
+		if len(t.options.Inet6Address) > 0 {
+			dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+		}
 	}
-	if len(t.options.Inet6Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+	if len(dnsServer) == 0 {
+		return
 	}
-	go shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
-	if t.options.AutoRoute {
-		go shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
-		go shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
-	}
+	go func() {
+		_ = shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
+		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
+		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
+	}()
 }

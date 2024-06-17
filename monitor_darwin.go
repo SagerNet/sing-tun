@@ -57,14 +57,19 @@ func (m *networkUpdateMonitor) loopUpdate0() error {
 	if err != nil {
 		return err
 	}
+	err = unix.SetNonblock(routeSocket, true)
+	if err != nil {
+		unix.Close(routeSocket)
+		return err
+	}
 	routeSocketFile := os.NewFile(uintptr(routeSocket), "route")
+	defer routeSocketFile.Close()
 	m.routeSocketFile = routeSocketFile
 	m.loopUpdate1(routeSocketFile)
 	return nil
 }
 
 func (m *networkUpdateMonitor) loopUpdate1(routeSocketFile *os.File) {
-	defer routeSocketFile.Close()
 	buffer := buf.NewPacket()
 	defer buffer.Release()
 	done := make(chan struct{})
@@ -149,9 +154,9 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			if routeMessage.Flags&unix.RTF_GATEWAY == 0 {
 				continue
 			}
-			if routeMessage.Flags&unix.RTF_IFSCOPE != 0 {
-				// continue
-			}
+			// if routeMessage.Flags&unix.RTF_IFSCOPE != 0 {
+			//continue
+			//}
 			if routeInterface.Flags&net.FlagLoopback != 0 {
 				continue
 			}

@@ -139,7 +139,6 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 		TTL:      route.DefaultTTL(),
 		TOS:      0,
 	}, packet)
-
 	if err != nil {
 		route.Stats().UDP.PacketSendErrors.Increment()
 		return wrapStackError(err)

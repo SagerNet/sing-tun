@@ -73,9 +73,15 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
-		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address[0].Addr().Next()}, nil)
-		if err != nil {
-			return E.Cause(err, "set ipv4 dns")
+		if !t.options.EXP_DisableDNSHijack {
+			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is4)
+			if len(dnsServers) == 0 {
+				dnsServers = []netip.Addr{t.options.Inet4Address[0].Addr().Next()}
+			}
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dnsServers, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv4 dns")
+			}
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
@@ -83,9 +89,15 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
-		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address[0].Addr().Next()}, nil)
-		if err != nil {
-			return E.Cause(err, "set ipv6 dns")
+		if !t.options.EXP_DisableDNSHijack {
+			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is6)
+			if len(dnsServers) == 0 {
+				dnsServers = []netip.Addr{t.options.Inet6Address[0].Addr().Next()}
+			}
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), dnsServers, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv6 dns")
+			}
 		}
 	}
 	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
@@ -102,6 +114,9 @@ func (t *NativeTun) configure() error {
 			} else {
 				err = luid.AddRoute(routeRange, netip.IPv6Unspecified(), 0)
 			}
+		}
+		if err != nil {
+			return err
 		}
 		err = windnsapi.FlushResolverCache()
 		if err != nil {
@@ -285,42 +300,40 @@ func (t *NativeTun) configure() error {
 			}
 		}
 
-		blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 2)
-		blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_PROTOCOL
-		blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
-		blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT8
-		blockDNSCondition[0].ConditionValue.Value = uintptr(uint8(winsys.IPPROTO_UDP))
-		blockDNSCondition[1].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
-		blockDNSCondition[1].MatchType = winsys.FWP_MATCH_EQUAL
-		blockDNSCondition[1].ConditionValue.Type = winsys.FWP_UINT16
-		blockDNSCondition[1].ConditionValue.Value = uintptr(uint16(53))
+		if !t.options.EXP_DisableDNSHijack {
+			blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+			blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
+			blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+			blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT16
+			blockDNSCondition[0].ConditionValue.Value = uintptr(uint16(53))
 
-		blockDNSFilter4 := winsys.FWPM_FILTER0{}
-		blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
-		blockDNSFilter4.NumFilterConditions = 2
-		blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
-		blockDNSFilter4.SubLayerKey = subLayerKey
-		blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
-		blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
-		blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
-		blockDNSFilter4.Weight.Value = uintptr(10)
-		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
-		if err != nil {
-			return os.NewSyscallError("FwpmFilterAdd0", err)
-		}
+			blockDNSFilter4 := winsys.FWPM_FILTER0{}
+			blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
+			blockDNSFilter4.NumFilterConditions = 1
+			blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
+			blockDNSFilter4.SubLayerKey = subLayerKey
+			blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+			blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
+			blockDNSFilter4.Weight.Value = uintptr(10)
+			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
 
-		blockDNSFilter6 := winsys.FWPM_FILTER0{}
-		blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
-		blockDNSFilter6.NumFilterConditions = 2
-		blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
-		blockDNSFilter6.SubLayerKey = subLayerKey
-		blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
-		blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
-		blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
-		blockDNSFilter6.Weight.Value = uintptr(10)
-		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
-		if err != nil {
-			return os.NewSyscallError("FwpmFilterAdd0", err)
+			blockDNSFilter6 := winsys.FWPM_FILTER0{}
+			blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
+			blockDNSFilter6.NumFilterConditions = 1
+			blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
+			blockDNSFilter6.SubLayerKey = subLayerKey
+			blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+			blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
+			blockDNSFilter6.Weight.Value = uintptr(10)
+			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
 		}
 	}
 
