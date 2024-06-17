@@ -5,6 +5,7 @@ package tun
 import (
 	"net/netip"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/sagernet/sing/common"
@@ -49,7 +50,7 @@ func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 	if err != nil {
 		return err
 	}
-	if r.androidSu {
+	if runtime.GOOS == "android" {
 		return nil
 	}
 	// INPUT
@@ -240,14 +241,15 @@ func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
 	_ = r.runShell(iptablesPath, "-t nat -D OUTPUT -j", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -F", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -X", tableNameOutput)
-	if !r.androidSu {
-		_ = r.runShell(iptablesPath, "-D FORWARD -j", tableNameForward)
-		_ = r.runShell(iptablesPath, "-F", tableNameForward)
-		_ = r.runShell(iptablesPath, "-X", tableNameForward)
-		_ = r.runShell(iptablesPath, "-t nat -D PREROUTING -j", tableNamePreRouteing)
-		_ = r.runShell(iptablesPath, "-t nat -F", tableNamePreRouteing)
-		_ = r.runShell(iptablesPath, "-t nat -X", tableNamePreRouteing)
+	if runtime.GOOS == "android" {
+		return
 	}
+	_ = r.runShell(iptablesPath, "-D FORWARD -j", tableNameForward)
+	_ = r.runShell(iptablesPath, "-F", tableNameForward)
+	_ = r.runShell(iptablesPath, "-X", tableNameForward)
+	_ = r.runShell(iptablesPath, "-t nat -D PREROUTING -j", tableNamePreRouteing)
+	_ = r.runShell(iptablesPath, "-t nat -F", tableNamePreRouteing)
+	_ = r.runShell(iptablesPath, "-t nat -X", tableNamePreRouteing)
 }
 
 func (r *autoRedirect) runShell(commands ...any) error {
