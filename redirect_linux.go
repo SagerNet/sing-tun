@@ -134,8 +134,10 @@ func (r *autoRedirect) Start() error {
 	startAt := time.Now()
 	var err error
 	if r.useNFTables {
+		r.cleanupNFTables()
 		err = r.setupNFTables()
 	} else {
+		r.cleanupIPTables()
 		err = r.setupIPTables()
 	}
 	if err != nil {
