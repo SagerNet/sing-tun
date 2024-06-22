@@ -42,43 +42,46 @@ func (r *autoRedirect) setupNFTables() error {
 		return err
 	}
 
-	chainOutput := nft.AddChain(&nftables.Chain{
-		Name:     "output",
-		Table:    table,
-		Hooknum:  nftables.ChainHookOutput,
-		Priority: nftables.ChainPriorityMangle,
-		Type:     nftables.ChainTypeNAT,
-	})
-	if r.tunOptions.AutoRedirectMarkMode {
-		err = r.nftablesCreateExcludeRules(nft, table, chainOutput)
-		if err != nil {
-			return err
-		}
-		r.nftablesCreateUnreachable(nft, table, chainOutput)
-		r.nftablesCreateRedirect(nft, table, chainOutput)
-
-		chainOutputUDP := nft.AddChain(&nftables.Chain{
-			Name:     "output_udp",
+	skipOutput := len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
+	if !skipOutput {
+		chainOutput := nft.AddChain(&nftables.Chain{
+			Name:     "output",
 			Table:    table,
 			Hooknum:  nftables.ChainHookOutput,
 			Priority: nftables.ChainPriorityMangle,
-			Type:     nftables.ChainTypeRoute,
+			Type:     nftables.ChainTypeNAT,
 		})
-		err = r.nftablesCreateExcludeRules(nft, table, chainOutputUDP)
-		if err != nil {
-			return err
+		if r.tunOptions.AutoRedirectMarkMode {
+			err = r.nftablesCreateExcludeRules(nft, table, chainOutput)
+			if err != nil {
+				return err
+			}
+			r.nftablesCreateUnreachable(nft, table, chainOutput)
+			r.nftablesCreateRedirect(nft, table, chainOutput)
+
+			chainOutputUDP := nft.AddChain(&nftables.Chain{
+				Name:     "output_udp",
+				Table:    table,
+				Hooknum:  nftables.ChainHookOutput,
+				Priority: nftables.ChainPriorityMangle,
+				Type:     nftables.ChainTypeRoute,
+			})
+			err = r.nftablesCreateExcludeRules(nft, table, chainOutputUDP)
+			if err != nil {
+				return err
+			}
+			r.nftablesCreateUnreachable(nft, table, chainOutputUDP)
+			r.nftablesCreateMark(nft, table, chainOutputUDP)
+		} else {
+			r.nftablesCreateRedirect(nft, table, chainOutput, &expr.Meta{
+				Key:      expr.MetaKeyOIFNAME,
+				Register: 1,
+			}, &expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     nftablesIfname(r.tunOptions.Name),
+			})
 		}
-		r.nftablesCreateUnreachable(nft, table, chainOutputUDP)
-		r.nftablesCreateMark(nft, table, chainOutputUDP)
-	} else {
-		r.nftablesCreateRedirect(nft, table, chainOutput, &expr.Meta{
-			Key:      expr.MetaKeyOIFNAME,
-			Register: 1,
-		}, &expr.Cmp{
-			Op:       expr.CmpOpEq,
-			Register: 1,
-			Data:     nftablesIfname(r.tunOptions.Name),
-		})
 	}
 
 	chainPreRouting := nft.AddChain(&nftables.Chain{

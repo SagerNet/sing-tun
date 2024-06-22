@@ -4,7 +4,6 @@ package tun
 
 import (
 	"net/netip"
-	"unsafe"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/expr"
@@ -77,47 +76,48 @@ func nftablesCreateIPSet(
 	id uint32, name string, family nftables.TableFamily,
 	setList []*netipx.IPSet, prefixList []netip.Prefix, appendDefault bool, update bool,
 ) (*nftables.Set, error) {
-	if len(prefixList) > 0 {
-		var builder netipx.IPSetBuilder
-		if appendDefault && len(setList) == 0 {
-			if family == nftables.TableFamilyIPv4 {
-				prefixList = append(prefixList, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
-			} else {
-				prefixList = append(prefixList, netip.PrefixFrom(netip.IPv6Unspecified(), 0))
-			}
-		}
-		for _, prefix := range prefixList {
-			builder.AddPrefix(prefix)
-		}
-
-		ipSet, err := builder.IPSet()
-		if err != nil {
-			return nil, err
-		}
-		setList = append(setList, ipSet)
+	var builder netipx.IPSetBuilder
+	for _, prefix := range prefixList {
+		builder.AddPrefix(prefix)
 	}
-	ipSets := make([]*myIPSet, 0, len(setList))
-	var rangeLen int
 	for _, set := range setList {
-		mySet := (*myIPSet)(unsafe.Pointer(set))
-		ipSets = append(ipSets, mySet)
-		rangeLen += len(mySet.rr)
+		builder.AddSet(set)
 	}
-	setElements := make([]nftables.SetElement, 0, len(prefixList)+rangeLen)
-	for _, mySet := range ipSets {
-		for _, rr := range mySet.rr {
-			if (family == nftables.TableFamilyIPv4) != rr.from.Is4() {
-				continue
-			}
-			endAddr := rr.to.Next()
-			if !endAddr.IsValid() {
-				endAddr = rr.from
-			}
+	ipSet, err := builder.IPSet()
+	if err != nil {
+		return nil, err
+	}
+	ipRanges := ipSet.Ranges()
+	setElements := make([]nftables.SetElement, 0, len(ipRanges))
+	for _, rr := range ipRanges {
+		if (family == nftables.TableFamilyIPv4) != rr.From().Is4() {
+			continue
+		}
+		endAddr := rr.To().Next()
+		if !endAddr.IsValid() {
+			endAddr = rr.From()
+		}
+		setElements = append(setElements, nftables.SetElement{
+			Key: rr.From().AsSlice(),
+		})
+		setElements = append(setElements, nftables.SetElement{
+			Key:         endAddr.AsSlice(),
+			IntervalEnd: true,
+		})
+	}
+	if len(prefixList) == 0 && appendDefault {
+		if family == nftables.TableFamilyIPv4 {
 			setElements = append(setElements, nftables.SetElement{
-				Key: rr.from.AsSlice(),
+				Key: netip.IPv4Unspecified().AsSlice(),
+			}, nftables.SetElement{
+				Key:         netip.IPv4Unspecified().AsSlice(),
+				IntervalEnd: true,
 			})
+		} else {
 			setElements = append(setElements, nftables.SetElement{
-				Key:         endAddr.AsSlice(),
+				Key: netip.IPv6Unspecified().AsSlice(),
+			}, nftables.SetElement{
+				Key:         netip.IPv6Unspecified().AsSlice(),
 				IntervalEnd: true,
 			})
 		}
@@ -169,13 +169,4 @@ func nftablesCreateIPSet(
 		}
 	}
 	return mySet, nil
-}
-
-type myIPSet struct {
-	rr []myIPRange
-}
-
-type myIPRange struct {
-	from netip.Addr
-	to   netip.Addr
 }
