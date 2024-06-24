@@ -537,51 +537,70 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
 		}
 	}
+	exprs := []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyNFPROTO,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{uint8(family)},
+		},
+	}
+	if chain.Hooknum == nftables.ChainHookOutput {
+		// It looks like we can't hijack DNS requests sent to loopback.
+		// https://serverfault.com/questions/363899/iptables-dnat-from-loopback
+		// and tproxy is not available in output
+		exprs = append(exprs,
+			&expr.Meta{
+				Key:      expr.MetaKeyOIFNAME,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpNeq,
+				Register: 1,
+				Data:     nftablesIfname("lo"),
+			},
+		)
+	}
+	exprs = append(exprs,
+		&expr.Meta{
+			Key:      expr.MetaKeyL4PROTO,
+			Register: 1,
+		},
+		&expr.Lookup{
+			SourceRegister: 1,
+			SetID:          ipProto.ID,
+			SetName:        ipProto.Name,
+		},
+		&expr.Payload{
+			OperationType: expr.PayloadLoad,
+			DestRegister:  1,
+			Base:          expr.PayloadBaseTransportHeader,
+			Offset:        2,
+			Len:           2,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.BigEndian.PutUint16(53),
+		},
+		&expr.Immediate{
+			Register: 1,
+			Data:     dnsServer.AsSlice(),
+		},
+		&expr.NAT{
+			Type:       expr.NATTypeDestNAT,
+			Family:     uint32(family),
+			RegAddrMin: 1,
+		},
+		&expr.Counter{},
+	)
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyNFPROTO,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{uint8(family)},
-			},
-			&expr.Meta{
-				Key:      expr.MetaKeyL4PROTO,
-				Register: 1,
-			},
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetID:          ipProto.ID,
-				SetName:        ipProto.Name,
-			},
-			&expr.Payload{
-				OperationType: expr.PayloadLoad,
-				DestRegister:  1,
-				Base:          expr.PayloadBaseTransportHeader,
-				Offset:        2,
-				Len:           2,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(53),
-			},
-			&expr.Counter{},
-			&expr.Immediate{
-				Register: 1,
-				Data:     dnsServer.AsSlice(),
-			},
-			&expr.NAT{
-				Type:       expr.NATTypeDestNAT,
-				Family:     uint32(family),
-				RegAddrMin: 1,
-			},
-		},
+		Exprs: exprs,
 	})
 	return nil
 }
