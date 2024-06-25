@@ -2,30 +2,33 @@ package tun
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
 	"io"
 	"os"
 	"strconv"
 
+	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/abx"
 	E "github.com/sagernet/sing/common/exceptions"
-
-	"github.com/fsnotify/fsnotify"
+	"github.com/sagernet/sing/common/logger"
 )
 
 type packageManager struct {
 	callback        PackageManagerCallback
-	watcher         *fsnotify.Watcher
+	logger          logger.Logger
+	watcher         *fswatch.Watcher
 	idByPackage     map[string]uint32
 	sharedByPackage map[string]uint32
 	packageById     map[uint32]string
 	sharedById      map[uint32]string
 }
 
-func NewPackageManager(callback PackageManagerCallback) (PackageManager, error) {
-	return &packageManager{callback: callback}, nil
+func NewPackageManager(options PackageManagerOptions) (PackageManager, error) {
+	return &packageManager{
+		callback: options.Callback,
+		logger:   options.Logger,
+	}, nil
 }
 
 func (m *packageManager) Start() error {
@@ -35,42 +38,33 @@ func (m *packageManager) Start() error {
 	}
 	err = m.startWatcher()
 	if err != nil {
-		m.callback.NewError(context.Background(), E.Cause(err, "create fsnotify watcher"))
+		m.logger.Error(E.Cause(err, "create watcher for packages list"))
 	}
 	return nil
 }
 
 func (m *packageManager) startWatcher() error {
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fswatch.NewWatcher(fswatch.Options{
+		Path:     []string{"/data/system/packages.xml"},
+		Direct:   true,
+		Callback: m.packagesUpdated,
+		Logger:   m.logger,
+	})
 	if err != nil {
 		return err
 	}
-	err = watcher.Add("/data/system/packages.xml")
+	err = watcher.Start()
 	if err != nil {
 		return err
 	}
 	m.watcher = watcher
-	go m.loopUpdate()
 	return nil
 }
 
-func (m *packageManager) loopUpdate() {
-	for {
-		select {
-		case _, ok := <-m.watcher.Events:
-			if !ok {
-				return
-			}
-			err := m.updatePackages()
-			if err != nil {
-				m.callback.NewError(context.Background(), E.Cause(err, "update packages"))
-			}
-		case err, ok := <-m.watcher.Errors:
-			if !ok {
-				return
-			}
-			m.callback.NewError(context.Background(), E.Cause(err, "fsnotify error"))
-		}
+func (m *packageManager) packagesUpdated(path string) {
+	err := m.updatePackages()
+	if err != nil {
+		m.logger.Error(E.Cause(err, "update packages"))
 	}
 }
 
