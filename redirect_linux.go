@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"time"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
@@ -81,7 +80,8 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		if r.useNFTables {
 			err = r.initializeNFTables()
 			if err != nil && err != os.ErrInvalid {
-				r.logger.Debug("device has no nftables support: ", err)
+				r.useNFTables = false
+				r.logger.Debug("missing nftables support: ", err)
 			}
 		}
 		if len(r.tunOptions.Inet4Address) > 0 {
@@ -131,7 +131,6 @@ func (r *autoRedirect) Start() error {
 		}
 		r.redirectServer = server
 	}
-	startAt := time.Now()
 	var err error
 	if r.useNFTables {
 		r.cleanupNFTables()
@@ -140,11 +139,7 @@ func (r *autoRedirect) Start() error {
 		r.cleanupIPTables()
 		err = r.setupIPTables()
 	}
-	if err != nil {
-		return err
-	}
-	r.logger.Debug("auto-redirect configured in ", time.Since(startAt))
-	return nil
+	return err
 }
 
 func (r *autoRedirect) Close() error {
