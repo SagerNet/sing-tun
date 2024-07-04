@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -120,8 +121,9 @@ func (s *System) start() error {
 			return nil
 		})
 	}
+	var tcpListener net.Listener
 	if s.inet4Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+		tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
 		if err != nil {
 			return err
 		}
@@ -130,7 +132,16 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	if s.inet6Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+		// Fix EADDRNOTAVAIL on new Android systems
+		for i := 0; i < 3; i++ {
+			if err != nil {
+				time.Sleep(100 * time.Millisecond)
+			}
+			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+			if !errors.Is(err, syscall.EADDRNOTAVAIL) {
+				break
+			}
+		}
 		if err != nil {
 			return err
 		}
