@@ -68,7 +68,7 @@ func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 	if err != nil {
 		return err
 	}
-	err = r.runShell(iptablesPath, "-I FORWARD -j", tableNameInput)
+	err = r.runShell(iptablesPath, "-I INPUT -j", tableNameInput)
 	if err != nil {
 		return err
 	}
@@ -235,18 +235,26 @@ func (r *autoRedirect) cleanupIPTables() {
 }
 
 func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
+	tableNameInput := r.tableName + "-input"
 	tableNameOutput := r.tableName + "-output"
 	tableNameForward := r.tableName + "-forward"
 	tableNamePreRouteing := r.tableName + "-prerouting"
+
 	_ = r.runShell(iptablesPath, "-t nat -D OUTPUT -j", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -F", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -X", tableNameOutput)
 	if runtime.GOOS == "android" {
 		return
 	}
+
+	_ = r.runShell(iptablesPath, "-D INPUT -j", tableNameInput)
+	_ = r.runShell(iptablesPath, "-F", tableNameInput)
+	_ = r.runShell(iptablesPath, "-X", tableNameInput)
+
 	_ = r.runShell(iptablesPath, "-D FORWARD -j", tableNameForward)
 	_ = r.runShell(iptablesPath, "-F", tableNameForward)
 	_ = r.runShell(iptablesPath, "-X", tableNameForward)
+
 	_ = r.runShell(iptablesPath, "-t nat -D PREROUTING -j", tableNamePreRouteing)
 	_ = r.runShell(iptablesPath, "-t nat -F", tableNamePreRouteing)
 	_ = r.runShell(iptablesPath, "-t nat -X", tableNamePreRouteing)

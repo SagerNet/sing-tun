@@ -182,7 +182,7 @@ var controlPath string
 func init() {
 	const defaultTunPath = "/dev/net/tun"
 	const androidTunPath = "/dev/tun"
-	if rw.FileExists(androidTunPath) {
+	if rw.IsFile(androidTunPath) {
 		controlPath = androidTunPath
 	} else {
 		controlPath = defaultTunPath

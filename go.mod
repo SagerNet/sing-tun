@@ -3,12 +3,12 @@ module github.com/metacubex/sing-tun
 go 1.20
 
 require (
-	github.com/fsnotify/fsnotify v1.7.0
 	github.com/go-ole/go-ole v1.3.0
 	github.com/metacubex/gvisor v0.0.0-20240320004321-933faba989ec
+	github.com/sagernet/fswatch v0.1.1
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/sagernet/nftables v0.3.0-beta.4
-	github.com/sagernet/sing v0.5.0-alpha.10
+	github.com/sagernet/sing v0.5.0-alpha.11.0.20240625144910-6bd878184516
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
 	golang.org/x/net v0.26.0
@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
