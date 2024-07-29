@@ -621,23 +621,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				rules = append(rules, it)
 			}
 			priority++
-
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Table = t.options.IPRoute2TableIndex
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-			priority++
-		}
-		if p6 {
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.Table = t.options.IPRoute2TableIndex
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-			priority6++
 		}
 		if p4 {
 			it = netlink.NewRule()
