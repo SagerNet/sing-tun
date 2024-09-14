@@ -712,7 +712,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 		}
-		priority++
+		// priority++
 	}
 	if p6 {
 		it = netlink.NewRule()
@@ -755,7 +755,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		it.Table = t.options.IPRoute2TableIndex
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
-		priority6++
+		// priority6++
 	}
 	if p4 {
 		it = netlink.NewRule()
