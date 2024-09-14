@@ -3,18 +3,22 @@ linters:
   enable:
     - gofumpt
     - govet
-#    - gci
+    - gci
     - staticcheck
+    - paralleltest
+    - ineffassign
 
 issues:
   exclude-dirs:
     - internal
 
 linters-settings:
-#  gci:
-#    sections:
-#      - standard
-#      - prefix(github.com/sagernet/sing)
-#      - default
-  staticcheck:
-    go: '1.19'
+  gci:
+    custom-order: true
+    sections:
+      - standard
+      - prefix(github.com/sagernet/)
+      - default
+
+run:
+  go: "1.23"
