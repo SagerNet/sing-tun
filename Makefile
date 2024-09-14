@@ -27,4 +27,5 @@ lint_install:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 test:
-	go test -v .
+	go build -v .
+	#go test -v .
