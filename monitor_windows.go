@@ -78,12 +78,16 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			continue
 		}
 
+		if ifrow.Type == winipcfg.IfTypePropVirtual || ifrow.Type == winipcfg.IfTypeSoftwareLoopback {
+			continue
+		}
+
 		iface, err := row.InterfaceLUID.IPInterface(windows.AF_INET)
 		if err != nil {
 			continue
 		}
 
-		if ifrow.Type == winipcfg.IfTypePropVirtual || ifrow.Type == winipcfg.IfTypeSoftwareLoopback {
+		if !iface.Connected {
 			continue
 		}
 
