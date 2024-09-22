@@ -3,6 +3,7 @@ package tun
 import (
 	"net/netip"
 
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/x/list"
 )
@@ -40,6 +41,7 @@ type DefaultInterfaceMonitor interface {
 }
 
 type DefaultInterfaceMonitorOptions struct {
+	InterfaceFinder       control.InterfaceFinder
 	OverrideAndroidVPN    bool
 	UnderNetworkExtension bool
 }
