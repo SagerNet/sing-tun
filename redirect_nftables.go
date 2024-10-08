@@ -88,7 +88,7 @@ func (r *autoRedirect) setupNFTables() error {
 		Name:     "prerouting",
 		Table:    table,
 		Hooknum:  nftables.ChainHookPrerouting,
-		Priority: nftables.ChainPriorityMangle,
+		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 1),
 		Type:     nftables.ChainTypeNAT,
 	})
 	err = r.nftablesCreateExcludeRules(nft, table, chainPreRouting)
@@ -104,7 +104,7 @@ func (r *autoRedirect) setupNFTables() error {
 			Name:     "prerouting_udp",
 			Table:    table,
 			Hooknum:  nftables.ChainHookPrerouting,
-			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityMangle + 1),
+			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 2),
 			Type:     nftables.ChainTypeFilter,
 		})
 		if r.enableIPv4 {
