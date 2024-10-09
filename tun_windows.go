@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -350,7 +351,7 @@ retry:
 	if t.close.Load() == 1 {
 		return nil, nil, os.ErrClosed
 	}
-	start := nanotime()
+	start := time.Now().UnixNano()
 	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
 	for {
 		if t.close.Load() == 1 {
@@ -363,11 +364,11 @@ retry:
 			t.rate.update(uint64(packetSize))
 			return packet, func() { t.session.ReleaseReceivePacket(packet) }, nil
 		case windows.ERROR_NO_MORE_ITEMS:
-			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+			if !shouldSpin || uint64(time.Now().UnixNano()-start) >= spinloopDuration {
 				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
 				goto retry
 			}
-			procyield(1)
+			runtime.Gosched()
 			continue
 		case windows.ERROR_HANDLE_EOF:
 			return nil, nil, os.ErrClosed
@@ -385,7 +386,7 @@ retry:
 	if t.close.Load() == 1 {
 		return os.ErrClosed
 	}
-	start := nanotime()
+	start := time.Now().UnixNano()
 	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
 	for {
 		if t.close.Load() == 1 {
@@ -400,11 +401,11 @@ retry:
 			t.rate.update(uint64(packetSize))
 			return nil
 		case windows.ERROR_NO_MORE_ITEMS:
-			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+			if !shouldSpin || uint64(time.Now().UnixNano()-start) >= spinloopDuration {
 				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
 				goto retry
 			}
-			procyield(1)
+			runtime.Gosched()
 			continue
 		case windows.ERROR_HANDLE_EOF:
 			return os.ErrClosed
@@ -497,12 +498,6 @@ func generateGUIDByDeviceName(name string) *windows.GUID {
 	return (*windows.GUID)(unsafe.Pointer(&sum[0]))
 }
 
-//go:linkname procyield runtime.procyield
-func procyield(cycles uint32)
-
-//go:linkname nanotime runtime.nanotime
-func nanotime() int64
-
 type rateJuggler struct {
 	current       atomic.Uint64
 	nextByteCount atomic.Uint64
@@ -511,7 +506,7 @@ type rateJuggler struct {
 }
 
 func (rate *rateJuggler) update(packetLen uint64) {
-	now := nanotime()
+	now := time.Now().UnixNano()
 	total := rate.nextByteCount.Add(packetLen)
 	period := uint64(now - rate.nextStartTime.Load())
 	if period >= rateMeasurementGranularity {
