@@ -1,10 +1,13 @@
 package tun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
 	"github.com/sagernet/sing-tun/internal/winfw"
+
+	"golang.org/x/sys/windows"
 )
 
 func fixWindowsFirewall() error {
@@ -22,4 +25,8 @@ func fixWindowsFirewall() error {
 	}
 	_, err = winfw.FirewallRuleAddAdvanced(rule)
 	return err
+}
+
+func retryableListenError(err error) bool {
+	return errors.Is(err, windows.WSAEADDRNOTAVAIL)
 }

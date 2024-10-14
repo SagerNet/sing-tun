@@ -120,8 +120,15 @@ func (s *System) start() error {
 			return nil
 		})
 	}
+	var tcpListener net.Listener
 	if s.inet4Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+		for i := 0; i < 3; i++ {
+			tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+			if !retryableListenError(err) {
+				break
+			}
+			time.Sleep(time.Second)
+		}
 		if err != nil {
 			return err
 		}
@@ -130,7 +137,13 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	if s.inet6Address.IsValid() {
-		tcpListener, err := listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+		for i := 0; i < 3; i++ {
+			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+			if !retryableListenError(err) {
+				break
+			}
+			time.Sleep(time.Second)
+		}
 		if err != nil {
 			return err
 		}
