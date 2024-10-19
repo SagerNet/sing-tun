@@ -26,12 +26,18 @@ func (e *WintunEndpoint) MTU() uint32 {
 	return e.tun.options.MTU
 }
 
+func (e *WintunEndpoint) SetMTU(mtu uint32) {
+}
+
 func (e *WintunEndpoint) MaxHeaderLength() uint16 {
 	return 0
 }
 
 func (e *WintunEndpoint) LinkAddress() tcpip.LinkAddress {
 	return ""
+}
+
+func (e *WintunEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
 }
 
 func (e *WintunEndpoint) Capabilities() stack.LinkEndpointCapabilities {
@@ -116,4 +122,10 @@ func (e *WintunEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (
 		n++
 	}
 	return n, nil
+}
+
+func (e *WintunEndpoint) Close() {
+}
+
+func (e *WintunEndpoint) SetOnCloseAction(f func()) {
 }
