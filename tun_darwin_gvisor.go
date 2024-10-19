@@ -27,12 +27,18 @@ func (e *DarwinEndpoint) MTU() uint32 {
 	return e.tun.mtu
 }
 
+func (e *DarwinEndpoint) SetMTU(mtu uint32) {
+}
+
 func (e *DarwinEndpoint) MaxHeaderLength() uint16 {
 	return 0
 }
 
 func (e *DarwinEndpoint) LinkAddress() tcpip.LinkAddress {
 	return ""
+}
+
+func (e *DarwinEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
 }
 
 func (e *DarwinEndpoint) Capabilities() stack.LinkEndpointCapabilities {
@@ -119,4 +125,10 @@ func (e *DarwinEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (
 		n++
 	}
 	return n, nil
+}
+
+func (e *DarwinEndpoint) Close() {
+}
+
+func (e *DarwinEndpoint) SetOnCloseAction(f func()) {
 }
