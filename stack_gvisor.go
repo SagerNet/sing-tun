@@ -76,43 +76,17 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
-		var wq waiter.Queue
-		handshakeCtx, cancel := context.WithCancel(context.Background())
-		go func() {
-			select {
-			case <-t.ctx.Done():
-				wq.Notify(wq.Events())
-			case <-handshakeCtx.Done():
-			}
-		}()
-		endpoint, err := r.CreateEndpoint(&wq)
-		cancel()
-		if err != nil {
-			r.Complete(true)
-			return
+		var metadata M.Metadata
+		metadata.Source = M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
+		metadata.Destination = M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
+		conn := &gLazyConn{
+			parentCtx:  t.ctx,
+			stack:      t.stack,
+			request:    r,
+			localAddr:  metadata.Source.TCPAddr(),
+			remoteAddr: metadata.Destination.TCPAddr(),
 		}
-		r.Complete(false)
-		endpoint.SocketOptions().SetKeepAlive(true)
-		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveIdle)
-		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveInterval)
-		tcpConn := gonet.NewTCPConn(&wq, endpoint)
-		lAddr := tcpConn.RemoteAddr()
-		rAddr := tcpConn.LocalAddr()
-		if lAddr == nil || rAddr == nil {
-			tcpConn.Close()
-			return
-		}
-		go func() {
-			var metadata M.Metadata
-			metadata.Source = M.SocksaddrFromNet(lAddr)
-			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
-			if hErr != nil {
-				endpoint.Abort()
-			}
-		}()
+		_ = t.handler.NewConnection(t.ctx, conn, metadata)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	if !t.endpointIndependentNat {
@@ -129,12 +103,11 @@ func (t *GVisor) Start() error {
 				endpoint.Abort()
 				return
 			}
-			gConn := &gUDPConn{UDPConn: udpConn}
 			go func() {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(t.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, metadata.Destination), time.Duration(t.udpTimeout)*time.Second)
 				hErr := t.handler.NewPacketConnection(ctx, conn, metadata)
 				if hErr != nil {
 					endpoint.Abort()
@@ -191,7 +164,7 @@ func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 	})
 	tErr := ipStack.CreateNIC(defaultNIC, ep)
 	if tErr != nil {
-		return nil, E.New("create nic: ", wrapStackError(tErr))
+		return nil, E.New("create nic: ", gonet.TranslateNetstackError(tErr))
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},

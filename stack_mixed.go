@@ -63,12 +63,11 @@ func (m *Mixed) Start() error {
 				endpoint.Abort()
 				return
 			}
-			gConn := &gUDPConn{UDPConn: udpConn}
 			go func() {
 				var metadata M.Metadata
 				metadata.Source = M.SocksaddrFromNet(lAddr)
 				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
 				hErr := m.handler.NewPacketConnection(ctx, conn, metadata)
 				if hErr != nil {
 					endpoint.Abort()
