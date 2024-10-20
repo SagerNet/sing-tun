@@ -76,17 +76,16 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
-		var metadata M.Metadata
-		metadata.Source = M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
-		metadata.Destination = M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
+		source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
+		destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
 		conn := &gLazyConn{
 			parentCtx:  t.ctx,
 			stack:      t.stack,
 			request:    r,
-			localAddr:  metadata.Source.TCPAddr(),
-			remoteAddr: metadata.Destination.TCPAddr(),
+			localAddr:  source.TCPAddr(),
+			remoteAddr: destination.TCPAddr(),
 		}
-		_ = t.handler.NewConnection(t.ctx, conn, metadata)
+		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	if !t.endpointIndependentNat {
@@ -104,14 +103,10 @@ func (t *GVisor) Start() error {
 				return
 			}
 			go func() {
-				var metadata M.Metadata
-				metadata.Source = M.SocksaddrFromNet(lAddr)
-				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, metadata.Destination), time.Duration(t.udpTimeout)*time.Second)
-				hErr := t.handler.NewPacketConnection(ctx, conn, metadata)
-				if hErr != nil {
-					endpoint.Abort()
-				}
+				source := M.SocksaddrFromNet(lAddr)
+				destination := M.SocksaddrFromNet(rAddr)
+				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, destination), time.Duration(t.udpTimeout)*time.Second)
+				t.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
 			}()
 		})
 		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)

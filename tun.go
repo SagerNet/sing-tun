@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
@@ -16,9 +15,8 @@ import (
 )
 
 type Handler interface {
-	N.TCPConnectionHandler
-	N.UDPConnectionHandler
-	E.Handler
+	N.TCPConnectionHandlerEx
+	N.UDPConnectionHandlerEx
 }
 
 type Tun interface {

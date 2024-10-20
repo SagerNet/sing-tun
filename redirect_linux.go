@@ -13,6 +13,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
 
 	"go4.org/netipx"
@@ -21,7 +22,7 @@ import (
 type autoRedirect struct {
 	tunOptions             *Options
 	ctx                    context.Context
-	handler                Handler
+	handler                N.TCPConnectionHandlerEx
 	logger                 logger.Logger
 	tableName              string
 	networkMonitor         NetworkUpdateMonitor

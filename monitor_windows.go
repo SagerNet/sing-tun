@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
-	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 
@@ -14,7 +13,6 @@ import (
 type networkUpdateMonitor struct {
 	routeListener     *winipcfg.RouteChangeCallback
 	interfaceListener *winipcfg.InterfaceChangeCallback
-	errorHandler      E.Handler
 
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]

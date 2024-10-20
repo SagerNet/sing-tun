@@ -14,20 +14,19 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
-
-const ProtocolRedirect = "redirect"
 
 type redirectServer struct {
 	ctx        context.Context
-	handler    Handler
+	handler    N.TCPConnectionHandlerEx
 	logger     logger.Logger
 	listenAddr netip.Addr
 	listener   *net.TCPListener
 	inShutdown atomic.Bool
 }
 
-func newRedirectServer(ctx context.Context, handler Handler, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
+func newRedirectServer(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
 	return &redirectServer{
 		ctx:        ctx,
 		handler:    handler,
@@ -59,7 +58,6 @@ func (s *redirectServer) loopIn() {
 		conn, err := s.listener.AcceptTCP()
 		if err != nil {
 			var netError net.Error
-			//goland:noinspection GoDeprecation
 			//nolint:staticcheck
 			if errors.As(err, &netError) && netError.Temporary() {
 				s.logger.Error(err)
@@ -72,17 +70,14 @@ func (s *redirectServer) loopIn() {
 			s.logger.Error("serve error: ", err)
 			continue
 		}
-		var metadata M.Metadata
-		metadata.Protocol = ProtocolRedirect
-		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
+		source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
 		destination, err := control.GetOriginalDestination(conn)
 		if err != nil {
 			_ = conn.SetLinger(0)
 			_ = conn.Close()
-			s.logger.Error("process connection from ", metadata.Source, ": invalid connection: ", err)
+			s.logger.Error("process redirect connection from ", source, ": invalid connection: ", err)
 			continue
 		}
-		metadata.Destination = M.SocksaddrFromNetIP(destination).Unwrap()
-		go s.handler.NewConnection(s.ctx, conn, metadata)
+		go s.handler.NewConnectionEx(s.ctx, conn, source, M.SocksaddrFromNetIP(destination).Unwrap(), nil)
 	}
 }

@@ -71,8 +71,7 @@ func (c *gLazyConn) HandshakeFailure(err error) error {
 	if c.handshakeDone {
 		return nil
 	}
-	wErr := gWriteUnreachable(c.stack, c.request.Packet(), err)
-	c.request.Complete(wErr == os.ErrInvalid)
+	c.request.Complete(gWriteUnreachable(c.stack, c.request.Packet(), err) == os.ErrInvalid)
 	c.handshakeDone = true
 	c.handshakeErr = err
 	return nil
@@ -196,9 +195,11 @@ func (c *gLazyConn) Upstream() any {
 }
 
 func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer, err error) error {
-	if errors.Is(err, syscall.ENETUNREACH) {
+	if errors.Is(err, ErrDrop) {
+		return nil
+	} else if errors.Is(err, syscall.ENETUNREACH) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPPortUnreachable)
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetProhibited)
 		} else {
 			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPNoRoute)
 		}

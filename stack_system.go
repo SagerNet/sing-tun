@@ -152,7 +152,7 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
-	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
+	s.udpNat = udpnat.NewEx[netip.AddrPort](s.udpTimeout, s.handler)
 	return nil
 }
 
@@ -300,16 +300,7 @@ func (s *System) acceptLoop(listener net.Listener) {
 				}
 			}
 		}
-		go func() {
-			_ = s.handler.NewConnection(s.ctx, conn, M.Metadata{
-				Source:      M.SocksaddrFromNetIP(session.Source),
-				Destination: destination,
-			})
-			if tcpConn, isTCPConn := conn.(*net.TCPConn); isTCPConn {
-				_ = tcpConn.SetLinger(0)
-			}
-			_ = conn.Close()
-		}()
+		go s.handler.NewConnectionEx(s.ctx, conn, M.SocksaddrFromNet(conn.RemoteAddr()), destination, nil)
 	}
 }
 
@@ -427,11 +418,7 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if data.Len() == 0 {
 		return nil
 	}
-	metadata := M.Metadata{
-		Source:      M.SocksaddrFromNetIP(source),
-		Destination: M.SocksaddrFromNetIP(destination),
-	}
-	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.udpNat.NewPacketEx(s.ctx, source, data.ToOwned(), M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), func(natConn N.PacketConn) N.PacketWriter {
 		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
@@ -459,11 +446,7 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	if data.Len() == 0 {
 		return nil
 	}
-	metadata := M.Metadata{
-		Source:      M.SocksaddrFromNetIP(source),
-		Destination: M.SocksaddrFromNetIP(destination),
-	}
-	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.udpNat.NewPacketEx(s.ctx, source, data.ToOwned(), M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), func(natConn N.PacketConn) N.PacketWriter {
 		headerLen := len(packet) - int(header.Length()) + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
