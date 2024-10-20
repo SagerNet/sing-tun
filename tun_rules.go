@@ -1,7 +1,6 @@
 package tun
 
 import (
-	"context"
 	"net/netip"
 	"os"
 	"runtime"
@@ -20,7 +19,7 @@ const (
 	userEnd          uint32 = 0xFFFFFFFF - 1
 )
 
-func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler E.Handler) {
+func (o *Options) BuildAndroidRules(packageManager PackageManager) {
 	var includeUser []uint32
 	if len(o.IncludeAndroidUser) > 0 {
 		o.IncludeAndroidUser = common.Uniq(o.IncludeAndroidUser)
@@ -64,7 +63,9 @@ func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler 
 				}
 				continue
 			}
-			errorHandler.NewError(context.Background(), E.New("package to include not found: ", packageName))
+			if o.Logger != nil {
+				o.Logger.Debug("package to include not found: ", packageName)
+			}
 		}
 	}
 	if len(o.ExcludePackage) > 0 {
@@ -81,7 +82,9 @@ func (o *Options) BuildAndroidRules(packageManager PackageManager, errorHandler 
 				}
 				continue
 			}
-			errorHandler.NewError(context.Background(), E.New("package to exclude not found: ", packageName))
+			if o.Logger != nil {
+				o.Logger.Debug("package to exclude not found: ", packageName)
+			}
 		}
 	}
 }

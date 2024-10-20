@@ -36,15 +36,14 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, u
 	return &UDPForwarder{
 		ctx:    ctx,
 		stack:  stack,
-		udpNat: udpnat.New[netip.AddrPort](udpTimeout, handler),
+		udpNat: udpnat.NewEx[netip.AddrPort](udpTimeout, handler),
 	}
 }
 
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
-	var upstreamMetadata M.Metadata
-	upstreamMetadata.Source = M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
-	upstreamMetadata.Destination = M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
-	if upstreamMetadata.Source.IsIPv4() {
+	source := M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
+	destination := M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
+	if source.IsIPv4() {
 		f.cacheProto = header.IPv4ProtocolNumber
 	} else {
 		f.cacheProto = header.IPv6ProtocolNumber
@@ -55,11 +54,12 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 		sBuffer.Write(view.AsSlice())
 	})
 	f.cacheID = id
-	f.udpNat.NewPacket(
+	f.udpNat.NewPacketEx(
 		f.ctx,
-		upstreamMetadata.Source.AddrPort(),
+		source.AddrPort(),
 		sBuffer,
-		upstreamMetadata,
+		source,
+		destination,
 		f.newUDPConn,
 	)
 	return true

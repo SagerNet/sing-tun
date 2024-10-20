@@ -5,6 +5,7 @@ import (
 
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 
 	"go4.org/netipx"
 )
@@ -23,7 +24,7 @@ type AutoRedirect interface {
 type AutoRedirectOptions struct {
 	TunOptions             *Options
 	Context                context.Context
-	Handler                Handler
+	Handler                N.TCPConnectionHandlerEx
 	Logger                 logger.Logger
 	NetworkMonitor         NetworkUpdateMonitor
 	InterfaceFinder        control.InterfaceFinder

@@ -64,14 +64,10 @@ func (m *Mixed) Start() error {
 				return
 			}
 			go func() {
-				var metadata M.Metadata
-				metadata.Source = M.SocksaddrFromNet(lAddr)
-				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
-				hErr := m.handler.NewPacketConnection(ctx, conn, metadata)
-				if hErr != nil {
-					endpoint.Abort()
-				}
+				source := M.SocksaddrFromNet(lAddr)
+				destination := M.SocksaddrFromNet(rAddr)
+				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, destination), time.Duration(m.udpTimeout)*time.Second)
+				m.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
 			}()
 		})
 		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
