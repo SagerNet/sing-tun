@@ -2,7 +2,6 @@ package tun
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -132,7 +131,13 @@ func (s *System) start() error {
 		if s.enforceBind {
 			address = "0.0.0.0:0"
 		}
-		tcpListener, err = listener.Listen(s.ctx, "tcp4", address)
+		for i := 0; i < 3; i++ {
+			tcpListener, err = listener.Listen(s.ctx, "tcp4", address)
+			if !retryableListenError(err) {
+				break
+			}
+			time.Sleep(time.Second)
+		}
 		if err != nil {
 			return err
 		}
@@ -145,15 +150,12 @@ func (s *System) start() error {
 		if s.enforceBind {
 			address = "[:]:0"
 		}
-		// Fix EADDRNOTAVAIL on new Android systems
 		for i := 0; i < 3; i++ {
-			if err != nil {
-				time.Sleep(100 * time.Millisecond)
-			}
 			tcpListener, err = listener.Listen(s.ctx, "tcp6", address)
-			if !errors.Is(err, syscall.EADDRNOTAVAIL) {
+			if !retryableListenError(err) {
 				break
 			}
+			time.Sleep(time.Second)
 		}
 		if err != nil {
 			return err

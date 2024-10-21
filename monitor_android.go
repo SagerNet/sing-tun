@@ -20,7 +20,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 				continue
 			}
 			vpnEnabled = true
-			if m.options.OverrideAndroidVPN {
+			if m.overrideAndroidVPN {
 				defaultTableIndex = rule.Table
 				break
 			}

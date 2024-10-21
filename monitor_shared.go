@@ -4,14 +4,12 @@ package tun
 
 import (
 	"errors"
-	"net"
 	"net/netip"
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 )
 
@@ -37,8 +35,9 @@ func (m *networkUpdateMonitor) emit() {
 }
 
 type defaultInterfaceMonitor struct {
-	options               DefaultInterfaceMonitorOptions
-	networkAddresses      []networkAddress
+	interfaceFinder       control.InterfaceFinder
+	overrideAndroidVPN    bool
+	underNetworkExtension bool
 	defaultInterfaceName  string
 	defaultInterfaceIndex int
 	androidVPNEnabled     bool
@@ -51,15 +50,11 @@ type defaultInterfaceMonitor struct {
 	logger                logger.Logger
 }
 
-type networkAddress struct {
-	interfaceName  string
-	interfaceIndex int
-	addresses      []netip.Prefix
-}
-
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return &defaultInterfaceMonitor{
-		options:               options,
+		interfaceFinder:       options.InterfaceFinder,
+		overrideAndroidVPN:    options.OverrideAndroidVPN,
+		underNetworkExtension: options.UnderNetworkExtension,
 		networkMonitor:        networkMonitor,
 		defaultInterfaceIndex: -1,
 		logger: logger,
@@ -81,7 +76,7 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 }
 
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
-	err := m.updateInterfaces()
+	err := m.interfaceFinder.Update()
 	if err != nil {
 		m.logger.Error("update interfaces: ", err)
 	}
@@ -100,34 +95,6 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	}
 }
 
-func (m *defaultInterfaceMonitor) updateInterfaces() error {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return err
-	}
-	var addresses []networkAddress
-	for _, iif := range interfaces {
-		var netAddresses []net.Addr
-		netAddresses, err = iif.Addrs()
-		if err != nil {
-			return err
-		}
-		var address networkAddress
-		address.interfaceName = iif.Name
-		address.interfaceIndex = iif.Index
-		address.addresses = common.Map(common.FilterIsInstance(netAddresses, func(it net.Addr) (*net.IPNet, bool) {
-			value, loaded := it.(*net.IPNet)
-			return value, loaded
-		}), func(it *net.IPNet) netip.Prefix {
-			bits, _ := it.Mask.Size()
-			return netip.PrefixFrom(M.AddrFromIP(it.IP), bits)
-		})
-		addresses = append(addresses, address)
-	}
-	m.networkAddresses = addresses
-	return nil
-}
-
 func (m *defaultInterfaceMonitor) Close() error {
 	if m.element != nil {
 		m.networkMonitor.UnregisterCallback(m.element)
@@ -136,10 +103,10 @@ func (m *defaultInterfaceMonitor) Close() error {
 }
 
 func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) string {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
+	for _, address := range m.interfaceFinder.Interfaces() {
+		for _, prefix := range address.Addresses {
 			if prefix.Contains(destination) {
-				return address.interfaceName
+				return address.Name
 			}
 		}
 	}
@@ -147,10 +114,10 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) s
 }
 
 func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) int {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
+	for _, address := range m.interfaceFinder.Interfaces() {
+		for _, prefix := range address.Addresses {
 			if prefix.Contains(destination) {
-				return address.interfaceIndex
+				return address.Index
 			}
 		}
 	}
@@ -158,10 +125,10 @@ func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) 
 }
 
 func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (string, int) {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
+	for _, address := range m.interfaceFinder.Interfaces() {
+		for _, prefix := range address.Addresses {
 			if prefix.Contains(destination) {
-				return address.interfaceName, address.interfaceIndex
+				return address.Name, address.Index
 			}
 		}
 	}
@@ -169,7 +136,7 @@ func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (stri
 }
 
 func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
-	return m.options.OverrideAndroidVPN
+	return m.overrideAndroidVPN
 }
 
 func (m *defaultInterfaceMonitor) AndroidVPNEnabled() bool {

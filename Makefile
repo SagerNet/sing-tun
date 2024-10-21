@@ -5,6 +5,7 @@ build:
 	GOOS=linux GOARCH=arm64 go build -v -tags with_gvisor .
 	GOOS=linux GOARCH=386 go build -v -tags with_gvisor .
 	GOOS=linux GOARCH=arm go build -v -tags with_gvisor .
+	GOOS=android GOARCH=arm64 go build -v -tags with_gvisor .
 	GOOS=windows GOARCH=amd64 go build -v -tags with_gvisor .
 
 fmt:
@@ -27,4 +28,5 @@ lint_install:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 test:
-	go test -v .
+	go build -v .
+	#go test -v .

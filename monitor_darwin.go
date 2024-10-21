@@ -110,7 +110,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		defaultInterface *net.Interface
 		err              error
 	)
-	if m.options.UnderNetworkExtension {
+	if m.underNetworkExtension {
 		defaultInterface, err = getDefaultInterfaceBySocket()
 		if err != nil {
 			return err

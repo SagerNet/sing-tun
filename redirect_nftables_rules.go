@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
+	"github.com/sagernet/nftables/userdata"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/ranges"
 
@@ -245,84 +246,124 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	} else {
 		if len(r.tunOptions.IncludeUID) > 0 {
-			includeUID := &nftables.Set{
-				Table:     table,
-				Anonymous: true,
-				Constant:  true,
-				Interval:  true,
-				KeyType:   nftables.TypeUID,
-			}
-			err := nft.AddSet(includeUID, common.FlatMap(r.tunOptions.IncludeUID, func(it ranges.Range[uint32]) []nftables.SetElement {
-				return []nftables.SetElement{
-					{
-						Key: binaryutil.BigEndian.PutUint32(it.Start),
-					},
-					{
-						Key:         binaryutil.BigEndian.PutUint32(it.End + 1),
-						IntervalEnd: true,
-					},
+			if len(r.tunOptions.IncludeUID) > 1 || r.tunOptions.IncludeUID[0].Start != r.tunOptions.IncludeUID[0].End {
+				includeUID := &nftables.Set{
+					Table:     table,
+					Anonymous: true,
+					Constant:  true,
+					Interval:  true,
+					KeyType:   nftables.TypeUID,
 				}
-			}))
-			if err != nil {
-				return err
+				err := nft.AddSet(includeUID, common.FlatMap(r.tunOptions.IncludeUID, func(it ranges.Range[uint32]) []nftables.SetElement {
+					return []nftables.SetElement{
+						{
+							Key: binaryutil.NativeEndian.PutUint32(it.Start),
+						},
+						{
+							Key:         binaryutil.NativeEndian.PutUint32(it.End + 1),
+							IntervalEnd: true,
+						},
+					}
+				}))
+				if err != nil {
+					return err
+				}
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+						&expr.Lookup{
+							SourceRegister: 1,
+							SetID:          includeUID.ID,
+							SetName:        includeUID.Name,
+							Invert:         true,
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+					UserData: userdata.AppendString(nil, userdata.TypeComment, "not a bug :("),
+				})
+			} else {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+						&expr.Cmp{
+							Op:       expr.CmpOpNeq,
+							Register: 1,
+							Data:     binaryutil.BigEndian.PutUint32(r.tunOptions.IncludeUID[0].Start),
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
 			}
-			nft.AddRule(&nftables.Rule{
-				Table: table,
-				Chain: chain,
-				Exprs: []expr.Any{
-					&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
-					&expr.Lookup{
-						SourceRegister: 1,
-						SetID:          includeUID.ID,
-						SetName:        includeUID.Name,
-						Invert:         true,
-					},
-					&expr.Counter{},
-					&expr.Verdict{
-						Kind: expr.VerdictReturn,
-					},
-				},
-			})
 		}
 
 		if len(r.tunOptions.ExcludeUID) > 0 {
-			excludeUID := &nftables.Set{
-				Table:     table,
-				Anonymous: true,
-				Constant:  true,
-				Interval:  true,
-				KeyType:   nftables.TypeUID,
-			}
-			err := nft.AddSet(excludeUID, common.FlatMap(r.tunOptions.ExcludeUID, func(it ranges.Range[uint32]) []nftables.SetElement {
-				return []nftables.SetElement{
-					{
-						Key: binaryutil.BigEndian.PutUint32(it.Start),
-					},
-					{
-						Key:         binaryutil.BigEndian.PutUint32(it.End + 1),
-						IntervalEnd: true,
-					},
+			if len(r.tunOptions.ExcludeUID) > 1 || r.tunOptions.ExcludeUID[0].Start != r.tunOptions.ExcludeUID[0].End {
+				excludeUID := &nftables.Set{
+					Table:     table,
+					Anonymous: true,
+					Constant:  true,
+					Interval:  true,
+					KeyType:   nftables.TypeUID,
 				}
-			}))
-			if err != nil {
-				return err
+				err := nft.AddSet(excludeUID, common.FlatMap(r.tunOptions.ExcludeUID, func(it ranges.Range[uint32]) []nftables.SetElement {
+					return []nftables.SetElement{
+						{
+							Key: binaryutil.NativeEndian.PutUint32(it.Start),
+						},
+						{
+							Key:         binaryutil.NativeEndian.PutUint32(it.End + 1),
+							IntervalEnd: true,
+						},
+					}
+				}))
+				if err != nil {
+					return err
+				}
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+						&expr.Lookup{
+							SourceRegister: 1,
+							SetID:          excludeUID.ID,
+							SetName:        excludeUID.Name,
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+					UserData: userdata.AppendString(nil, userdata.TypeComment, "not a bug :("),
+				})
+			} else {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+						&expr.Cmp{
+							Op:       expr.CmpOpEq,
+							Register: 1,
+							Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.ExcludeUID[0].Start),
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
 			}
-			nft.AddRule(&nftables.Rule{
-				Table: table,
-				Chain: chain,
-				Exprs: []expr.Any{
-					&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
-					&expr.Lookup{
-						SourceRegister: 1,
-						SetID:          excludeUID.ID,
-						SetName:        excludeUID.Name,
-					},
-					&expr.Counter{},
-					&expr.Verdict{
-						Kind: expr.VerdictReturn,
-					},
-				},
-			})
 		}
 	}
 
