@@ -10,11 +10,13 @@ import (
 
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ranges"
 )
 
 type Handler interface {
+	PrepareConnection(source M.Socksaddr, destination M.Socksaddr) error
 	N.TCPConnectionHandlerEx
 	N.UDPConnectionHandlerEx
 }

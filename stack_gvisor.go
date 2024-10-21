@@ -5,6 +5,7 @@ package tun
 import (
 	"context"
 	"net/netip"
+	"os"
 	"time"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -32,7 +33,7 @@ type GVisor struct {
 	ctx                    context.Context
 	tun                    GVisorTun
 	endpointIndependentNat bool
-	udpTimeout             int64
+	udpTimeout             time.Duration
 	broadcastAddr          netip.Addr
 	handler                Handler
 	logger                 logger.Logger
@@ -85,13 +86,18 @@ func (t *GVisor) Start() error {
 			localAddr:  source.TCPAddr(),
 			remoteAddr: destination.TCPAddr(),
 		}
+		pErr := t.handler.PrepareConnection(source, destination)
+		if pErr != nil {
+			r.Complete(gWriteUnreachable(t.stack, r.Packet(), err) == os.ErrInvalid)
+			return
+		}
 		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	if !t.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
+		udpForwarder := udp.NewForwarder(ipStack, func(r *udp.ForwarderRequest) {
 			var wq waiter.Queue
-			endpoint, err := request.CreateEndpoint(&wq)
+			endpoint, err := r.CreateEndpoint(&wq)
 			if err != nil {
 				return
 			}
@@ -102,9 +108,15 @@ func (t *GVisor) Start() error {
 				endpoint.Abort()
 				return
 			}
+			source := M.SocksaddrFromNet(lAddr)
+			destination := M.SocksaddrFromNet(rAddr)
+			pErr := t.handler.PrepareConnection(source, destination)
+			if pErr != nil {
+				gWriteUnreachable(t.stack, r.Packet(), pErr)
+				r.Packet().DecRef()
+				return
+			}
 			go func() {
-				source := M.SocksaddrFromNet(lAddr)
-				destination := M.SocksaddrFromNet(rAddr)
 				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, destination), time.Duration(t.udpTimeout)*time.Second)
 				t.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
 			}()

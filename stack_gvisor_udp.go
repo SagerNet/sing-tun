@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"time"
+	_ "unsafe"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -19,59 +21,60 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/common/udpnat"
+	"github.com/sagernet/sing/common/udpnat2"
 )
 
 type UDPForwarder struct {
-	ctx    context.Context
-	stack  *stack.Stack
-	udpNat *udpnat.Service[netip.AddrPort]
-
-	// cache
-	cacheProto tcpip.NetworkProtocolNumber
-	cacheID    stack.TransportEndpointID
+	ctx     context.Context
+	stack   *stack.Stack
+	handler Handler
+	udpNat  *udpnat.Service
 }
 
-func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, udpTimeout int64) *UDPForwarder {
-	return &UDPForwarder{
-		ctx:    ctx,
-		stack:  stack,
-		udpNat: udpnat.NewEx[netip.AddrPort](udpTimeout, handler),
+func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, timeout time.Duration) *UDPForwarder {
+	forwarder := &UDPForwarder{
+		ctx:     ctx,
+		stack:   stack,
+		handler: handler,
 	}
+	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout)
+	return forwarder
 }
 
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
 	source := M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
-	if source.IsIPv4() {
-		f.cacheProto = header.IPv4ProtocolNumber
-	} else {
-		f.cacheProto = header.IPv6ProtocolNumber
-	}
-	gBuffer := pkt.Data().ToBuffer()
-	sBuffer := buf.NewSize(int(gBuffer.Size()))
-	gBuffer.Apply(func(view *buffer.View) {
-		sBuffer.Write(view.AsSlice())
+	bufferRange := pkt.Data().AsRange()
+	bufferSlices := make([][]byte, bufferRange.Size())
+	rangeIterate(bufferRange, func(view *buffer.View) {
+		bufferSlices = append(bufferSlices, view.AsSlice())
 	})
-	f.cacheID = id
-	f.udpNat.NewPacketEx(
-		f.ctx,
-		source.AddrPort(),
-		sBuffer,
-		source,
-		destination,
-		f.newUDPConn,
-	)
+	f.udpNat.NewPacket(bufferSlices, source, destination, pkt)
 	return true
 }
 
-func (f *UDPForwarder) newUDPConn(natConn N.PacketConn) N.PacketWriter {
-	return &UDPBackWriter{
-		stack:         f.stack,
-		source:        f.cacheID.RemoteAddress,
-		sourcePort:    f.cacheID.RemotePort,
-		sourceNetwork: f.cacheProto,
+//go:linkname rangeIterate github.com/sagernet/gvisor/pkg/tcpip/stack.Range.iterate
+func rangeIterate(r stack.Range, fn func(*buffer.View))
+
+func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
+	pErr := f.handler.PrepareConnection(source, destination)
+	if pErr != nil {
+		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer), pErr)
+		return false, nil, nil, nil
 	}
+	var sourceNetwork tcpip.NetworkProtocolNumber
+	if source.Addr.Is4() {
+		sourceNetwork = header.IPv4ProtocolNumber
+	} else {
+		sourceNetwork = header.IPv6ProtocolNumber
+	}
+	writer := &UDPBackWriter{
+		stack:         f.stack,
+		source:        AddressFromAddr(source.Addr),
+		sourcePort:    source.Port,
+		sourceNetwork: sourceNetwork,
+	}
+	return true, f.ctx, writer, nil
 }
 
 type UDPBackWriter struct {

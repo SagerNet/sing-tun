@@ -15,7 +15,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/common/udpnat"
+	"github.com/sagernet/sing/common/udpnat2"
 )
 
 var ErrIncludeAllNetworks = E.New("`system` and `mixed` stack are not available when `includeAllNetworks` is enabled. See https://github.com/SagerNet/sing-tun/issues/25")
@@ -34,13 +34,13 @@ type System struct {
 	inet6ServerAddress netip.Addr
 	inet6Address       netip.Addr
 	broadcastAddr      netip.Addr
-	udpTimeout         int64
+	udpTimeout         time.Duration
 	tcpListener        net.Listener
 	tcpListener6       net.Listener
 	tcpPort            uint16
 	tcpPort6           uint16
 	tcpNat             *TCPNat
-	udpNat             *udpnat.Service[netip.AddrPort]
+	udpNat             *udpnat.Service
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
 	frontHeadroom      int
@@ -151,8 +151,8 @@ func (s *System) start() error {
 		s.tcpPort6 = M.SocksaddrFromNet(tcpListener.Addr()).Port
 		go s.acceptLoop(tcpListener)
 	}
-	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
-	s.udpNat = udpnat.NewEx[netip.AddrPort](s.udpTimeout, s.handler)
+	s.tcpNat = NewNat(s.ctx, s.udpTimeout)
+	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout)
 	return nil
 }
 
@@ -354,7 +354,11 @@ func (s *System) processIPv4TCP(packet clashtcpip.IPv4Packet, header clashtcpip.
 		packet.SetDestinationIP(session.Source.Addr())
 		header.SetDestinationPort(session.Source.Port())
 	} else {
-		natPort := s.tcpNat.Lookup(source, destination)
+		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+		if err != nil {
+			// TODO: implement rejects
+			return nil
+		}
 		packet.SetSourceIP(s.inet4Address)
 		header.SetSourcePort(natPort)
 		packet.SetDestinationIP(s.inet4ServerAddress)
@@ -385,7 +389,11 @@ func (s *System) processIPv6TCP(packet clashtcpip.IPv6Packet, header clashtcpip.
 		packet.SetDestinationIP(session.Source.Addr())
 		header.SetDestinationPort(session.Source.Port())
 	} else {
-		natPort := s.tcpNat.Lookup(source, destination)
+		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+		if err != nil {
+			// TODO: implement rejects
+			return nil
+		}
 		packet.SetSourceIP(s.inet6Address)
 		header.SetSourcePort(natPort)
 		packet.SetDestinationIP(s.inet6ServerAddress)
@@ -409,27 +417,12 @@ func (s *System) processIPv4UDP(packet clashtcpip.IPv4Packet, header clashtcpip.
 	if !header.Valid() {
 		return E.New("ipv4: udp: invalid packet")
 	}
-	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
-	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if !destination.Addr().IsGlobalUnicast() {
+	source := M.SocksaddrFrom(packet.SourceIP(), header.SourcePort())
+	destination := M.SocksaddrFrom(packet.DestinationIP(), header.DestinationPort())
+	if !destination.Addr.IsGlobalUnicast() {
 		return nil
 	}
-	data := buf.As(header.Payload())
-	if data.Len() == 0 {
-		return nil
-	}
-	s.udpNat.NewPacketEx(s.ctx, source, data.ToOwned(), M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), func(natConn N.PacketConn) N.PacketWriter {
-		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
-		headerCopy := make([]byte, headerLen)
-		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter4{
-			s.tun,
-			s.frontHeadroom + PacketOffset,
-			headerCopy,
-			source,
-			s.txChecksumOffload,
-		}
-	})
+	s.udpNat.NewPacket([][]byte{header.Payload()}, source, destination, packet)
 	return nil
 }
 
@@ -437,28 +430,48 @@ func (s *System) processIPv6UDP(packet clashtcpip.IPv6Packet, header clashtcpip.
 	if !header.Valid() {
 		return E.New("ipv6: udp: invalid packet")
 	}
-	source := netip.AddrPortFrom(packet.SourceIP(), header.SourcePort())
-	destination := netip.AddrPortFrom(packet.DestinationIP(), header.DestinationPort())
-	if !destination.Addr().IsGlobalUnicast() {
+	source := M.SocksaddrFrom(packet.SourceIP(), header.SourcePort())
+	destination := M.SocksaddrFrom(packet.DestinationIP(), header.DestinationPort())
+	if !destination.Addr.IsGlobalUnicast() {
 		return nil
 	}
-	data := buf.As(header.Payload())
-	if data.Len() == 0 {
-		return nil
+	s.udpNat.NewPacket([][]byte{header.Payload()}, source, destination, packet)
+	return nil
+}
+
+func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
+	pErr := s.handler.PrepareConnection(source, destination)
+	if pErr != nil {
+		// TODO: implement ICMP port unreachable
+		return false, nil, nil, nil
 	}
-	s.udpNat.NewPacketEx(s.ctx, source, data.ToOwned(), M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), func(natConn N.PacketConn) N.PacketWriter {
-		headerLen := len(packet) - int(header.Length()) + clashtcpip.UDPHeaderSize
+	var writer N.PacketWriter
+	if source.IsIPv4() {
+		packet := userData.(clashtcpip.IPv4Packet)
+		headerLen := packet.HeaderLen() + clashtcpip.UDPHeaderSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
-		return &systemUDPPacketWriter6{
+		writer = &systemUDPPacketWriter4{
 			s.tun,
 			s.frontHeadroom + PacketOffset,
 			headerCopy,
-			source,
+			source.AddrPort(),
 			s.txChecksumOffload,
 		}
-	})
-	return nil
+	} else {
+		packet := userData.(clashtcpip.IPv6Packet)
+		headerLen := len(packet) - int(packet.PayloadLength()) + clashtcpip.UDPHeaderSize
+		headerCopy := make([]byte, headerLen)
+		copy(headerCopy, packet[:headerLen])
+		writer = &systemUDPPacketWriter6{
+			s.tun,
+			s.frontHeadroom + PacketOffset,
+			headerCopy,
+			source.AddrPort(),
+			s.txChecksumOffload,
+		}
+	}
+	return true, s.ctx, writer, nil
 }
 
 func (s *System) processIPv4ICMP(packet clashtcpip.IPv4Packet, header clashtcpip.ICMPPacket) error {
