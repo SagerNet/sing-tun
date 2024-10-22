@@ -199,15 +199,15 @@ func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer, err erro
 		return nil
 	} else if errors.Is(err, syscall.ENETUNREACH) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetProhibited)
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPNetUnreachable)
 		} else {
 			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPNoRoute)
 		}
 	} else if errors.Is(err, syscall.EHOSTUNREACH) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPHostProhibited)
+			return gWriteUnreachable4(gStack, packet, stack.RejectIPv4WithICMPHostUnreachable)
 		} else {
-			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPNoRoute)
+			return gWriteUnreachable6(gStack, packet, stack.RejectIPv6WithICMPAddrUnreachable)
 		}
 	} else if errors.Is(err, syscall.ECONNREFUSED) {
 		if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 type TCPNat struct {
@@ -77,7 +78,7 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handl
 	if loaded {
 		return port, nil
 	}
-	pErr := handler.PrepareConnection(M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination))
+	pErr := handler.PrepareConnection(N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination))
 	if pErr != nil {
 		return 0, pErr
 	}

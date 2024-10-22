@@ -57,7 +57,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 func rangeIterate(r stack.Range, fn func(*buffer.View))
 
 func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
-	pErr := f.handler.PrepareConnection(source, destination)
+	pErr := f.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
 		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer), pErr)
 		return false, nil, nil, nil
