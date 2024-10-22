@@ -23,6 +23,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 const WithGVisor = true
@@ -79,7 +80,7 @@ func (t *GVisor) Start() error {
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
 		source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
 		destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-		pErr := t.handler.PrepareConnection(source, destination)
+		pErr := t.handler.PrepareConnection(N.NetworkTCP, source, destination)
 		if pErr != nil {
 			r.Complete(gWriteUnreachable(t.stack, r.Packet(), err) == os.ErrInvalid)
 			return
@@ -96,28 +97,21 @@ func (t *GVisor) Start() error {
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	if !t.endpointIndependentNat {
 		udpForwarder := udp.NewForwarder(ipStack, func(r *udp.ForwarderRequest) {
+			source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
+			destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
+			pErr := t.handler.PrepareConnection(N.NetworkUDP, source, destination)
+			if pErr != nil {
+				gWriteUnreachable(t.stack, r.Packet(), err)
+				r.Packet().DecRef()
+				return
+			}
 			var wq waiter.Queue
 			endpoint, err := r.CreateEndpoint(&wq)
 			if err != nil {
 				return
 			}
-			udpConn := gonet.NewUDPConn(&wq, endpoint)
-			lAddr := udpConn.RemoteAddr()
-			rAddr := udpConn.LocalAddr()
-			if lAddr == nil || rAddr == nil {
-				endpoint.Abort()
-				return
-			}
-			source := M.SocksaddrFromNet(lAddr)
-			destination := M.SocksaddrFromNet(rAddr)
-			pErr := t.handler.PrepareConnection(source, destination)
-			if pErr != nil {
-				gWriteUnreachable(t.stack, r.Packet(), pErr)
-				r.Packet().DecRef()
-				return
-			}
 			go func() {
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, destination), time.Duration(t.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(gonet.NewUDPConn(&wq, endpoint), destination), t.udpTimeout)
 				t.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
 			}()
 		})

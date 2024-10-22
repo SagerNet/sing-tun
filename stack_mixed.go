@@ -3,8 +3,6 @@
 package tun
 
 import (
-	"time"
-
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
@@ -18,6 +16,7 @@ import (
 	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 type Mixed struct {
@@ -51,23 +50,22 @@ func (m *Mixed) Start() error {
 		return err
 	}
 	if !m.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
+		udpForwarder := udp.NewForwarder(ipStack, func(r *udp.ForwarderRequest) {
+			source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
+			destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
+			pErr := m.handler.PrepareConnection(N.NetworkUDP, source, destination)
+			if pErr != nil {
+				gWriteUnreachable(m.stack, r.Packet(), err)
+				r.Packet().DecRef()
+				return
+			}
 			var wq waiter.Queue
-			endpoint, err := request.CreateEndpoint(&wq)
+			endpoint, err := r.CreateEndpoint(&wq)
 			if err != nil {
 				return
 			}
-			udpConn := gonet.NewUDPConn(&wq, endpoint)
-			lAddr := udpConn.RemoteAddr()
-			rAddr := udpConn.LocalAddr()
-			if lAddr == nil || rAddr == nil {
-				endpoint.Abort()
-				return
-			}
 			go func() {
-				source := M.SocksaddrFromNet(lAddr)
-				destination := M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(udpConn, destination), time.Duration(m.udpTimeout)*time.Second)
+				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gonet.NewUDPConn(&wq, endpoint), destination), m.udpTimeout)
 				m.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
 			}()
 		})
@@ -229,7 +227,7 @@ func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 	}
 	switch ipHdr.TransportProtocol() {
 	case header.TCPProtocolNumber:
-		err = m.processIPv6TCP(ipHdr, ipHdr.Payload())
+		writeBack, err = m.processIPv6TCP(ipHdr, ipHdr.Payload())
 	case header.UDPProtocolNumber:
 		writeBack = false
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{

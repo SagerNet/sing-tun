@@ -16,7 +16,7 @@ import (
 )
 
 type Handler interface {
-	PrepareConnection(source M.Socksaddr, destination M.Socksaddr) error
+	PrepareConnection(network string, source M.Socksaddr, destination M.Socksaddr) error
 	N.TCPConnectionHandlerEx
 	N.UDPConnectionHandlerEx
 }
