@@ -79,17 +79,17 @@ func (t *GVisor) Start() error {
 	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
 		source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
 		destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
+		pErr := t.handler.PrepareConnection(source, destination)
+		if pErr != nil {
+			r.Complete(gWriteUnreachable(t.stack, r.Packet(), err) == os.ErrInvalid)
+			return
+		}
 		conn := &gLazyConn{
 			parentCtx:  t.ctx,
 			stack:      t.stack,
 			request:    r,
 			localAddr:  source.TCPAddr(),
 			remoteAddr: destination.TCPAddr(),
-		}
-		pErr := t.handler.PrepareConnection(source, destination)
-		if pErr != nil {
-			r.Complete(gWriteUnreachable(t.stack, r.Packet(), err) == os.ErrInvalid)
-			return
 		}
 		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
 	})

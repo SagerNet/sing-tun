@@ -15,7 +15,7 @@ import (
 	"io"
 	"unsafe"
 
-	"github.com/sagernet/sing-tun/internal/clashtcpip"
+	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
@@ -746,7 +746,7 @@ func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, e
 }
 
 func checksumNoFold(b []byte, initial uint64) uint64 {
-	return initial + uint64(clashtcpip.Sum(b))
+	return uint64(checksum.Checksum(b, uint16(initial)))
 }
 
 func checksumFold(b []byte, initial uint64) uint16 {
