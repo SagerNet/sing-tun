@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
+	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
-	"github.com/sagernet/gvisor/pkg/tcpip/header"
+	gHdr "github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/link/channel"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
 	"github.com/sagernet/gvisor/pkg/waiter"
-	"github.com/sagernet/sing-tun/internal/clashtcpip"
+	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -104,7 +105,7 @@ func (m *Mixed) tunLoop() {
 			}
 			m.logger.Error(E.Cause(err, "read packet"))
 		}
-		if n < clashtcpip.IPv4PacketMinLength {
+		if n < header.IPv4MinimumSize {
 			continue
 		}
 		rawPacket := packetBuffer[:n]
@@ -124,7 +125,7 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 		if err != nil {
 			return
 		}
-		if len(packet) < clashtcpip.IPv4PacketMinLength {
+		if len(packet) < header.IPv4MinimumSize {
 			release()
 			continue
 		}
@@ -158,7 +159,7 @@ func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 		}
 		for i := 0; i < n; i++ {
 			packetSize := packetSizes[i]
-			if packetSize < clashtcpip.IPv4PacketMinLength {
+			if packetSize < header.IPv4MinimumSize {
 				continue
 			}
 			packetBuffer := packetBuffers[i]
@@ -197,48 +198,48 @@ func (m *Mixed) processPacket(packet []byte) bool {
 	return writeBack
 }
 
-func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) (writeBack bool, err error) {
+func (m *Mixed) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 	writeBack = true
-	destination := packet.DestinationIP()
+	destination := ipHdr.DestinationAddr()
 	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
 		return
 	}
-	switch packet.Protocol() {
-	case clashtcpip.TCP:
-		err = m.processIPv4TCP(packet, packet.Payload())
-	case clashtcpip.UDP:
+	switch ipHdr.TransportProtocol() {
+	case header.TCPProtocolNumber:
+		writeBack, err = m.processIPv4TCP(ipHdr, ipHdr.Payload())
+	case header.UDPProtocolNumber:
 		writeBack = false
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer.MakeWithData(packet),
+			Payload:           buffer.MakeWithData(ipHdr),
 			IsForwardedPacket: true,
 		})
-		m.endpoint.InjectInbound(header.IPv4ProtocolNumber, pkt)
+		m.endpoint.InjectInbound(gHdr.IPv4ProtocolNumber, pkt)
 		pkt.DecRef()
 		return
-	case clashtcpip.ICMP:
-		err = m.processIPv4ICMP(packet, packet.Payload())
+	case header.ICMPv4ProtocolNumber:
+		err = m.processIPv4ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
 
-func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) (writeBack bool, err error) {
+func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 	writeBack = true
-	if !packet.DestinationIP().IsGlobalUnicast() {
+	if !ipHdr.DestinationAddr().IsGlobalUnicast() {
 		return
 	}
-	switch packet.Protocol() {
-	case clashtcpip.TCP:
-		err = m.processIPv6TCP(packet, packet.Payload())
-	case clashtcpip.UDP:
+	switch ipHdr.TransportProtocol() {
+	case header.TCPProtocolNumber:
+		err = m.processIPv6TCP(ipHdr, ipHdr.Payload())
+	case header.UDPProtocolNumber:
 		writeBack = false
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer.MakeWithData(packet),
+			Payload:           buffer.MakeWithData(ipHdr),
 			IsForwardedPacket: true,
 		})
-		m.endpoint.InjectInbound(header.IPv6ProtocolNumber, pkt)
+		m.endpoint.InjectInbound(tcpip.NetworkProtocolNumber(header.IPv6ProtocolNumber), pkt)
 		pkt.DecRef()
-	case clashtcpip.ICMPv6:
-		err = m.processIPv6ICMP(packet, packet.Payload())
+	case header.ICMPv6ProtocolNumber:
+		err = m.processIPv6ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
