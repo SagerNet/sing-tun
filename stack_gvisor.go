@@ -17,9 +17,6 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/icmp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
-	"github.com/sagernet/gvisor/pkg/waiter"
-	"github.com/sagernet/sing/common/bufio"
-	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -31,15 +28,14 @@ const WithGVisor = true
 const defaultNIC tcpip.NICID = 1
 
 type GVisor struct {
-	ctx                    context.Context
-	tun                    GVisorTun
-	endpointIndependentNat bool
-	udpTimeout             time.Duration
-	broadcastAddr          netip.Addr
-	handler                Handler
-	logger                 logger.Logger
-	stack                  *stack.Stack
-	endpoint               stack.LinkEndpoint
+	ctx           context.Context
+	tun           GVisorTun
+	udpTimeout    time.Duration
+	broadcastAddr netip.Addr
+	handler       Handler
+	logger        logger.Logger
+	stack         *stack.Stack
+	endpoint      stack.LinkEndpoint
 }
 
 type GVisorTun interface {
@@ -56,13 +52,12 @@ func NewGVisor(
 	}
 
 	gStack := &GVisor{
-		ctx:                    options.Context,
-		tun:                    gTun,
-		endpointIndependentNat: options.EndpointIndependentNat,
-		udpTimeout:             options.UDPTimeout,
-		broadcastAddr:          BroadcastAddr(options.TunOptions.Inet4Address),
-		handler:                options.Handler,
-		logger:                 options.Logger,
+		ctx:           options.Context,
+		tun:           gTun,
+		udpTimeout:    options.UDPTimeout,
+		broadcastAddr: BroadcastAddr(options.TunOptions.Inet4Address),
+		handler:       options.Handler,
+		logger:        options.Logger,
 	}
 	return gStack, nil
 }
@@ -95,31 +90,7 @@ func (t *GVisor) Start() error {
 		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
-	if !t.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(r *udp.ForwarderRequest) {
-			source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
-			destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-			pErr := t.handler.PrepareConnection(N.NetworkUDP, source, destination)
-			if pErr != nil {
-				gWriteUnreachable(t.stack, r.Packet(), err)
-				r.Packet().DecRef()
-				return
-			}
-			var wq waiter.Queue
-			endpoint, err := r.CreateEndpoint(&wq)
-			if err != nil {
-				return
-			}
-			go func() {
-				ctx, conn := canceler.NewPacketConn(t.ctx, bufio.NewUnbindPacketConnWithAddr(gonet.NewUDPConn(&wq, endpoint), destination), t.udpTimeout)
-				t.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
-			}()
-		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
-	} else {
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
-	}
-
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
 	return nil

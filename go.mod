@@ -9,7 +9,7 @@ require (
 	github.com/sagernet/gvisor v0.0.0-20241021032506-a4324256e4a3
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/sagernet/nftables v0.3.0-beta.4
-	github.com/sagernet/sing v0.5.0-rc.4.0.20241021153852-cf58af1a4627
+	github.com/sagernet/sing v0.5.0-rc.4.0.20241031132246-8303fb022213
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
 	golang.org/x/net v0.26.0
