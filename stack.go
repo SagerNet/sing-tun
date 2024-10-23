@@ -23,7 +23,6 @@ type StackOptions struct {
 	Context                context.Context
 	Tun                    Tun
 	TunOptions             Options
-	EndpointIndependentNat bool
 	UDPTimeout             time.Duration
 	Handler                Handler
 	Logger                 logger.Logger

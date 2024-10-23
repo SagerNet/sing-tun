@@ -5,25 +5,19 @@ package tun
 import (
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
-	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 	gHdr "github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/link/channel"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
-	"github.com/sagernet/gvisor/pkg/waiter"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common/bufio"
-	"github.com/sagernet/sing/common/canceler"
 	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 type Mixed struct {
 	*System
-	endpointIndependentNat bool
-	stack                  *stack.Stack
-	endpoint               *channel.Endpoint
+	stack    *stack.Stack
+	endpoint *channel.Endpoint
 }
 
 func NewMixed(
@@ -34,8 +28,7 @@ func NewMixed(
 		return nil, err
 	}
 	return &Mixed{
-		System:                 system.(*System),
-		endpointIndependentNat: options.EndpointIndependentNat,
+		System: system.(*System),
 	}, nil
 }
 
@@ -49,30 +42,7 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	if !m.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(r *udp.ForwarderRequest) {
-			source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
-			destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-			pErr := m.handler.PrepareConnection(N.NetworkUDP, source, destination)
-			if pErr != nil {
-				gWriteUnreachable(m.stack, r.Packet(), err)
-				r.Packet().DecRef()
-				return
-			}
-			var wq waiter.Queue
-			endpoint, err := r.CreateEndpoint(&wq)
-			if err != nil {
-				return
-			}
-			go func() {
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gonet.NewUDPConn(&wq, endpoint), destination), m.udpTimeout)
-				m.handler.NewPacketConnectionEx(ctx, conn, source, destination, nil)
-			}()
-		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
-	} else {
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
-	}
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
 	go m.tunLoop()

@@ -731,7 +731,7 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 	newPacket.Write(buffer.Bytes())
 	ipHdr := header.IPv4(newPacket.Bytes())
 	ipHdr.SetTotalLength(uint16(newPacket.Len()))
-	ipHdr.SetSourceAddress(ipHdr.SourceAddress())
+	ipHdr.SetDestinationAddress(ipHdr.SourceAddress())
 	ipHdr.SetSourceAddr(destination.Addr)
 	udpHdr := header.UDP(ipHdr.Payload())
 	udpHdr.SetDestinationPort(udpHdr.SourcePort())
