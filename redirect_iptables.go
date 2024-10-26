@@ -142,41 +142,47 @@ func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 		})
 		if !dnsServer.IsValid() {
 			if iptablesPath == r.iptablesPath {
-				dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
+				if HasNextAddress(r.tunOptions.Inet4Address[0], 1) {
+					dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
+				}
 			} else {
-				dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
+				if HasNextAddress(r.tunOptions.Inet6Address[0], 1) {
+					dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
+				}
 			}
 		}
-		if len(routeAddress) > 0 {
-			for _, address := range routeAddress {
-				err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
-					"-d", address.String(), "-p udp --dport 53 -j DNAT --to", dnsServer)
-				if err != nil {
-					return err
-				}
-			}
-		} else if len(r.tunOptions.IncludeInterface) > 0 || len(r.tunOptions.IncludeUID) > 0 {
-			for _, name := range r.tunOptions.IncludeInterface {
-				err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
-					"-i", name, "-p udp --dport 53 -j DNAT --to", dnsServer)
-				if err != nil {
-					return err
-				}
-			}
-			for _, uidRange := range r.tunOptions.IncludeUID {
-				for uid := uidRange.Start; uid <= uidRange.End; uid++ {
+		if dnsServer.IsValid() {
+			if len(routeAddress) > 0 {
+				for _, address := range routeAddress {
 					err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
-						"-m owner --uid-owner", uid, "-p udp --dport 53 -j DNAT --to", dnsServer)
+						"-d", address.String(), "-p udp --dport 53 -j DNAT --to", dnsServer)
 					if err != nil {
 						return err
 					}
 				}
-			}
-		} else {
-			err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
-				"-p udp --dport 53 -j DNAT --to", dnsServer)
-			if err != nil {
-				return err
+			} else if len(r.tunOptions.IncludeInterface) > 0 || len(r.tunOptions.IncludeUID) > 0 {
+				for _, name := range r.tunOptions.IncludeInterface {
+					err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
+						"-i", name, "-p udp --dport 53 -j DNAT --to", dnsServer)
+					if err != nil {
+						return err
+					}
+				}
+				for _, uidRange := range r.tunOptions.IncludeUID {
+					for uid := uidRange.Start; uid <= uidRange.End; uid++ {
+						err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
+							"-m owner --uid-owner", uid, "-p udp --dport 53 -j DNAT --to", dnsServer)
+						if err != nil {
+							return err
+						}
+					}
+				}
+			} else {
+				err = r.runShell(iptablesPath, "-t nat -A", tableNamePreRouteing,
+					"-p udp --dport 53 -j DNAT --to", dnsServer)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}

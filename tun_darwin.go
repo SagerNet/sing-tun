@@ -245,11 +245,12 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 		if err != nil {
 			return err
 		}
+		gateway4, gateway6 := options.Inet4GatewayAddr(), options.Inet6GatewayAddr()
 		for _, routeRange := range routeRanges {
 			if routeRange.Addr().Is4() {
-				err = addRoute(routeRange, options.Inet4Address[0].Addr())
+				err = addRoute(routeRange, gateway4)
 			} else {
-				err = addRoute(routeRange, options.Inet6Address[0].Addr())
+				err = addRoute(routeRange, gateway6)
 			}
 			if err != nil {
 				return E.Cause(err, "add route: ", routeRange)

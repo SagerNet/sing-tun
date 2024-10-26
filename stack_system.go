@@ -70,14 +70,14 @@ func NewSystem(options StackOptions) (Stack, error) {
 		interfaceFinder: options.InterfaceFinder,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
-		if options.TunOptions.Inet4Address[0].Bits() == 32 {
+		if !HasNextAddress(options.TunOptions.Inet4Address[0], 1) {
 			return nil, E.New("need one more IPv4 address in first prefix for system stack")
 		}
 		stack.inet4ServerAddress = options.TunOptions.Inet4Address[0].Addr()
 		stack.inet4Address = stack.inet4ServerAddress.Next()
 	}
 	if len(options.TunOptions.Inet6Address) > 0 {
-		if options.TunOptions.Inet6Address[0].Bits() == 128 {
+		if !HasNextAddress(options.TunOptions.Inet6Address[0], 1) {
 			return nil, E.New("need one more IPv6 address in first prefix for system stack")
 		}
 		stack.inet6ServerAddress = options.TunOptions.Inet6Address[0].Addr()
