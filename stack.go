@@ -60,6 +60,14 @@ func NewStack(
 	}
 }
 
+func HasNextAddress(prefix netip.Prefix, count int) bool {
+	checkAddr := prefix.Addr()
+	for i := 0; i < count; i++ {
+		checkAddr = checkAddr.Next()
+	}
+	return prefix.Contains(checkAddr)
+}
+
 func BroadcastAddr(inet4Address []netip.Prefix) netip.Addr {
 	if len(inet4Address) == 0 {
 		return netip.Addr{}

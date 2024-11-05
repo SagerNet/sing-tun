@@ -350,9 +350,18 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Do not create gateway on linux by default
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 	return common.Map(routeRanges, func(it netip.Prefix) netlink.Route {
+		var gateway net.IP
+		if it.Addr().Is4() && !gateway4.IsUnspecified() {
+			gateway = gateway4.AsSlice()
+		} else if it.Addr().Is6() && !gateway6.IsUnspecified() {
+			gateway = gateway6.AsSlice()
+		}
 		return netlink.Route{
 			Dst:       prefixToIPNet(it),
+			Gw:        gateway,
 			LinkIndex: tunLink.Attrs().Index,
 			Table:     t.options.IPRoute2TableIndex,
 		}
@@ -864,10 +873,10 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() {
 	}
 	dnsServer := t.options.DNSServers
 	if len(dnsServer) == 0 {
-		if len(t.options.Inet4Address) > 0 {
+		if len(t.options.Inet4Address) > 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
 			dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
 		}
-		if len(t.options.Inet6Address) > 0 {
+		if len(t.options.Inet6Address) > 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
 			dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
 		}
 	}

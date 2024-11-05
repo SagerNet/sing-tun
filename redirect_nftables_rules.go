@@ -573,10 +573,17 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	})
 	if !dnsServer.IsValid() {
 		if family == nftables.TableFamilyIPv4 {
-			dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
+			if HasNextAddress(r.tunOptions.Inet4Address[0], 1) {
+				dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
+			}
 		} else {
-			dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
+			if HasNextAddress(r.tunOptions.Inet6Address[0], 1) {
+				dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
+			}
 		}
+	}
+	if !dnsServer.IsValid() {
+		return nil
 	}
 	exprs := []expr.Any{
 		&expr.Meta{

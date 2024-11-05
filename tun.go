@@ -53,6 +53,8 @@ type Options struct {
 	MTU                      uint32
 	GSO                      bool
 	AutoRoute                bool
+	Inet4Gateway             netip.Addr
+	Inet6Gateway             netip.Addr
 	DNSServers               []netip.Addr
 	IPRoute2TableIndex       int
 	IPRoute2RuleIndex        int
@@ -80,6 +82,34 @@ type Options struct {
 
 	// For library usages.
 	EXP_DisableDNSHijack bool
+}
+
+func (o *Options) Inet4GatewayAddr() netip.Addr {
+	if o.Inet4Gateway.IsValid() {
+		return o.Inet4Gateway
+	}
+	if len(o.Inet4Address) > 0 {
+		if HasNextAddress(o.Inet4Address[0], 1) {
+			return o.Inet4Address[0].Addr().Next()
+		} else if runtime.GOOS != "linux" {
+			return o.Inet4Address[0].Addr()
+		}
+	}
+	return netip.IPv4Unspecified()
+}
+
+func (o *Options) Inet6GatewayAddr() netip.Addr {
+	if o.Inet6Gateway.IsValid() {
+		return o.Inet6Gateway
+	}
+	if len(o.Inet6Address) > 0 {
+		if HasNextAddress(o.Inet6Address[0], 1) {
+			return o.Inet6Address[0].Addr().Next()
+		} else if runtime.GOOS != "linux" {
+			return o.Inet6Address[0].Addr()
+		}
+	}
+	return netip.IPv6Unspecified()
 }
 
 func CalculateInterfaceName(name string) (tunName string) {

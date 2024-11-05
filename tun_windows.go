@@ -75,12 +75,14 @@ func (t *NativeTun) configure() error {
 		}
 		if !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is4)
-			if len(dnsServers) == 0 {
+			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet4Address[0].Addr().Next()}
 			}
-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dnsServers, nil)
-			if err != nil {
-				return E.Cause(err, "set ipv4 dns")
+			if len(dnsServers) > 0 {
+				err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dnsServers, nil)
+				if err != nil {
+					return E.Cause(err, "set ipv4 dns")
+				}
 			}
 		}
 	}
@@ -91,12 +93,14 @@ func (t *NativeTun) configure() error {
 		}
 		if !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is6)
-			if len(dnsServers) == 0 {
+			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet6Address[0].Addr().Next()}
 			}
-			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), dnsServers, nil)
-			if err != nil {
-				return E.Cause(err, "set ipv6 dns")
+			if len(dnsServers) > 0 {
+				err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), dnsServers, nil)
+				if err != nil {
+					return E.Cause(err, "set ipv6 dns")
+				}
 			}
 		}
 	}
@@ -104,15 +108,16 @@ func (t *NativeTun) configure() error {
 		_ = luid.DisableDNSRegistration()
 	}
 	if t.options.AutoRoute {
+		gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
 		}
 		for _, routeRange := range routeRanges {
 			if routeRange.Addr().Is4() {
-				err = luid.AddRoute(routeRange, netip.IPv4Unspecified(), 0)
+				err = luid.AddRoute(routeRange, gateway4, 0)
 			} else {
-				err = luid.AddRoute(routeRange, netip.IPv6Unspecified(), 0)
+				err = luid.AddRoute(routeRange, gateway6, 0)
 			}
 		}
 		if err != nil {
