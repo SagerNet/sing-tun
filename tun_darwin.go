@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -24,9 +25,10 @@ const PacketOffset = 4
 type NativeTun struct {
 	tunFile      *os.File
 	tunWriter    N.VectorisedWriter
-	mtu          uint32
+	options      Options
 	inet4Address [4]byte
 	inet6Address [16]byte
+	routerSet    bool
 }
 
 func New(options Options) (Tun, error) {
@@ -54,7 +56,7 @@ func New(options Options) (Tun, error) {
 
 	nativeTun := &NativeTun{
 		tunFile: os.NewFile(uintptr(tunFd), "utun"),
-		mtu:     options.MTU,
+		options: options,
 	}
 	if len(options.Inet4Address) > 0 {
 		nativeTun.inet4Address = options.Inet4Address[0].Addr().As4()
@@ -68,6 +70,15 @@ func New(options Options) (Tun, error) {
 		panic("create vectorised writer")
 	}
 	return nativeTun, nil
+}
+
+func (t *NativeTun) Start() error {
+	return t.setRoutes()
+}
+
+func (t *NativeTun) Close() error {
+	defer flushDNSCache()
+	return E.Errors(t.unsetRoutes(), t.tunFile.Close())
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
@@ -91,11 +102,6 @@ func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 		packetHeader = packetHeader6[:]
 	}
 	return t.tunWriter.WriteVectorised(append([]*buf.Buffer{buf.As(packetHeader)}, buffers...))
-}
-
-func (t *NativeTun) Close() error {
-	flushDNSCache()
-	return t.tunFile.Close()
 }
 
 const utunControlName = "com.apple.net.utun_control"
@@ -239,26 +245,66 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 			}
 		}
 	}
-	if options.AutoRoute {
-		var routeRanges []netip.Prefix
-		routeRanges, err = options.BuildAutoRouteRanges(false)
+	return nil
+}
+
+func (t *NativeTun) setRoutes() error {
+	if t.options.AutoRoute && t.options.FileDescriptor == 0 {
+		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
 		}
-		gateway4, gateway6 := options.Inet4GatewayAddr(), options.Inet6GatewayAddr()
-		for _, routeRange := range routeRanges {
-			if routeRange.Addr().Is4() {
-				err = addRoute(routeRange, gateway4)
+		gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+		for _, destination := range routeRanges {
+			var gateway netip.Addr
+			if destination.Addr().Is4() {
+				gateway = gateway4
 			} else {
-				err = addRoute(routeRange, gateway6)
+				gateway = gateway6
 			}
+			err = execRoute(unix.RTM_ADD, destination, gateway)
 			if err != nil {
-				return E.Cause(err, "add route: ", routeRange)
+				if errors.Is(err, unix.EEXIST) {
+					err = execRoute(unix.RTM_DELETE, destination, gateway)
+					if err != nil {
+						return E.Cause(err, "remove existing route: ", destination)
+					}
+					err = execRoute(unix.RTM_ADD, destination, gateway)
+					if err != nil {
+						return E.Cause(err, "re-add route: ", destination)
+					}
+				}
+				return E.Cause(err, "add route: ", destination)
 			}
 		}
 		flushDNSCache()
+		t.routerSet = true
 	}
 	return nil
+}
+
+func (t *NativeTun) unsetRoutes() error {
+	if !t.routerSet {
+		return nil
+	}
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	for _, destination := range routeRanges {
+		var gateway netip.Addr
+		if destination.Addr().Is4() {
+			gateway = gateway4
+		} else {
+			gateway = gateway6
+		}
+		err = execRoute(unix.RTM_DELETE, destination, gateway)
+		if err != nil {
+			err = E.Errors(err, E.Cause(err, "delete route: ", destination))
+		}
+	}
+	return err
 }
 
 func useSocket(domain, typ, proto int, block func(socketFd int) error) error {
@@ -270,12 +316,15 @@ func useSocket(domain, typ, proto int, block func(socketFd int) error) error {
 	return block(socketFd)
 }
 
-func addRoute(destination netip.Prefix, gateway netip.Addr) error {
+func execRoute(rtmType int, destination netip.Prefix, gateway netip.Addr) error {
 	routeMessage := route.RouteMessage{
-		Type:    unix.RTM_ADD,
-		Flags:   unix.RTF_UP | unix.RTF_STATIC | unix.RTF_GATEWAY,
+		Type:    rtmType,
 		Version: unix.RTM_VERSION,
+		Flags:   unix.RTF_STATIC | unix.RTF_GATEWAY,
 		Seq:     1,
+	}
+	if rtmType == unix.RTM_ADD {
+		routeMessage.Flags |= unix.RTF_UP
 	}
 	if gateway.Is4() {
 		routeMessage.Addrs = []route.Addr{
@@ -300,5 +349,5 @@ func addRoute(destination netip.Prefix, gateway netip.Addr) error {
 }
 
 func flushDNSCache() {
-	shell.Exec("dscacheutil", "-flushcache").Start()
+	go shell.Exec("dscacheutil", "-flushcache").Run()
 }

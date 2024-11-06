@@ -106,27 +106,6 @@ func (t *NativeTun) configure() error {
 	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
 		_ = luid.DisableDNSRegistration()
 	}
-	if t.options.AutoRoute {
-		gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
-		routeRanges, err := t.options.BuildAutoRouteRanges(false)
-		if err != nil {
-			return err
-		}
-		for _, routeRange := range routeRanges {
-			if routeRange.Addr().Is4() {
-				err = luid.AddRoute(routeRange, gateway4, 0)
-			} else {
-				err = luid.AddRoute(routeRange, gateway6, 0)
-			}
-		}
-		if err != nil {
-			return err
-		}
-		err = windnsapi.FlushResolverCache()
-		if err != nil {
-			return err
-		}
-	}
 	if len(t.options.Inet4Address) > 0 {
 		inetIf, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
 		if err != nil {
@@ -166,8 +145,34 @@ func (t *NativeTun) configure() error {
 			return E.Cause(err, "set ipv6 options")
 		}
 	}
+	return nil
+}
 
-	if t.options.AutoRoute && t.options.StrictRoute {
+func (t *NativeTun) Start() error {
+	if !t.options.AutoRoute {
+		return nil
+	}
+	luid := winipcfg.LUID(t.adapter.LUID())
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	for _, routeRange := range routeRanges {
+		if routeRange.Addr().Is4() {
+			err = luid.AddRoute(routeRange, gateway4, 0)
+		} else {
+			err = luid.AddRoute(routeRange, gateway6, 0)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	err = windnsapi.FlushResolverCache()
+	if err != nil {
+		return err
+	}
+	if t.options.StrictRoute {
 		var engine uintptr
 		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
 		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
@@ -340,7 +345,6 @@ func (t *NativeTun) configure() error {
 			}
 		}
 	}
-
 	return nil
 }
 

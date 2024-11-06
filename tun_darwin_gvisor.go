@@ -24,7 +24,7 @@ type DarwinEndpoint struct {
 }
 
 func (e *DarwinEndpoint) MTU() uint32 {
-	return e.tun.mtu
+	return e.tun.options.MTU
 }
 
 func (e *DarwinEndpoint) SetMTU(mtu uint32) {
@@ -57,7 +57,7 @@ func (e *DarwinEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *DarwinEndpoint) dispatchLoop() {
-	packetBuffer := make([]byte, e.tun.mtu+PacketOffset)
+	packetBuffer := make([]byte, e.tun.options.MTU+PacketOffset)
 	for {
 		n, err := e.tun.tunFile.Read(packetBuffer)
 		if err != nil {
