@@ -5,7 +5,7 @@ package tun
 import (
 	"context"
 	"net/netip"
-	"os"
+	"runtime"
 	"time"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -17,6 +17,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/icmp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
+	"github.com/sagernet/gvisor/pkg/waiter"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -77,17 +78,35 @@ func (t *GVisor) Start() error {
 		destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
 		pErr := t.handler.PrepareConnection(N.NetworkTCP, source, destination)
 		if pErr != nil {
-			r.Complete(gWriteUnreachable(t.stack, r.Packet(), err) == os.ErrInvalid)
+			r.Complete(pErr != ErrDrop)
 			return
 		}
-		conn := &gLazyConn{
-			parentCtx:  t.ctx,
-			stack:      t.stack,
-			request:    r,
-			localAddr:  source.TCPAddr(),
-			remoteAddr: destination.TCPAddr(),
+		var (
+			wq       waiter.Queue
+			endpoint tcpip.Endpoint
+			tErr     tcpip.Error
+		)
+		handshakeCtx, cancel := context.WithCancel(context.Background())
+		go func() {
+			select {
+			case <-t.ctx.Done():
+				wq.Notify(wq.Events())
+			case <-handshakeCtx.Done():
+			}
+		}()
+		endpoint, tErr = r.CreateEndpoint(&wq)
+		cancel()
+		if tErr != nil {
+			r.Complete(true)
+			return
 		}
-		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
+		r.Complete(false)
+		endpoint.SocketOptions().SetKeepAlive(true)
+		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveIdle)
+		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
+		endpoint.SetSockOpt(&keepAliveInterval)
+		go t.handler.NewConnectionEx(t.ctx, gonet.NewTCPConn(&wq, endpoint), source, destination, nil)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
@@ -134,30 +153,47 @@ func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 			icmp.NewProtocol6,
 		},
 	})
-	tErr := ipStack.CreateNIC(defaultNIC, ep)
-	if tErr != nil {
-		return nil, E.New("create nic: ", gonet.TranslateNetstackError(tErr))
+	err := ipStack.CreateNIC(defaultNIC, ep)
+	if err != nil {
+		return nil, gonet.TranslateNetstackError(err)
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
 		{Destination: header.IPv6EmptySubnet, NIC: defaultNIC},
 	})
-	ipStack.SetSpoofing(defaultNIC, true)
-	ipStack.SetPromiscuousMode(defaultNIC, true)
-	bufSize := 20 * 1024
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     1,
-		Default: bufSize,
-		Max:     bufSize,
-	})
-	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPSendBufferSizeRangeOption{
-		Min:     1,
-		Default: bufSize,
-		Max:     bufSize,
-	})
+	err = ipStack.SetSpoofing(defaultNIC, true)
+	if err != nil {
+		return nil, gonet.TranslateNetstackError(err)
+	}
+	err = ipStack.SetPromiscuousMode(defaultNIC, true)
+	if err != nil {
+		return nil, gonet.TranslateNetstackError(err)
+	}
 	sOpt := tcpip.TCPSACKEnabled(true)
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
 	mOpt := tcpip.TCPModerateReceiveBufferOption(true)
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &mOpt)
+	if runtime.GOOS == "windows" {
+		tcpRecoveryOpt := tcpip.TCPRecovery(0)
+		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRecoveryOpt)
+	}
+	tcpRXBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     tcpRXBufMinSize,
+		Default: tcpRXBufDefSize,
+		Max:     tcpRXBufMaxSize,
+	}
+	err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRXBufOpt)
+	if err != nil {
+		return nil, gonet.TranslateNetstackError(err)
+	}
+	tcpTXBufOpt := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     tcpTXBufMinSize,
+		Default: tcpTXBufDefSize,
+		Max:     tcpTXBufMaxSize,
+	}
+	err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTXBufOpt)
+	if err != nil {
+		return nil, gonet.TranslateNetstackError(err)
+	}
 	return ipStack, nil
 }

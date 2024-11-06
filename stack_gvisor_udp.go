@@ -59,7 +59,9 @@ func rangeIterate(r stack.Range, fn func(*buffer.View))
 func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	pErr := f.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
-		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer), pErr)
+		if pErr != ErrDrop {
+			gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer), pErr)
+		}
 		return false, nil, nil, nil
 	}
 	var sourceNetwork tcpip.NetworkProtocolNumber
@@ -146,4 +148,12 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 
 	route.Stats().UDP.PacketsSent.Increment()
 	return nil
+}
+
+func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer, err error) error {
+	if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
+		return gonet.TranslateNetstackError(gStack.NetworkProtocolInstance(header.IPv4ProtocolNumber).(stack.RejectIPv4WithHandler).SendRejectionError(packet, stack.RejectIPv4WithICMPPortUnreachable, true))
+	} else {
+		return gonet.TranslateNetstackError(gStack.NetworkProtocolInstance(header.IPv6ProtocolNumber).(stack.RejectIPv6WithHandler).SendRejectionError(packet, stack.RejectIPv6WithICMPPortUnreachable, true))
+	}
 }

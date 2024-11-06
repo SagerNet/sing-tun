@@ -224,7 +224,6 @@ func open(name string, vnetHdr bool) (int, error) {
 func (t *NativeTun) configure(tunLink netlink.Link) error {
 	err := netlink.LinkSetMTU(tunLink, int(t.options.MTU))
 	if errors.Is(err, unix.EPERM) {
-		// unprivileged
 		return nil
 	} else if err != nil {
 		return err
@@ -293,16 +292,17 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 }
 
 func (t *NativeTun) Start() error {
+	if t.options.FileDescriptor != 0 {
+		return nil
+	}
+
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return err
 	}
 
 	err = netlink.LinkSetUp(tunLink)
-	if errors.Is(err, unix.EPERM) {
-		// unprivileged
-		return nil
-	} else if err != nil {
+	if err != nil {
 		return err
 	}
 

@@ -2,7 +2,6 @@ package tun
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -357,14 +356,8 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 	} else {
 		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
 		if err != nil {
-			if errors.Is(err, ErrDrop) {
+			if err == ErrDrop {
 				return false, nil
-			} else if errors.Is(err, syscall.ENETUNREACH) {
-				return false, s.rejectIPv4WithICMP(ipHdr, header.ICMPv4NetUnreachable)
-			} else if errors.Is(err, syscall.EHOSTUNREACH) {
-				return false, s.rejectIPv4WithICMP(ipHdr, header.ICMPv4HostUnreachable)
-			} else if errors.Is(err, syscall.ECONNREFUSED) {
-				return false, s.rejectIPv4WithICMP(ipHdr, header.ICMPv4PortUnreachable)
 			} else {
 				return false, s.resetIPv4TCP(ipHdr, tcpHdr)
 			}
@@ -450,14 +443,8 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 	} else {
 		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
 		if err != nil {
-			if errors.Is(err, ErrDrop) {
+			if err == ErrDrop {
 				return false, nil
-			} else if errors.Is(err, syscall.ENETUNREACH) {
-				return false, s.rejectIPv6WithICMP(ipHdr, header.ICMPv6NetworkUnreachable)
-			} else if errors.Is(err, syscall.EHOSTUNREACH) {
-				return false, s.rejectIPv6WithICMP(ipHdr, header.ICMPv6AddressUnreachable)
-			} else if errors.Is(err, syscall.ECONNREFUSED) {
-				return false, s.rejectIPv6WithICMP(ipHdr, header.ICMPv6PortUnreachable)
 			} else {
 				return false, s.resetIPv6TCP(ipHdr, tcpHdr)
 			}
@@ -551,23 +538,12 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	pErr := s.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
-		if errors.Is(pErr, ErrDrop) {
-		} else if source.IsIPv4() {
-			ipHdr := userData.(header.IPv4)
-			if errors.Is(pErr, syscall.ENETUNREACH) {
-				s.rejectIPv4WithICMP(ipHdr, header.ICMPv4NetUnreachable)
-			} else if errors.Is(pErr, syscall.EHOSTUNREACH) {
-				s.rejectIPv4WithICMP(ipHdr, header.ICMPv4HostUnreachable)
-			} else {
+		if pErr != ErrDrop {
+			if source.IsIPv4() {
+				ipHdr := userData.(header.IPv4)
 				s.rejectIPv4WithICMP(ipHdr, header.ICMPv4PortUnreachable)
-			}
-		} else {
-			ipHdr := userData.(header.IPv6)
-			if errors.Is(pErr, syscall.ENETUNREACH) {
-				s.rejectIPv6WithICMP(ipHdr, header.ICMPv6NetworkUnreachable)
-			} else if errors.Is(pErr, syscall.EHOSTUNREACH) {
-				s.rejectIPv6WithICMP(ipHdr, header.ICMPv6AddressUnreachable)
 			} else {
+				ipHdr := userData.(header.IPv6)
 				s.rejectIPv6WithICMP(ipHdr, header.ICMPv6PortUnreachable)
 			}
 		}
