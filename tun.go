@@ -89,10 +89,20 @@ func (o *Options) Inet4GatewayAddr() netip.Addr {
 		return o.Inet4Gateway
 	}
 	if len(o.Inet4Address) > 0 {
-		if HasNextAddress(o.Inet4Address[0], 1) {
-			return o.Inet4Address[0].Addr().Next()
-		} else if runtime.GOOS != "linux" {
+		switch runtime.GOOS {
+		case "android":
+		case "linux":
+			if HasNextAddress(o.Inet4Address[0], 1) {
+				return o.Inet4Address[0].Addr().Next()
+			}
+		case "darwin":
 			return o.Inet4Address[0].Addr()
+		default:
+			if HasNextAddress(o.Inet4Address[0], 1) {
+				return o.Inet4Address[0].Addr().Next()
+			} else {
+				return o.Inet4Address[0].Addr()
+			}
 		}
 	}
 	return netip.IPv4Unspecified()
@@ -103,10 +113,20 @@ func (o *Options) Inet6GatewayAddr() netip.Addr {
 		return o.Inet6Gateway
 	}
 	if len(o.Inet6Address) > 0 {
-		if HasNextAddress(o.Inet6Address[0], 1) {
-			return o.Inet6Address[0].Addr().Next()
-		} else if runtime.GOOS != "linux" {
+		switch runtime.GOOS {
+		case "android":
+		case "linux":
+			if HasNextAddress(o.Inet6Address[0], 1) {
+				return o.Inet6Address[0].Addr().Next()
+			}
+		case "darwin":
 			return o.Inet6Address[0].Addr()
+		default:
+			if HasNextAddress(o.Inet6Address[0], 1) {
+				return o.Inet6Address[0].Addr().Next()
+			} else {
+				return o.Inet6Address[0].Addr()
+			}
 		}
 	}
 	return netip.IPv6Unspecified()
