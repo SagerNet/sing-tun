@@ -17,7 +17,6 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/icmp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
-	"github.com/sagernet/gvisor/pkg/waiter"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -81,32 +80,14 @@ func (t *GVisor) Start() error {
 			r.Complete(pErr != ErrDrop)
 			return
 		}
-		var (
-			wq       waiter.Queue
-			endpoint tcpip.Endpoint
-			tErr     tcpip.Error
-		)
-		handshakeCtx, cancel := context.WithCancel(context.Background())
-		go func() {
-			select {
-			case <-t.ctx.Done():
-				wq.Notify(wq.Events())
-			case <-handshakeCtx.Done():
-			}
-		}()
-		endpoint, tErr = r.CreateEndpoint(&wq)
-		cancel()
-		if tErr != nil {
-			r.Complete(true)
-			return
+		conn := &gLazyConn{
+			parentCtx:  t.ctx,
+			stack:      t.stack,
+			request:    r,
+			localAddr:  source.TCPAddr(),
+			remoteAddr: destination.TCPAddr(),
 		}
-		r.Complete(false)
-		endpoint.SocketOptions().SetKeepAlive(true)
-		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveIdle)
-		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveInterval)
-		go t.handler.NewConnectionEx(t.ctx, gonet.NewTCPConn(&wq, endpoint), source, destination, nil)
+		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
 	})
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)

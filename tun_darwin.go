@@ -273,8 +273,9 @@ func (t *NativeTun) setRoutes() error {
 					if err != nil {
 						return E.Cause(err, "re-add route: ", destination)
 					}
+				} else {
+					return E.Cause(err, "add route: ", destination)
 				}
-				return E.Cause(err, "add route: ", destination)
 			}
 		}
 		flushDNSCache()
