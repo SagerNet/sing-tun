@@ -60,7 +60,7 @@ func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M
 	pErr := f.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
 		if pErr != ErrDrop {
-			gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer), pErr)
+			gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer))
 		}
 		return false, nil, nil, nil
 	}
@@ -72,6 +72,7 @@ func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M
 	}
 	writer := &UDPBackWriter{
 		stack:         f.stack,
+		packet:        userData.(*stack.PacketBuffer).IncRef(),
 		source:        AddressFromAddr(source.Addr),
 		sourcePort:    source.Port,
 		sourceNetwork: sourceNetwork,
@@ -82,9 +83,32 @@ func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M
 type UDPBackWriter struct {
 	access        sync.Mutex
 	stack         *stack.Stack
+	packet        *stack.PacketBuffer
 	source        tcpip.Address
 	sourcePort    uint16
 	sourceNetwork tcpip.NetworkProtocolNumber
+}
+
+func (w *UDPBackWriter) HandshakeSuccess() error {
+	w.access.Lock()
+	defer w.access.Unlock()
+	if w.packet != nil {
+		w.packet.DecRef()
+		w.packet = nil
+	}
+	return nil
+}
+
+func (w *UDPBackWriter) HandshakeFailure(err error) error {
+	w.access.Lock()
+	defer w.access.Unlock()
+	if w.packet != nil {
+		wErr := gWriteUnreachable(w.stack, w.packet)
+		w.packet.DecRef()
+		w.packet = nil
+		return wErr
+	}
+	return nil
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {
@@ -150,7 +174,7 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 	return nil
 }
 
-func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer, err error) error {
+func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer) error {
 	if packet.NetworkProtocolNumber == header.IPv4ProtocolNumber {
 		return gonet.TranslateNetstackError(gStack.NetworkProtocolInstance(header.IPv4ProtocolNumber).(stack.RejectIPv4WithHandler).SendRejectionError(packet, stack.RejectIPv4WithICMPPortUnreachable, true))
 	} else {
