@@ -153,7 +153,7 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	s.tcpNat = NewNat(s.ctx, s.udpTimeout)
-	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout)
+	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)
 	return nil
 }
 
