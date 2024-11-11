@@ -1,8 +1,6 @@
 package tun
 
 import (
-	"net/netip"
-
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/x/list"
@@ -31,9 +29,7 @@ type NetworkUpdateMonitor interface {
 type DefaultInterfaceMonitor interface {
 	Start() error
 	Close() error
-	DefaultInterfaceName(destination netip.Addr) string
-	DefaultInterfaceIndex(destination netip.Addr) int
-	DefaultInterface(destination netip.Addr) (string, int)
+	DefaultInterface() *control.Interface
 	OverrideAndroidVPN() bool
 	AndroidVPNEnabled() bool
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]

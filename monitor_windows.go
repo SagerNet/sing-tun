@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
+	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 
@@ -101,16 +102,15 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return ErrNoRoute
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = alias
-	m.defaultInterfaceIndex = index
-
-	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
+	oldInterface := m.defaultInterface.Load()
+	newInterface, err := m.interfaceFinder.ByIndex(index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", alias)
+	}
+	m.defaultInterface.Store(newInterface)
+	if oldInterface != nil && oldInterface.Name == newInterface.Name && oldInterface.Index == newInterface.Index {
 		return nil
 	}
-
 	m.emit(EventInterfaceUpdate)
 	return nil
 }

@@ -51,14 +51,14 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return err
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = link.Attrs().Name
-	m.defaultInterfaceIndex = link.Attrs().Index
-
+	oldInterface := m.defaultInterface.Load()
+	newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", link.Attrs().Name)
+	}
+	m.defaultInterface.Store(newInterface)
 	var event int
-	if oldInterface != m.defaultInterfaceName || oldIndex != m.defaultInterfaceIndex {
+	if oldInterface == nil || oldInterface.Name != newInterface.Name || oldInterface.Index != newInterface.Index {
 		event |= EventInterfaceUpdate
 	}
 	if oldVPNEnabled != m.androidVPNEnabled {
