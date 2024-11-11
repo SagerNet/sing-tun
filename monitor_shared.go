@@ -4,7 +4,6 @@ package tun
 
 import (
 	"errors"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -38,8 +37,7 @@ type defaultInterfaceMonitor struct {
 	interfaceFinder       control.InterfaceFinder
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
-	defaultInterfaceName  string
-	defaultInterfaceIndex int
+	defaultInterface      *control.Interface
 	androidVPNEnabled     bool
 	noRoute               bool
 	networkMonitor        NetworkUpdateMonitor
@@ -56,13 +54,12 @@ func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logg
 		overrideAndroidVPN:    options.OverrideAndroidVPN,
 		underNetworkExtension: options.UnderNetworkExtension,
 		networkMonitor:        networkMonitor,
-		defaultInterfaceIndex: -1,
 		logger:                logger,
 	}, nil
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
-	_ = m.checkUpdate()
+	m.postCheckUpdate()
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
 }
@@ -76,16 +73,11 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 }
 
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
-	err := m.interfaceFinder.Update()
-	if err != nil {
-		m.logger.Error("update interfaces: ", err)
-	}
-	err = m.checkUpdate()
+	err := m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
 		if !m.noRoute {
 			m.noRoute = true
-			m.defaultInterfaceName = ""
-			m.defaultInterfaceIndex = -1
+			m.defaultInterface = nil
 			m.emit(EventNoRoute)
 		}
 	} else if err != nil {
@@ -102,37 +94,8 @@ func (m *defaultInterfaceMonitor) Close() error {
 	return nil
 }
 
-func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) string {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Name
-			}
-		}
-	}
-	return m.defaultInterfaceName
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) int {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Index
-			}
-		}
-	}
-	return m.defaultInterfaceIndex
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (string, int) {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Name, address.Index
-			}
-		}
-	}
-	return m.defaultInterfaceName, m.defaultInterfaceIndex
+func (m *defaultInterfaceMonitor) DefaultInterface() *control.Interface {
+	return m.defaultInterface
 }
 
 func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
