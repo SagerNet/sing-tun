@@ -260,6 +260,9 @@ func (m *Mixed) packetLoop() {
 }
 
 func (m *Mixed) Close() error {
+	if m.stack == nil {
+		return nil
+	}
 	m.endpoint.Attach(nil)
 	m.stack.Close()
 	for _, endpoint := range m.stack.CleanupEndpoints() {
