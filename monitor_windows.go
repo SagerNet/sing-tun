@@ -108,7 +108,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return E.Cause(err, "find updated interface: ", alias)
 	}
 	m.defaultInterface.Store(newInterface)
-	if oldInterface != nil && oldInterface.Name == newInterface.Name && oldInterface.Index == newInterface.Index {
+	if oldInterface != nil && !oldInterface.Equals(*newInterface) {
 		return nil
 	}
 	m.emit(EventInterfaceUpdate)

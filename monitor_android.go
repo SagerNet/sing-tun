@@ -58,7 +58,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	}
 	m.defaultInterface.Store(newInterface)
 	var event int
-	if oldInterface == nil || oldInterface.Name != newInterface.Name || oldInterface.Index != newInterface.Index {
+	if oldInterface == nil || !oldInterface.Equals(*newInterface) {
 		event |= EventInterfaceUpdate
 	}
 	if oldVPNEnabled != m.androidVPNEnabled {
