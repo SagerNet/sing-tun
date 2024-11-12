@@ -16,6 +16,7 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
@@ -881,8 +882,8 @@ func (t *NativeTun) resetRules() error {
 	return t.setRules()
 }
 
-func (t *NativeTun) routeUpdate(event int) {
-	if event&EventAndroidVPNUpdate == 0 {
+func (t *NativeTun) routeUpdate(_ *control.Interface, flags int) {
+	if flags&FlagAndroidVPNUpdate == 0 {
 		return
 	}
 	err := t.resetRules()

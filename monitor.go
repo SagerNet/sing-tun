@@ -10,14 +10,10 @@ var ErrNoRoute = E.New("no route to internet")
 
 type (
 	NetworkUpdateCallback          = func()
-	DefaultInterfaceUpdateCallback = func(event int)
+	DefaultInterfaceUpdateCallback = func(defaultInterface *control.Interface, flags int)
 )
 
-const (
-	EventInterfaceUpdate  = 1
-	EventAndroidVPNUpdate = 2
-	EventNoRoute          = 4
-)
+const FlagAndroidVPNUpdate = 1 << iota
 
 type NetworkUpdateMonitor interface {
 	Start() error

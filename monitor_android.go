@@ -57,16 +57,13 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return E.Cause(err, "find updated interface: ", link.Attrs().Name)
 	}
 	m.defaultInterface.Store(newInterface)
-	var event int
-	if oldInterface == nil || !oldInterface.Equals(*newInterface) {
-		event |= EventInterfaceUpdate
+	if oldInterface != nil && oldInterface.Equals(*newInterface) && oldVPNEnabled == m.androidVPNEnabled {
+		return nil
 	}
+	var flags int
 	if oldVPNEnabled != m.androidVPNEnabled {
-		event |= EventAndroidVPNUpdate
+		flags = FlagAndroidVPNUpdate
 	}
-	if event != 0 {
-		m.emit(event)
-	}
-
+	m.emit(newInterface, flags)
 	return nil
 }

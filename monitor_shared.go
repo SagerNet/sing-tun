@@ -84,7 +84,7 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 		if !m.noRoute {
 			m.noRoute = true
 			m.defaultInterface.Store(nil)
-			m.emit(EventNoRoute)
+			m.emit(nil, 0)
 		}
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
@@ -124,11 +124,11 @@ func (m *defaultInterfaceMonitor) UnregisterCallback(element *list.Element[Defau
 	m.callbacks.Remove(element)
 }
 
-func (m *defaultInterfaceMonitor) emit(event int) {
+func (m *defaultInterfaceMonitor) emit(defaultInterface *control.Interface, flags int) {
 	m.access.Lock()
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		callback(event)
+		callback(defaultInterface, flags)
 	}
 }

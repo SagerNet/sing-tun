@@ -111,6 +111,6 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	if oldInterface != nil && !oldInterface.Equals(*newInterface) {
 		return nil
 	}
-	m.emit(EventInterfaceUpdate)
+	m.emit(newInterface, 0)
 	return nil
 }
