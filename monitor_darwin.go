@@ -107,11 +107,10 @@ func (m *networkUpdateMonitor) Close() error {
 }
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
-	err := m.interfaceFinder.Update()
-	if err != nil {
-		return E.Cause(err, "update interfaces")
-	}
-	var defaultInterface *control.Interface
+	var (
+		defaultInterface *control.Interface
+		err              error
+	)
 	if m.underNetworkExtension {
 		defaultInterface, err = m.getDefaultInterfaceBySocket()
 		if err != nil {

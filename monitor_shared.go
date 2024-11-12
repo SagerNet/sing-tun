@@ -74,7 +74,12 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 }
 
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
-	err := m.checkUpdate()
+	err := m.interfaceFinder.Update()
+	if err != nil {
+		m.logger.Error("update interface: ", err)
+		return
+	}
+	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
 		if !m.noRoute {
 			m.noRoute = true
