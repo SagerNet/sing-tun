@@ -97,6 +97,9 @@ func (t *GVisor) Start() error {
 }
 
 func (t *GVisor) Close() error {
+	if t.stack == nil {
+		return nil
+	}
 	t.endpoint.Attach(nil)
 	t.stack.Close()
 	for _, endpoint := range t.stack.CleanupEndpoints() {
