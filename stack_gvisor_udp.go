@@ -102,13 +102,13 @@ func (w *UDPBackWriter) HandshakeSuccess() error {
 func (w *UDPBackWriter) HandshakeFailure(err error) error {
 	w.access.Lock()
 	defer w.access.Unlock()
-	if w.packet != nil {
-		wErr := gWriteUnreachable(w.stack, w.packet)
-		w.packet.DecRef()
-		w.packet = nil
-		return wErr
+	if w.packet == nil {
+		return os.ErrInvalid
 	}
-	return nil
+	wErr := gWriteUnreachable(w.stack, w.packet)
+	w.packet.DecRef()
+	w.packet = nil
+	return wErr
 }
 
 func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Socksaddr) error {

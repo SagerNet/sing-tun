@@ -5,6 +5,7 @@ package tun
 import (
 	"context"
 	"net"
+	"os"
 	"time"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -64,7 +65,7 @@ func (c *gLazyConn) HandshakeContext(ctx context.Context) error {
 
 func (c *gLazyConn) HandshakeFailure(err error) error {
 	if c.handshakeDone {
-		return nil
+		return os.ErrInvalid
 	}
 	c.request.Complete(err != ErrDrop)
 	c.handshakeDone = true
