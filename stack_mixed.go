@@ -38,7 +38,7 @@ func (m *Mixed) Start() error {
 		return err
 	}
 	endpoint := channel.New(1024, uint32(m.mtu), "")
-	ipStack, err := newGVisorStack(endpoint)
+	ipStack, err := NewGVisorStack(endpoint)
 	if err != nil {
 		return err
 	}
@@ -151,10 +151,10 @@ func (m *Mixed) processPacket(packet []byte) bool {
 		writeBack bool
 		err       error
 	)
-	switch ipVersion := packet[0] >> 4; ipVersion {
-	case 4:
+	switch ipVersion := header.IPVersion(packet); ipVersion {
+	case header.IPv4Version:
 		writeBack, err = m.processIPv4(packet)
-	case 6:
+	case header.IPv6Version:
 		writeBack, err = m.processIPv6(packet)
 	default:
 		err = E.New("ip: unknown version: ", ipVersion)
