@@ -419,7 +419,7 @@ func (s *System) resetIPv4TCP(origIPHdr header.IPv4, origTCPHdr header.TCP) erro
 	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	if PacketOffset > 0 {
-		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)
 	} else {
 		newPacket.Advance(-s.frontHeadroom)
 	}
@@ -502,7 +502,7 @@ func (s *System) resetIPv6TCP(origIPHdr header.IPv6, origTCPHdr header.TCP) erro
 		tcpHdr.SetChecksum(^tcpHdr.CalculateChecksum(header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), header.TCPMinimumSize)))
 	}
 	if PacketOffset > 0 {
-		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET6
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv6Version)
 	} else {
 		newPacket.Advance(-s.frontHeadroom)
 	}
@@ -684,7 +684,7 @@ func (s *System) rejectIPv6WithICMP(ipHdr header.IPv6, code header.ICMPv6Code) e
 	}))
 	copy(icmpHdr.Payload(), payload)
 	if PacketOffset > 0 {
-		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET6
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv6Version)
 	} else {
 		newPacket.Advance(-s.frontHeadroom)
 	}
@@ -724,7 +724,7 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	if PacketOffset > 0 {
-		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)
 	} else {
 		newPacket.Advance(-w.frontHeadroom)
 	}
@@ -763,7 +763,7 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 		udpHdr.SetChecksum(0)
 	}
 	if PacketOffset > 0 {
-		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET6
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv6Version)
 	} else {
 		newPacket.Advance(-w.frontHeadroom)
 	}

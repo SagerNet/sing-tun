@@ -3,6 +3,7 @@ package tun
 import (
 	"errors"
 	"fmt"
+	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"net"
 	"net/netip"
 	"os"
@@ -96,9 +97,10 @@ var (
 
 func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 	var packetHeader []byte
-	if buffers[0].Byte(0)>>4 == 4 {
+	switch header.IPVersion(buffers[0].Bytes()) {
+	case header.IPv4Version:
 		packetHeader = packetHeader4[:]
-	} else {
+	case header.IPv6Version:
 		packetHeader = packetHeader6[:]
 	}
 	return t.tunWriter.WriteVectorised(append([]*buf.Buffer{buf.As(packetHeader)}, buffers...))
@@ -250,6 +252,7 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 
 func (t *NativeTun) setRoutes() error {
 	if t.options.AutoRoute && t.options.FileDescriptor == 0 {
+
 		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
@@ -262,14 +265,22 @@ func (t *NativeTun) setRoutes() error {
 			} else {
 				gateway = gateway6
 			}
-			err = execRoute(unix.RTM_ADD, destination, gateway)
+			var interfaceIndex int
+			if t.options.InterfaceScope {
+				iff, err := t.options.InterfaceFinder.ByName(t.options.Name)
+				if err != nil {
+					return err
+				}
+				interfaceIndex = iff.Index
+			}
+			err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
 			if err != nil {
 				if errors.Is(err, unix.EEXIST) {
-					err = execRoute(unix.RTM_DELETE, destination, gateway)
+					err = execRoute(unix.RTM_DELETE, false, 0, destination, gateway)
 					if err != nil {
 						return E.Cause(err, "remove existing route: ", destination)
 					}
-					err = execRoute(unix.RTM_ADD, destination, gateway)
+					err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
 					if err != nil {
 						return E.Cause(err, "re-add route: ", destination)
 					}
@@ -300,7 +311,7 @@ func (t *NativeTun) unsetRoutes() error {
 		} else {
 			gateway = gateway6
 		}
-		err = execRoute(unix.RTM_DELETE, destination, gateway)
+		err = execRoute(unix.RTM_DELETE, false, 0, destination, gateway)
 		if err != nil {
 			err = E.Errors(err, E.Cause(err, "delete route: ", destination))
 		}
@@ -317,7 +328,7 @@ func useSocket(domain, typ, proto int, block func(socketFd int) error) error {
 	return block(socketFd)
 }
 
-func execRoute(rtmType int, destination netip.Prefix, gateway netip.Addr) error {
+func execRoute(rtmType int, interfaceScope bool, interfaceIndex int, destination netip.Prefix, gateway netip.Addr) error {
 	routeMessage := route.RouteMessage{
 		Type:    rtmType,
 		Version: unix.RTM_VERSION,
@@ -326,6 +337,10 @@ func execRoute(rtmType int, destination netip.Prefix, gateway netip.Addr) error 
 	}
 	if rtmType == unix.RTM_ADD {
 		routeMessage.Flags |= unix.RTF_UP
+		if interfaceScope {
+			routeMessage.Flags |= unix.RTF_IFSCOPE
+			routeMessage.Index = interfaceIndex
+		}
 	}
 	if gateway.Is4() {
 		routeMessage.Addrs = []route.Addr{

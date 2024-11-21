@@ -19,13 +19,11 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 const WithGVisor = true
 
-const defaultNIC tcpip.NICID = 1
+const DefaultNIC tcpip.NICID = 1
 
 type GVisor struct {
 	ctx           context.Context
@@ -68,28 +66,11 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
-	ipStack, err := newGVisorStack(linkEndpoint)
+	ipStack, err := NewGVisorStack(linkEndpoint)
 	if err != nil {
 		return err
 	}
-	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
-		source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
-		destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-		pErr := t.handler.PrepareConnection(N.NetworkTCP, source, destination)
-		if pErr != nil {
-			r.Complete(pErr != ErrDrop)
-			return
-		}
-		conn := &gLazyConn{
-			parentCtx:  t.ctx,
-			stack:      t.stack,
-			request:    r,
-			localAddr:  source.TCPAddr(),
-			remoteAddr: destination.TCPAddr(),
-		}
-		go t.handler.NewConnectionEx(t.ctx, conn, source, destination, nil)
-	})
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarder(t.ctx, ipStack, t.handler).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
@@ -124,7 +105,7 @@ func AddrFromAddress(address tcpip.Address) netip.Addr {
 	}
 }
 
-func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
+func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -137,19 +118,19 @@ func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 			icmp.NewProtocol6,
 		},
 	})
-	err := ipStack.CreateNIC(defaultNIC, ep)
+	err := ipStack.CreateNIC(DefaultNIC, ep)
 	if err != nil {
 		return nil, gonet.TranslateNetstackError(err)
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
-		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
-		{Destination: header.IPv6EmptySubnet, NIC: defaultNIC},
+		{Destination: header.IPv4EmptySubnet, NIC: DefaultNIC},
+		{Destination: header.IPv6EmptySubnet, NIC: DefaultNIC},
 	})
-	err = ipStack.SetSpoofing(defaultNIC, true)
+	err = ipStack.SetSpoofing(DefaultNIC, true)
 	if err != nil {
 		return nil, gonet.TranslateNetstackError(err)
 	}
-	err = ipStack.SetPromiscuousMode(defaultNIC, true)
+	err = ipStack.SetPromiscuousMode(DefaultNIC, true)
 	if err != nil {
 		return nil, gonet.TranslateNetstackError(err)
 	}

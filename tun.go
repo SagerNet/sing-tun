@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"github.com/sagernet/sing/common/control"
 	"io"
 	"net"
 	"net/netip"
@@ -54,6 +55,7 @@ type Options struct {
 	MTU                      uint32
 	GSO                      bool
 	AutoRoute                bool
+	InterfaceScope           bool
 	Inet4Gateway             netip.Addr
 	Inet6Gateway             netip.Addr
 	DNSServers               []netip.Addr
@@ -74,6 +76,7 @@ type Options struct {
 	IncludeAndroidUser       []int
 	IncludePackage           []string
 	ExcludePackage           []string
+	InterfaceFinder          control.InterfaceFinder
 	InterfaceMonitor         DefaultInterfaceMonitor
 	FileDescriptor           int
 	Logger                   logger.Logger
