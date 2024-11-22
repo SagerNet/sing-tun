@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -35,13 +36,15 @@ type NativeTun struct {
 	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
 	options           Options
 	ruleIndex6        []int
-	gsoEnabled        bool
-	gsoBuffer         []byte
+	readAccess        sync.Mutex
+	writeAccess       sync.Mutex
+	vnetHdr           bool
+	writeBuffer       []byte
 	gsoToWrite        []int
-	gsoReadAccess     sync.Mutex
-	tcpGROAccess      sync.Mutex
-	tcp4GROTable      *tcpGROTable
-	tcp6GROTable      *tcpGROTable
+	tcpGROTable       *tcpGROTable
+	udpGroAccess      sync.Mutex
+	udpGROTable       *udpGROTable
+	gro               groDisablementFlags
 	txChecksumOffload bool
 }
 
@@ -81,20 +84,23 @@ func New(options Options) (Tun, error) {
 }
 
 func (t *NativeTun) FrontHeadroom() int {
-	if t.gsoEnabled {
+	if t.vnetHdr {
 		return virtioNetHdrLen
 	}
 	return 0
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	if t.gsoEnabled {
-		n, err = t.tunFile.Read(t.gsoBuffer)
+	if t.vnetHdr {
+		n, err = t.tunFile.Read(t.writeBuffer)
 		if err != nil {
+			if errors.Is(err, syscall.EBADFD) {
+				err = os.ErrClosed
+			}
 			return
 		}
 		var sizes [1]int
-		n, err = handleVirtioRead(t.gsoBuffer[:n], [][]byte{p}, sizes[:], 0)
+		n, err = handleVirtioRead(t.writeBuffer[:n], [][]byte{p}, sizes[:], 0)
 		if err != nil {
 			return
 		}
@@ -108,9 +114,50 @@ func (t *NativeTun) Read(p []byte) (n int, err error) {
 	}
 }
 
+// handleVirtioRead splits in into bufs, leaving offset bytes at the front of
+// each buffer. It mutates sizes to reflect the size of each element of bufs,
+// and returns the number of packets read.
+func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, error) {
+	var hdr virtioNetHdr
+	err := hdr.decode(in)
+	if err != nil {
+		return 0, err
+	}
+	in = in[virtioNetHdrLen:]
+
+	options, err := hdr.toGSOOptions()
+	if err != nil {
+		return 0, err
+	}
+
+	// Don't trust HdrLen from the kernel as it can be equal to the length
+	// of the entire first packet when the kernel is handling it as part of a
+	// FORWARD path. Instead, parse the transport header length and add it onto
+	// CsumStart, which is synonymous for IP header length.
+	if options.GSOType == GSOUDPL4 {
+		options.HdrLen = options.CsumStart + 8
+	} else if options.GSOType != GSONone {
+		if len(in) <= int(options.CsumStart+12) {
+			return 0, errors.New("packet is too short")
+		}
+
+		tcpHLen := uint16(in[options.CsumStart+12] >> 4 * 4)
+		if tcpHLen < 20 || tcpHLen > 60 {
+			// A TCP header must be between 20 and 60 bytes in length.
+			return 0, fmt.Errorf("tcp header len is invalid: %d", tcpHLen)
+		}
+		options.HdrLen = options.CsumStart + tcpHLen
+	}
+
+	return GSOSplit(in, options, bufs, sizes, offset)
+}
+
 func (t *NativeTun) Write(p []byte) (n int, err error) {
-	if t.gsoEnabled {
-		err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
+	if t.vnetHdr {
+		buffer := buf.Get(virtioNetHdrLen + len(p))
+		copy(buffer[virtioNetHdrLen:], p)
+		_, err = t.BatchWrite([][]byte{buffer}, virtioNetHdrLen)
+		buf.Put(buffer)
 		if err != nil {
 			return
 		}
@@ -121,7 +168,7 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 }
 
 func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	if t.gsoEnabled {
+	if t.vnetHdr {
 		n := buf.LenMulti(buffers)
 		buffer := buf.NewSize(virtioNetHdrLen + n)
 		buffer.Truncate(virtioNetHdrLen)
@@ -135,7 +182,7 @@ func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 }
 
 func (t *NativeTun) BatchSize() int {
-	if !t.gsoEnabled {
+	if !t.vnetHdr {
 		return 1
 	}
 	/* // Not works on some devices: https://github.com/SagerNet/sing-box/issues/1605
@@ -147,36 +194,67 @@ func (t *NativeTun) BatchSize() int {
 	return idealBatchSize
 }
 
+// DisableUDPGRO disables UDP GRO if it is enabled. See the GRODevice interface
+// for cases where it should be called.
+func (t *NativeTun) DisableUDPGRO() {
+	t.writeAccess.Lock()
+	t.gro.disableUDPGRO()
+	t.writeAccess.Unlock()
+}
+
+// DisableTCPGRO disables TCP GRO if it is enabled. See the GRODevice interface
+// for cases where it should be called.
+func (t *NativeTun) DisableTCPGRO() {
+	t.writeAccess.Lock()
+	t.gro.disableTCPGRO()
+	t.writeAccess.Unlock()
+}
+
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
-	t.gsoReadAccess.Lock()
-	defer t.gsoReadAccess.Unlock()
-	n, err = t.tunFile.Read(t.gsoBuffer)
+	t.readAccess.Lock()
+	defer t.readAccess.Unlock()
+	n, err = t.tunFile.Read(t.writeBuffer)
 	if err != nil {
 		return
 	}
-	return handleVirtioRead(t.gsoBuffer[:n], buffers, readN, offset)
+	return handleVirtioRead(t.writeBuffer[:n], buffers, readN, offset)
 }
 
-func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) error {
-	t.tcpGROAccess.Lock()
+func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) (int, error) {
+	t.writeAccess.Lock()
 	defer func() {
-		t.tcp4GROTable.reset()
-		t.tcp6GROTable.reset()
-		t.tcpGROAccess.Unlock()
+		t.tcpGROTable.reset()
+		t.udpGROTable.reset()
+		t.writeAccess.Unlock()
 	}()
+	var (
+		errs  error
+		total int
+	)
 	t.gsoToWrite = t.gsoToWrite[:0]
-	err := handleGRO(buffers, offset, t.tcp4GROTable, t.tcp6GROTable, &t.gsoToWrite)
-	if err != nil {
-		return err
-	}
-	offset -= virtioNetHdrLen
-	for _, bufferIndex := range t.gsoToWrite {
-		_, err = t.tunFile.Write(buffers[bufferIndex][offset:])
+	if t.vnetHdr {
+		err := handleGRO(buffers, offset, t.tcpGROTable, t.udpGROTable, t.gro, &t.gsoToWrite)
 		if err != nil {
-			return err
+			return 0, err
+		}
+		offset -= virtioNetHdrLen
+	} else {
+		for i := range buffers {
+			t.gsoToWrite = append(t.gsoToWrite, i)
 		}
 	}
-	return nil
+	for _, toWrite := range t.gsoToWrite {
+		n, err := t.tunFile.Write(buffers[toWrite][offset:])
+		if errors.Is(err, syscall.EBADFD) {
+			return total, os.ErrClosed
+		}
+		if err != nil {
+			errs = errors.Join(errs, err)
+		} else {
+			total += n
+		}
+	}
+	return total, errs
 }
 
 var controlPath string
@@ -262,10 +340,14 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		if err != nil {
 			return err
 		}
-		t.gsoEnabled = true
-		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
-		t.tcp4GROTable = newTCPGROTable()
-		t.tcp6GROTable = newTCPGROTable()
+		t.vnetHdr = true
+		t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
+		t.tcpGROTable = newTCPGROTable()
+		t.udpGROTable = newUDPGROTable()
+		err = setUDPOffload(t.tunFd)
+		if err != nil {
+			t.gro.disableUDPGRO()
+		}
 	}
 
 	var rxChecksumOffload bool
@@ -280,7 +362,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		if err != nil {
 			return err
 		}
-		if err == nil && !txChecksumOffload {
+		if !txChecksumOffload {
 			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
 			if err != nil {
 				return err

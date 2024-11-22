@@ -244,7 +244,7 @@ func (s *System) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 			}
 		}
 		if len(writeBuffers) > 0 {
-			err = linuxTUN.BatchWrite(writeBuffers, s.frontHeadroom)
+			_, err = linuxTUN.BatchWrite(writeBuffers, s.frontHeadroom)
 			if err != nil {
 				s.logger.Trace(E.Cause(err, "batch write packet"))
 			}
