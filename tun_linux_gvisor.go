@@ -10,7 +10,7 @@ import (
 var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	if t.gsoEnabled {
+	if t.vnetHdr {
 		return fdbased.New(&fdbased.Options{
 			FDs:               []int{t.tunFd},
 			MTU:               t.options.MTU,

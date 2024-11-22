@@ -12,6 +12,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	// TODO: support TSO with ECN bits
+	tunTCPOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
+	tunUDPOffloads = unix.TUN_F_USO4 | unix.TUN_F_USO6
+)
+
 func checkVNETHDREnabled(fd int, name string) (bool, error) {
 	ifr, err := unix.NewIfreq(name)
 	if err != nil {
@@ -25,15 +31,15 @@ func checkVNETHDREnabled(fd int, name string) (bool, error) {
 }
 
 func setTCPOffload(fd int) error {
-	const (
-		// TODO: support TSO with ECN bits
-		tunOffloads = unix.TUN_F_CSUM | unix.TUN_F_TSO4 | unix.TUN_F_TSO6
-	)
-	err := unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunOffloads)
+	err := unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunTCPOffloads)
 	if err != nil {
 		return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
 	}
 	return nil
+}
+
+func setUDPOffload(fd int) error {
+	return unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunTCPOffloads|tunUDPOffloads)
 }
 
 type ifreqData struct {

@@ -3,13 +3,13 @@ package tun
 import (
 	"errors"
 	"fmt"
-	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"net"
 	"net/netip"
 	"os"
 	"syscall"
 	"unsafe"
 
+	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
