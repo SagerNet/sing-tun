@@ -30,34 +30,6 @@ func Put(b []byte, xsum uint16) {
 	binary.BigEndian.PutUint16(b, xsum)
 }
 
-// Checksum calculates the checksum (as defined in RFC 1071) of the bytes in the
-// given byte array. This function uses an optimized version of the checksum
-// algorithm.
-//
-// The initial checksum must have been computed on an even number of bytes.
-func Checksum(buf []byte, initial uint16) uint16 {
-	s, _ := calculateChecksum(buf, false, initial)
-	return s
-}
-
-// Checksumer calculates checksum defined in RFC 1071.
-type Checksumer struct {
-	sum uint16
-	odd bool
-}
-
-// Add adds b to checksum.
-func (c *Checksumer) Add(b []byte) {
-	if len(b) > 0 {
-		c.sum, c.odd = calculateChecksum(b, c.odd, c.sum)
-	}
-}
-
-// Checksum returns the latest checksum value.
-func (c *Checksumer) Checksum() uint16 {
-	return c.sum
-}
-
 // Combine combines the two uint16 to form their checksum. This is done
 // by adding them and the carry.
 //
