@@ -15,6 +15,7 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
 			FDs:               []int{t.tunFd},
 			MTU:               t.options.MTU,
 			GSOMaxSize:        gsoMaxSize,
+			GRO:               true,
 			RXChecksumOffload: true,
 			TXChecksumOffload: t.txChecksumOffload,
 		})

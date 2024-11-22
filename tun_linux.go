@@ -328,25 +328,9 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	}
 
 	if t.options.GSO {
-		var vnetHdrEnabled bool
-		vnetHdrEnabled, err = checkVNETHDREnabled(t.tunFd, t.options.Name)
+		err = t.enableGSO()
 		if err != nil {
-			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
-		}
-		if !vnetHdrEnabled {
-			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
-		}
-		err = setTCPOffload(t.tunFd)
-		if err != nil {
-			return err
-		}
-		t.vnetHdr = true
-		t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
-		t.tcpGROTable = newTCPGROTable()
-		t.udpGROTable = newUDPGROTable()
-		err = setUDPOffload(t.tunFd)
-		if err != nil {
-			t.gro.disableUDPGRO()
+			t.options.Logger.Warn(err)
 		}
 	}
 
@@ -371,6 +355,30 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		t.txChecksumOffload = true
 	}
 
+	return nil
+}
+
+func (t *NativeTun) enableGSO() error {
+	vnetHdrEnabled, err := checkVNETHDREnabled(t.tunFd, t.options.Name)
+	if err != nil {
+		return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+	}
+	if !vnetHdrEnabled {
+		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
+	}
+	err = setTCPOffload(t.tunFd)
+	if err != nil {
+		return E.Cause(err, "enable TCP offload")
+	}
+	t.vnetHdr = true
+	t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
+	t.tcpGROTable = newTCPGROTable()
+	t.udpGROTable = newUDPGROTable()
+	err = setUDPOffload(t.tunFd)
+	if err != nil {
+		t.gro.disableUDPGRO()
+		return E.Cause(err, "enable UDP offload")
+	}
 	return nil
 }
 
