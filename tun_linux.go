@@ -14,6 +14,8 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/netlink"
+	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -194,20 +196,44 @@ func (t *NativeTun) BatchSize() int {
 	return idealBatchSize
 }
 
-// DisableUDPGRO disables UDP GRO if it is enabled. See the GRODevice interface
-// for cases where it should be called.
-func (t *NativeTun) DisableUDPGRO() {
-	t.writeAccess.Lock()
-	t.gro.disableUDPGRO()
-	t.writeAccess.Unlock()
-}
-
-// DisableTCPGRO disables TCP GRO if it is enabled. See the GRODevice interface
-// for cases where it should be called.
-func (t *NativeTun) DisableTCPGRO() {
-	t.writeAccess.Lock()
-	t.gro.disableTCPGRO()
-	t.writeAccess.Unlock()
+func (t *NativeTun) probeTCPGRO() error {
+	ipPort := netip.AddrPortFrom(t.options.Inet4Address[0].Addr(), 0)
+	fingerprint := []byte("sing-tun-probe-tun-gro")
+	segmentSize := len(fingerprint)
+	iphLen := 20
+	tcphLen := 20
+	totalLen := iphLen + tcphLen + segmentSize
+	bufs := make([][]byte, 2)
+	for i := range bufs {
+		bufs[i] = make([]byte, virtioNetHdrLen+totalLen, virtioNetHdrLen+(totalLen*2))
+		ipv4H := header.IPv4(bufs[i][virtioNetHdrLen:])
+		ipv4H.Encode(&header.IPv4Fields{
+			SrcAddr:  ipPort.Addr(),
+			DstAddr:  ipPort.Addr(),
+			Protocol: unix.IPPROTO_TCP,
+			// Use a zero value TTL as best effort means to reduce chance of
+			// probe packet leaking further than it needs to.
+			TTL:         0,
+			TotalLength: uint16(totalLen),
+		})
+		tcpH := header.TCP(bufs[i][virtioNetHdrLen+iphLen:])
+		tcpH.Encode(&header.TCPFields{
+			SrcPort:    ipPort.Port(),
+			DstPort:    ipPort.Port(),
+			SeqNum:     1 + uint32(i*segmentSize),
+			AckNum:     1,
+			DataOffset: 20,
+			Flags:      header.TCPFlagAck,
+			WindowSize: 3000,
+		})
+		copy(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], fingerprint)
+		ipv4H.SetChecksum(^ipv4H.CalculateChecksum())
+		pseudoCsum := header.PseudoHeaderChecksum(unix.IPPROTO_TCP, ipv4H.SourceAddressSlice(), ipv4H.DestinationAddressSlice(), uint16(tcphLen+segmentSize))
+		pseudoCsum = checksum.Checksum(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], pseudoCsum)
+		tcpH.SetChecksum(^tcpH.CalculateChecksum(pseudoCsum))
+	}
+	_, err := t.BatchWrite(bufs, virtioNetHdrLen)
+	return err
 }
 
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
@@ -395,6 +421,15 @@ func (t *NativeTun) Start() error {
 	err = netlink.LinkSetUp(tunLink)
 	if err != nil {
 		return err
+	}
+
+	if t.vnetHdr && len(t.options.Inet4Address) > 0 {
+		err = t.probeTCPGRO()
+		if err != nil {
+			t.gro.disableTCPGRO()
+			t.gro.disableUDPGRO()
+			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+		}
 	}
 
 	if t.options.IPRoute2TableIndex == 0 {

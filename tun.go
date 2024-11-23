@@ -40,8 +40,6 @@ type LinuxTUN interface {
 	BatchSize() int
 	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
 	BatchWrite(buffers [][]byte, offset int) (n int, err error)
-	DisableUDPGRO()
-	DisableTCPGRO()
 	TXChecksumOffload() bool
 }
 
