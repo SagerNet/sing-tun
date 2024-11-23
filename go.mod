@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/sagernet/fswatch v0.1.1
-	github.com/sagernet/gvisor v0.0.0-20241021032506-a4324256e4a3
+	github.com/sagernet/gvisor v0.0.0-20241123041152-536d05261cff
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/sagernet/nftables v0.3.0-beta.4
 	github.com/sagernet/sing v0.5.1
