@@ -34,6 +34,7 @@ type GVisor struct {
 	logger        logger.Logger
 	stack         *stack.Stack
 	endpoint      stack.LinkEndpoint
+	udpForwarder  *UDPForwarder
 }
 
 type GVisorTun interface {
@@ -71,9 +72,11 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarder(t.ctx, ipStack, t.handler).HandlePacket)
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
+	udpForwarder := NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout)
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
+	t.udpForwarder = udpForwarder
 	return nil
 }
 
@@ -86,6 +89,7 @@ func (t *GVisor) Close() error {
 	for _, endpoint := range t.stack.CleanupEndpoints() {
 		endpoint.Abort()
 	}
+	t.udpForwarder.Close()
 	return nil
 }
 

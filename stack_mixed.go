@@ -16,8 +16,9 @@ import (
 
 type Mixed struct {
 	*System
-	stack    *stack.Stack
-	endpoint *channel.Endpoint
+	stack        *stack.Stack
+	endpoint     *channel.Endpoint
+	udpForwarder *UDPForwarder
 }
 
 func NewMixed(
@@ -42,12 +43,27 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
+	udpForwarder := NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout)
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
+	m.udpForwarder = udpForwarder
 	go m.tunLoop()
 	go m.packetLoop()
 	return nil
+}
+
+func (m *Mixed) Close() error {
+	if m.stack == nil {
+		return nil
+	}
+	m.endpoint.Attach(nil)
+	m.stack.Close()
+	for _, endpoint := range m.stack.CleanupEndpoints() {
+		endpoint.Abort()
+	}
+	m.udpNat.Close()
+	return m.System.Close()
 }
 
 func (m *Mixed) tunLoop() {
@@ -221,16 +237,4 @@ func (m *Mixed) packetLoop() {
 		bufio.WriteVectorised(m.tun, packet.AsSlices())
 		packet.DecRef()
 	}
-}
-
-func (m *Mixed) Close() error {
-	if m.stack == nil {
-		return nil
-	}
-	m.endpoint.Attach(nil)
-	m.stack.Close()
-	for _, endpoint := range m.stack.CleanupEndpoints() {
-		endpoint.Abort()
-	}
-	return m.System.Close()
 }
