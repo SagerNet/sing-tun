@@ -37,8 +37,14 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, t
 		stack:   stack,
 		handler: handler,
 	}
-	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout, true)
+	udpNat := udpnat.New(handler, forwarder.PreparePacketConnection, timeout, true)
+	udpNat.Start()
+	forwarder.udpNat = udpNat
 	return forwarder
+}
+
+func (f *UDPForwarder) Close() error {
+	return f.udpNat.Close()
 }
 
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
