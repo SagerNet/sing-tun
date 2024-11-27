@@ -20,6 +20,7 @@ func fixWindowsFirewall() error {
 		ApplicationName: absPath,
 		Enabled:         true,
 		Protocol:        winfw.NET_FW_IP_PROTOCOL_TCP,
+		Profiles:        winfw.NET_FW_PROFILE2_PRIVATE,
 		Direction:       winfw.NET_FW_RULE_DIR_IN,
 		Action:          winfw.NET_FW_ACTION_ALLOW,
 	}
