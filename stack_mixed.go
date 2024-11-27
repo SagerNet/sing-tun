@@ -16,9 +16,8 @@ import (
 
 type Mixed struct {
 	*System
-	stack        *stack.Stack
-	endpoint     *channel.Endpoint
-	udpForwarder *UDPForwarder
+	stack    *stack.Stack
+	endpoint *channel.Endpoint
 }
 
 func NewMixed(
@@ -43,11 +42,9 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	udpForwarder := NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout)
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
-	m.udpForwarder = udpForwarder
 	go m.tunLoop()
 	go m.packetLoop()
 	return nil
@@ -62,7 +59,6 @@ func (m *Mixed) Close() error {
 	for _, endpoint := range m.stack.CleanupEndpoints() {
 		endpoint.Abort()
 	}
-	m.udpNat.Close()
 	return m.System.Close()
 }
 
