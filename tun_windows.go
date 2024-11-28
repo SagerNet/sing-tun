@@ -148,6 +148,10 @@ func (t *NativeTun) configure() error {
 	return nil
 }
 
+func (t *NativeTun) Name() (string, error) {
+	return t.options.Name, nil
+}
+
 func (t *NativeTun) Start() error {
 	if !t.options.AutoRoute {
 		return nil

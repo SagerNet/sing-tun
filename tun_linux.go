@@ -85,11 +85,245 @@ func New(options Options) (Tun, error) {
 	return nativeTun, nil
 }
 
-func (t *NativeTun) FrontHeadroom() int {
-	if t.vnetHdr {
-		return virtioNetHdrLen
+var controlPath string
+
+func init() {
+	const defaultTunPath = "/dev/net/tun"
+	const androidTunPath = "/dev/tun"
+	if rw.IsFile(androidTunPath) {
+		controlPath = androidTunPath
+	} else {
+		controlPath = defaultTunPath
 	}
-	return 0
+}
+
+func open(name string, vnetHdr bool) (int, error) {
+	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
+	if err != nil {
+		return -1, err
+	}
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		unix.Close(fd)
+		return 0, err
+	}
+	flags := unix.IFF_TUN | unix.IFF_NO_PI
+	if vnetHdr {
+		flags |= unix.IFF_VNET_HDR
+	}
+	ifr.SetUint16(uint16(flags))
+	err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
+	if err != nil {
+		unix.Close(fd)
+		return 0, err
+	}
+	err = unix.SetNonblock(fd, true)
+	if err != nil {
+		unix.Close(fd)
+		return 0, err
+	}
+	return fd, nil
+}
+
+func (t *NativeTun) configure(tunLink netlink.Link) error {
+	err := netlink.LinkSetMTU(tunLink, int(t.options.MTU))
+	if errors.Is(err, unix.EPERM) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	if len(t.options.Inet4Address) > 0 {
+		for _, address := range t.options.Inet4Address {
+			addr4, _ := netlink.ParseAddr(address.String())
+			err = netlink.AddrAdd(tunLink, addr4)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if len(t.options.Inet6Address) > 0 {
+		for _, address := range t.options.Inet6Address {
+			addr6, _ := netlink.ParseAddr(address.String())
+			err = netlink.AddrAdd(tunLink, addr6)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if t.options.GSO {
+		err = t.enableGSO()
+		if err != nil {
+			t.options.Logger.Warn(err)
+		}
+	}
+
+	var rxChecksumOffload bool
+	rxChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GRXCSUM)
+	if err == nil && !rxChecksumOffload {
+		_ = setChecksumOffload(t.options.Name, unix.ETHTOOL_SRXCSUM)
+	}
+
+	if t.options._TXChecksumOffload {
+		var txChecksumOffload bool
+		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
+		if err != nil {
+			return err
+		}
+		if !txChecksumOffload {
+			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
+			if err != nil {
+				return err
+			}
+		}
+		t.txChecksumOffload = true
+	}
+
+	return nil
+}
+
+func (t *NativeTun) enableGSO() error {
+	vnetHdrEnabled, err := checkVNETHDREnabled(t.tunFd, t.options.Name)
+	if err != nil {
+		return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+	}
+	if !vnetHdrEnabled {
+		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
+	}
+	err = setTCPOffload(t.tunFd)
+	if err != nil {
+		return E.Cause(err, "enable TCP offload")
+	}
+	t.vnetHdr = true
+	t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
+	t.tcpGROTable = newTCPGROTable()
+	t.udpGROTable = newUDPGROTable()
+	err = setUDPOffload(t.tunFd)
+	if err != nil {
+		t.gro.disableUDPGRO()
+		return E.Cause(err, "enable UDP offload")
+	}
+	return nil
+}
+
+func (t *NativeTun) probeTCPGRO() error {
+	ipPort := netip.AddrPortFrom(t.options.Inet4Address[0].Addr(), 0)
+	fingerprint := []byte("sing-tun-probe-tun-gro")
+	segmentSize := len(fingerprint)
+	iphLen := 20
+	tcphLen := 20
+	totalLen := iphLen + tcphLen + segmentSize
+	bufs := make([][]byte, 2)
+	for i := range bufs {
+		bufs[i] = make([]byte, virtioNetHdrLen+totalLen, virtioNetHdrLen+(totalLen*2))
+		ipv4H := header.IPv4(bufs[i][virtioNetHdrLen:])
+		ipv4H.Encode(&header.IPv4Fields{
+			SrcAddr:  ipPort.Addr(),
+			DstAddr:  ipPort.Addr(),
+			Protocol: unix.IPPROTO_TCP,
+			// Use a zero value TTL as best effort means to reduce chance of
+			// probe packet leaking further than it needs to.
+			TTL:         0,
+			TotalLength: uint16(totalLen),
+		})
+		tcpH := header.TCP(bufs[i][virtioNetHdrLen+iphLen:])
+		tcpH.Encode(&header.TCPFields{
+			SrcPort:    ipPort.Port(),
+			DstPort:    ipPort.Port(),
+			SeqNum:     1 + uint32(i*segmentSize),
+			AckNum:     1,
+			DataOffset: 20,
+			Flags:      header.TCPFlagAck,
+			WindowSize: 3000,
+		})
+		copy(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], fingerprint)
+		ipv4H.SetChecksum(^ipv4H.CalculateChecksum())
+		pseudoCsum := header.PseudoHeaderChecksum(unix.IPPROTO_TCP, ipv4H.SourceAddressSlice(), ipv4H.DestinationAddressSlice(), uint16(tcphLen+segmentSize))
+		pseudoCsum = checksum.Checksum(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], pseudoCsum)
+		tcpH.SetChecksum(^tcpH.CalculateChecksum(pseudoCsum))
+	}
+	_, err := t.BatchWrite(bufs, virtioNetHdrLen)
+	return err
+}
+
+func (t *NativeTun) Name() (string, error) {
+	var ifr [unix.IFNAMSIZ + 64]byte
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(t.tunFd),
+		uintptr(unix.TUNGETIFF),
+		uintptr(unsafe.Pointer(&ifr[0])),
+	)
+	if errno != 0 {
+		return "", os.NewSyscallError("ioctl TUNGETIFF", errno)
+	}
+	return unix.ByteSliceToString(ifr[:]), nil
+}
+
+func (t *NativeTun) Start() error {
+	if t.options.FileDescriptor != 0 {
+		return nil
+	}
+
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return err
+	}
+
+	err = netlink.LinkSetUp(tunLink)
+	if err != nil {
+		return err
+	}
+
+	if t.vnetHdr && len(t.options.Inet4Address) > 0 {
+		err = t.probeTCPGRO()
+		if err != nil {
+			t.gro.disableTCPGRO()
+			t.gro.disableUDPGRO()
+			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+		}
+	}
+
+	if t.options.IPRoute2TableIndex == 0 {
+		for {
+			t.options.IPRoute2TableIndex = int(rand.Uint32())
+			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
+			if len(routeList) == 0 || fErr != nil {
+				break
+			}
+		}
+	}
+
+	err = t.setRoute(tunLink)
+	if err != nil {
+		_ = t.unsetRoute0(tunLink)
+		return err
+	}
+
+	err = t.unsetRules()
+	if err != nil {
+		return E.Cause(err, "cleanup rules")
+	}
+	err = t.setRules()
+	if err != nil {
+		_ = t.unsetRules()
+		return err
+	}
+
+	t.setSearchDomainForSystemdResolved()
+
+	if t.options.AutoRoute && runtime.GOOS == "android" {
+		t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
+	}
+	return nil
+}
+
+func (t *NativeTun) Close() error {
+	if t.interfaceCallback != nil {
+		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
+	}
+	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
@@ -183,6 +417,13 @@ func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 	}
 }
 
+func (t *NativeTun) FrontHeadroom() int {
+	if t.vnetHdr {
+		return virtioNetHdrLen
+	}
+	return 0
+}
+
 func (t *NativeTun) BatchSize() int {
 	if !t.vnetHdr {
 		return 1
@@ -194,46 +435,6 @@ func (t *NativeTun) BatchSize() int {
 	}
 	return batchSize*/
 	return idealBatchSize
-}
-
-func (t *NativeTun) probeTCPGRO() error {
-	ipPort := netip.AddrPortFrom(t.options.Inet4Address[0].Addr(), 0)
-	fingerprint := []byte("sing-tun-probe-tun-gro")
-	segmentSize := len(fingerprint)
-	iphLen := 20
-	tcphLen := 20
-	totalLen := iphLen + tcphLen + segmentSize
-	bufs := make([][]byte, 2)
-	for i := range bufs {
-		bufs[i] = make([]byte, virtioNetHdrLen+totalLen, virtioNetHdrLen+(totalLen*2))
-		ipv4H := header.IPv4(bufs[i][virtioNetHdrLen:])
-		ipv4H.Encode(&header.IPv4Fields{
-			SrcAddr:  ipPort.Addr(),
-			DstAddr:  ipPort.Addr(),
-			Protocol: unix.IPPROTO_TCP,
-			// Use a zero value TTL as best effort means to reduce chance of
-			// probe packet leaking further than it needs to.
-			TTL:         0,
-			TotalLength: uint16(totalLen),
-		})
-		tcpH := header.TCP(bufs[i][virtioNetHdrLen+iphLen:])
-		tcpH.Encode(&header.TCPFields{
-			SrcPort:    ipPort.Port(),
-			DstPort:    ipPort.Port(),
-			SeqNum:     1 + uint32(i*segmentSize),
-			AckNum:     1,
-			DataOffset: 20,
-			Flags:      header.TCPFlagAck,
-			WindowSize: 3000,
-		})
-		copy(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], fingerprint)
-		ipv4H.SetChecksum(^ipv4H.CalculateChecksum())
-		pseudoCsum := header.PseudoHeaderChecksum(unix.IPPROTO_TCP, ipv4H.SourceAddressSlice(), ipv4H.DestinationAddressSlice(), uint16(tcphLen+segmentSize))
-		pseudoCsum = checksum.Checksum(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], pseudoCsum)
-		tcpH.SetChecksum(^tcpH.CalculateChecksum(pseudoCsum))
-	}
-	_, err := t.BatchWrite(bufs, virtioNetHdrLen)
-	return err
 }
 
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
@@ -281,196 +482,6 @@ func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) (int, error) {
 		}
 	}
 	return total, errs
-}
-
-var controlPath string
-
-func init() {
-	const defaultTunPath = "/dev/net/tun"
-	const androidTunPath = "/dev/tun"
-	if rw.IsFile(androidTunPath) {
-		controlPath = androidTunPath
-	} else {
-		controlPath = defaultTunPath
-	}
-}
-
-func open(name string, vnetHdr bool) (int, error) {
-	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
-	if err != nil {
-		return -1, err
-	}
-
-	var ifr struct {
-		name  [16]byte
-		flags uint16
-		_     [22]byte
-	}
-
-	copy(ifr.name[:], name)
-	ifr.flags = unix.IFF_TUN | unix.IFF_NO_PI
-	if vnetHdr {
-		ifr.flags |= unix.IFF_VNET_HDR
-	}
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))
-	if errno != 0 {
-		unix.Close(fd)
-		return -1, errno
-	}
-
-	if err = unix.SetNonblock(fd, true); err != nil {
-		unix.Close(fd)
-		return -1, err
-	}
-
-	return fd, nil
-}
-
-func (t *NativeTun) configure(tunLink netlink.Link) error {
-	err := netlink.LinkSetMTU(tunLink, int(t.options.MTU))
-	if errors.Is(err, unix.EPERM) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-
-	if len(t.options.Inet4Address) > 0 {
-		for _, address := range t.options.Inet4Address {
-			addr4, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr4)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if len(t.options.Inet6Address) > 0 {
-		for _, address := range t.options.Inet6Address {
-			addr6, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr6)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	if t.options.GSO {
-		err = t.enableGSO()
-		if err != nil {
-			t.options.Logger.Warn(err)
-		}
-	}
-
-	var rxChecksumOffload bool
-	rxChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GRXCSUM)
-	if err == nil && !rxChecksumOffload {
-		_ = setChecksumOffload(t.options.Name, unix.ETHTOOL_SRXCSUM)
-	}
-
-	if t.options._TXChecksumOffload {
-		var txChecksumOffload bool
-		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
-		if err != nil {
-			return err
-		}
-		if !txChecksumOffload {
-			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
-			if err != nil {
-				return err
-			}
-		}
-		t.txChecksumOffload = true
-	}
-
-	return nil
-}
-
-func (t *NativeTun) enableGSO() error {
-	vnetHdrEnabled, err := checkVNETHDREnabled(t.tunFd, t.options.Name)
-	if err != nil {
-		return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
-	}
-	if !vnetHdrEnabled {
-		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
-	}
-	err = setTCPOffload(t.tunFd)
-	if err != nil {
-		return E.Cause(err, "enable TCP offload")
-	}
-	t.vnetHdr = true
-	t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
-	t.tcpGROTable = newTCPGROTable()
-	t.udpGROTable = newUDPGROTable()
-	err = setUDPOffload(t.tunFd)
-	if err != nil {
-		t.gro.disableUDPGRO()
-		return E.Cause(err, "enable UDP offload")
-	}
-	return nil
-}
-
-func (t *NativeTun) Start() error {
-	if t.options.FileDescriptor != 0 {
-		return nil
-	}
-
-	tunLink, err := netlink.LinkByName(t.options.Name)
-	if err != nil {
-		return err
-	}
-
-	err = netlink.LinkSetUp(tunLink)
-	if err != nil {
-		return err
-	}
-
-	if t.vnetHdr && len(t.options.Inet4Address) > 0 {
-		err = t.probeTCPGRO()
-		if err != nil {
-			t.gro.disableTCPGRO()
-			t.gro.disableUDPGRO()
-			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
-		}
-	}
-
-	if t.options.IPRoute2TableIndex == 0 {
-		for {
-			t.options.IPRoute2TableIndex = int(rand.Uint32())
-			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
-			if len(routeList) == 0 || fErr != nil {
-				break
-			}
-		}
-	}
-
-	err = t.setRoute(tunLink)
-	if err != nil {
-		_ = t.unsetRoute0(tunLink)
-		return err
-	}
-
-	err = t.unsetRules()
-	if err != nil {
-		return E.Cause(err, "cleanup rules")
-	}
-	err = t.setRules()
-	if err != nil {
-		_ = t.unsetRules()
-		return err
-	}
-
-	t.setSearchDomainForSystemdResolved()
-
-	if t.options.AutoRoute && runtime.GOOS == "android" {
-		t.interfaceCallback = t.options.InterfaceMonitor.RegisterCallback(t.routeUpdate)
-	}
-	return nil
-}
-
-func (t *NativeTun) Close() error {
-	if t.interfaceCallback != nil {
-		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
-	}
-	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
 
 func (t *NativeTun) TXChecksumOffload() bool {

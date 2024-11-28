@@ -25,6 +25,7 @@ type Handler interface {
 type Tun interface {
 	io.ReadWriter
 	N.VectorisedWriter
+	Name() (string, error)
 	Start() error
 	Close() error
 }

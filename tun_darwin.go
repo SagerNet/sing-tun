@@ -32,6 +32,14 @@ type NativeTun struct {
 	routerSet    bool
 }
 
+func (t *NativeTun) Name() (string, error) {
+	return unix.GetsockoptString(
+		int(t.tunFile.Fd()),
+		2, /* #define SYSPROTO_CONTROL 2 */
+		2, /* #define UTUN_OPT_IFNAME 2 */
+	)
+}
+
 func New(options Options) (Tun, error) {
 	var tunFd int
 	if options.FileDescriptor == 0 {
