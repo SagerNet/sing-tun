@@ -3,10 +3,11 @@ package tun
 import (
 	"sync"
 
-	"github.com/sagernet/sing-tun/internal/winipcfg"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
+
+	"github.com/sagernet/sing-tun/internal/winipcfg"
 
 	"golang.org/x/sys/windows"
 )
@@ -108,7 +109,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return E.Cause(err, "find updated interface: ", alias)
 	}
 	m.defaultInterface.Store(newInterface)
-	if oldInterface != nil && !oldInterface.Equals(*newInterface) {
+	if oldInterface != nil && oldInterface.Equals(*newInterface) {
 		return nil
 	}
 	m.emit(newInterface, 0)
