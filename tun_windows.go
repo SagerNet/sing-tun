@@ -72,7 +72,7 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
-		if !t.options.EXP_DisableDNSHijack {
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is4)
 			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet4Address[0].Addr().Next()}
@@ -83,6 +83,11 @@ func (t *NativeTun) configure() error {
 					return E.Cause(err, "set ipv4 dns")
 				}
 			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv4 dns")
+			}
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
@@ -90,7 +95,7 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
-		if !t.options.EXP_DisableDNSHijack {
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is6)
 			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet6Address[0].Addr().Next()}
@@ -100,6 +105,11 @@ func (t *NativeTun) configure() error {
 				if err != nil {
 					return E.Cause(err, "set ipv6 dns")
 				}
+			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv6 dns")
 			}
 		}
 	}
