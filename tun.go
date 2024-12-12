@@ -103,10 +103,12 @@ func (o *Options) Inet4GatewayAddr() netip.Addr {
 		case "darwin":
 			return o.Inet4Address[0].Addr()
 		default:
-			if HasNextAddress(o.Inet4Address[0], 1) {
-				return o.Inet4Address[0].Addr().Next()
-			} else {
-				return o.Inet4Address[0].Addr()
+			if !o.InterfaceScope {
+				if HasNextAddress(o.Inet4Address[0], 1) {
+					return o.Inet4Address[0].Addr().Next()
+				} else {
+					return o.Inet4Address[0].Addr()
+				}
 			}
 		}
 	}
@@ -127,10 +129,12 @@ func (o *Options) Inet6GatewayAddr() netip.Addr {
 		case "darwin":
 			return o.Inet6Address[0].Addr()
 		default:
-			if HasNextAddress(o.Inet6Address[0], 1) {
-				return o.Inet6Address[0].Addr().Next()
-			} else {
-				return o.Inet6Address[0].Addr()
+			if !o.InterfaceScope {
+				if HasNextAddress(o.Inet6Address[0], 1) {
+					return o.Inet6Address[0].Addr().Next()
+				} else {
+					return o.Inet6Address[0].Addr()
+				}
 			}
 		}
 	}
