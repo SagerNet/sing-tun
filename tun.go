@@ -28,6 +28,7 @@ type Tun interface {
 	Name() (string, error)
 	Start() error
 	Close() error
+	UpdateRouteOptions(tunOptions Options) error
 }
 
 type WinTun interface {

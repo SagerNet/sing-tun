@@ -495,6 +495,25 @@ func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
 	}
 }
 
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	if t.options.FileDescriptor > 0 {
+		return nil
+	} else if !t.options.AutoRoute {
+		t.options = tunOptions
+		return nil
+	}
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return err
+	}
+	err = t.unsetRoute0(tunLink)
+	if err != nil {
+		return err
+	}
+	t.options = tunOptions
+	return t.setRoute(tunLink)
+}
+
 func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 	routeRanges, err := t.options.BuildAutoRouteRanges(false)
 	if err != nil {

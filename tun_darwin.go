@@ -29,7 +29,7 @@ type NativeTun struct {
 	options      Options
 	inet4Address [4]byte
 	inet6Address [16]byte
-	routerSet    bool
+	routeSet     bool
 }
 
 func (t *NativeTun) Name() (string, error) {
@@ -258,9 +258,17 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 	return nil
 }
 
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	err := t.unsetRoutes()
+	if err != nil {
+		return err
+	}
+	t.options = tunOptions
+	return t.setRoutes()
+}
+
 func (t *NativeTun) setRoutes() error {
 	if t.options.AutoRoute && t.options.FileDescriptor == 0 {
-
 		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
@@ -298,13 +306,13 @@ func (t *NativeTun) setRoutes() error {
 			}
 		}
 		flushDNSCache()
-		t.routerSet = true
+		t.routeSet = true
 	}
 	return nil
 }
 
 func (t *NativeTun) unsetRoutes() error {
-	if !t.routerSet {
+	if !t.routeSet {
 		return nil
 	}
 	routeRanges, err := t.options.BuildAutoRouteRanges(false)

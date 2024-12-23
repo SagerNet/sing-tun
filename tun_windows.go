@@ -178,9 +178,9 @@ func (t *NativeTun) Start() error {
 		} else {
 			err = luid.AddRoute(routeRange, gateway6, 0)
 		}
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	err = windnsapi.FlushResolverCache()
 	if err != nil {
@@ -543,6 +543,38 @@ func (t *NativeTun) Close() error {
 		}
 	})
 	return err
+}
+
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	t.options = tunOptions
+	if !t.options.AutoRoute {
+		return nil
+	}
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	luid := winipcfg.LUID(t.adapter.LUID())
+	err = luid.FlushRoutes(windows.AF_UNSPEC)
+	if err != nil {
+		return err
+	}
+	for _, routeRange := range routeRanges {
+		if routeRange.Addr().Is4() {
+			err = luid.AddRoute(routeRange, gateway4, 0)
+		} else {
+			err = luid.AddRoute(routeRange, gateway6, 0)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	err = windnsapi.FlushResolverCache()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func generateGUIDByDeviceName(name string) *windows.GUID {
