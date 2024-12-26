@@ -73,7 +73,7 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
-		if !t.options.EXP_DisableDNSHijack {
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is4)
 			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet4Address[0].Addr().Next()}
@@ -84,6 +84,11 @@ func (t *NativeTun) configure() error {
 					return E.Cause(err, "set ipv4 dns")
 				}
 			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv4 dns")
+			}
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
@@ -91,7 +96,7 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
-		if !t.options.EXP_DisableDNSHijack {
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
 			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is6)
 			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
 				dnsServers = []netip.Addr{t.options.Inet6Address[0].Addr().Next()}
@@ -101,6 +106,11 @@ func (t *NativeTun) configure() error {
 				if err != nil {
 					return E.Cause(err, "set ipv6 dns")
 				}
+			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv6 dns")
 			}
 		}
 	}
@@ -346,7 +356,40 @@ func (t *NativeTun) configure() error {
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	return 0, os.ErrInvalid
+	t.running.Add(1)
+	defer t.running.Done()
+retry:
+	if t.close.Load() == 1 {
+		return 0, os.ErrClosed
+	}
+	start := nanotime()
+	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
+	for {
+		if t.close.Load() == 1 {
+			return 0, os.ErrClosed
+		}
+		var packet []byte
+		packet, err = t.session.ReceivePacket()
+		switch err {
+		case nil:
+			n = copy(p, packet)
+			t.session.ReleaseReceivePacket(packet)
+			t.rate.update(uint64(n))
+			return
+		case windows.ERROR_NO_MORE_ITEMS:
+			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+				goto retry
+			}
+			procyield(1)
+			continue
+		case windows.ERROR_HANDLE_EOF:
+			return 0, os.ErrClosed
+		case windows.ERROR_INVALID_DATA:
+			return 0, errors.New("send ring corrupt")
+		}
+		return 0, fmt.Errorf("read failed: %w", err)
+	}
 }
 
 func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
