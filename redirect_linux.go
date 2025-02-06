@@ -44,7 +44,7 @@ type autoRedirect struct {
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
-	r := &autoRedirect{
+	return &autoRedirect{
 		tunOptions:             options.TunOptions,
 		ctx:                    options.Context,
 		handler:                options.Handler,
@@ -56,7 +56,10 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		customRedirectPortFunc: options.CustomRedirectPort,
 		routeAddressSet:        options.RouteAddressSet,
 		routeExcludeAddressSet: options.RouteExcludeAddressSet,
-	}
+	}, nil
+}
+
+func (r *autoRedirect) Start() error {
 	var err error
 	if runtime.GOOS == "android" {
 		r.enableIPv4 = true
@@ -74,7 +77,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 				}
 			}
 			if err != nil {
-				return nil, E.Extend(E.Cause(err, "root permission is required for auto redirect"), os.Getenv("PATH"))
+				return E.Extend(E.Cause(err, "root permission is required for auto redirect"), os.Getenv("PATH"))
 			}
 		}
 	} else {
@@ -90,7 +93,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 			if !r.useNFTables {
 				r.iptablesPath, err = exec.LookPath("iptables")
 				if err != nil {
-					return nil, E.Cause(err, "iptables is required")
+					return E.Cause(err, "iptables is required")
 				}
 			}
 		}
@@ -100,7 +103,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 				r.ip6tablesPath, err = exec.LookPath("ip6tables")
 				if err != nil {
 					if !r.enableIPv4 {
-						return nil, E.Cause(err, "ip6tables is required")
+						return E.Cause(err, "ip6tables is required")
 					} else {
 						r.enableIPv6 = false
 						r.logger.Error("device has no ip6tables nat support: ", err)
@@ -109,10 +112,6 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 			}
 		}
 	}
-	return r, nil
-}
-
-func (r *autoRedirect) Start() error {
 	if r.customRedirectPortFunc != nil {
 		r.customRedirectPort = r.customRedirectPortFunc()
 	}
@@ -132,7 +131,6 @@ func (r *autoRedirect) Start() error {
 		}
 		r.redirectServer = server
 	}
-	var err error
 	if r.useNFTables {
 		r.cleanupNFTables()
 		err = r.setupNFTables()
