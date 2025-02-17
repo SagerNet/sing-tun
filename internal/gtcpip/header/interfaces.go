@@ -86,6 +86,8 @@ type Network interface {
 	// SourceAddress returns the value of the "source address" field.
 	SourceAddress() tcpip.Address
 
+	SourceAddr() netip.Addr
+
 	// DestinationAddress returns the value of the "destination address"
 	// field.
 	DestinationAddress() tcpip.Address
@@ -97,6 +99,8 @@ type Network interface {
 
 	// SetSourceAddress sets the value of the "source address" field.
 	SetSourceAddress(tcpip.Address)
+
+	SetSourceAddr(netip.Addr)
 
 	// SetDestinationAddress sets the value of the "destination address"
 	// field.

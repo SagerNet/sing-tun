@@ -237,7 +237,7 @@ func (m *Mixed) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 		pkt.DecRef()
 		return
 	case header.ICMPv4ProtocolNumber:
-		err = m.processIPv4ICMP(ipHdr, ipHdr.Payload())
+		writeBack, err = m.processIPv4ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
@@ -259,7 +259,7 @@ func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 		m.endpoint.InjectInbound(tcpip.NetworkProtocolNumber(header.IPv6ProtocolNumber), pkt)
 		pkt.DecRef()
 	case header.ICMPv6ProtocolNumber:
-		err = m.processIPv6ICMP(ipHdr, ipHdr.Payload())
+		writeBack, err = m.processIPv6ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
