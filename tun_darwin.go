@@ -268,45 +268,47 @@ func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
 }
 
 func (t *NativeTun) setRoutes() error {
-	if t.options.AutoRoute && t.options.FileDescriptor == 0 {
+	if t.options.FileDescriptor == 0 {
 		routeRanges, err := t.options.BuildAutoRouteRanges(false)
 		if err != nil {
 			return err
 		}
-		gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
-		for _, destination := range routeRanges {
-			var gateway netip.Addr
-			if destination.Addr().Is4() {
-				gateway = gateway4
-			} else {
-				gateway = gateway6
-			}
-			var interfaceIndex int
-			if t.options.InterfaceScope {
-				iff, err := t.options.InterfaceFinder.ByName(t.options.Name)
-				if err != nil {
-					return err
-				}
-				interfaceIndex = iff.Index
-			}
-			err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
-			if err != nil {
-				if errors.Is(err, unix.EEXIST) {
-					err = execRoute(unix.RTM_DELETE, false, 0, destination, gateway)
-					if err != nil {
-						return E.Cause(err, "remove existing route: ", destination)
-					}
-					err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
-					if err != nil {
-						return E.Cause(err, "re-add route: ", destination)
-					}
+		if len(routeRanges) > 0 {
+			gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+			for _, destination := range routeRanges {
+				var gateway netip.Addr
+				if destination.Addr().Is4() {
+					gateway = gateway4
 				} else {
-					return E.Cause(err, "add route: ", destination)
+					gateway = gateway6
+				}
+				var interfaceIndex int
+				if t.options.InterfaceScope {
+					iff, err := t.options.InterfaceFinder.ByName(t.options.Name)
+					if err != nil {
+						return err
+					}
+					interfaceIndex = iff.Index
+				}
+				err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
+				if err != nil {
+					if errors.Is(err, unix.EEXIST) {
+						err = execRoute(unix.RTM_DELETE, false, 0, destination, gateway)
+						if err != nil {
+							return E.Cause(err, "remove existing route: ", destination)
+						}
+						err = execRoute(unix.RTM_ADD, t.options.InterfaceScope, interfaceIndex, destination, gateway)
+						if err != nil {
+							return E.Cause(err, "re-add route: ", destination)
+						}
+					} else {
+						return E.Cause(err, "add route: ", destination)
+					}
 				}
 			}
+			flushDNSCache()
+			t.routeSet = true
 		}
-		flushDNSCache()
-		t.routeSet = true
 	}
 	return nil
 }
