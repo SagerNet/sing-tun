@@ -46,6 +46,7 @@ type System struct {
 	interfaceFinder    control.InterfaceFinder
 	frontHeadroom      int
 	txChecksumOffload  bool
+	disableFirewallFix bool
 }
 
 type Session struct {
@@ -57,18 +58,19 @@ type Session struct {
 
 func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
-		ctx:             options.Context,
-		tun:             options.Tun,
-		tunName:         options.TunOptions.Name,
-		mtu:             int(options.TunOptions.MTU),
-		udpTimeout:      options.UDPTimeout,
-		handler:         options.Handler,
-		logger:          options.Logger,
-		inet4Prefixes:   options.TunOptions.Inet4Address,
-		inet6Prefixes:   options.TunOptions.Inet6Address,
-		broadcastAddr:   BroadcastAddr(options.TunOptions.Inet4Address),
-		bindInterface:   options.ForwarderBindInterface,
-		interfaceFinder: options.InterfaceFinder,
+		ctx:                options.Context,
+		tun:                options.Tun,
+		tunName:            options.TunOptions.Name,
+		mtu:                int(options.TunOptions.MTU),
+		udpTimeout:         options.UDPTimeout,
+		handler:            options.Handler,
+		logger:             options.Logger,
+		inet4Prefixes:      options.TunOptions.Inet4Address,
+		inet6Prefixes:      options.TunOptions.Inet6Address,
+		broadcastAddr:      BroadcastAddr(options.TunOptions.Inet4Address),
+		bindInterface:      options.ForwarderBindInterface,
+		interfaceFinder:    options.InterfaceFinder,
+		disableFirewallFix: options.TunOptions.EXP_DisableFirewallFix,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
 		if !HasNextAddress(options.TunOptions.Inet4Address[0], 1) {
@@ -107,9 +109,12 @@ func (s *System) Start() error {
 }
 
 func (s *System) start() error {
-	err := fixWindowsFirewall()
-	if err != nil {
-		return E.Cause(err, "fix windows firewall for system stack")
+	var err error
+	if !s.disableFirewallFix {
+		err = fixWindowsFirewall()
+		if err != nil {
+			s.logger.Error(E.Cause(err, "fix windows firewall for system stack"))
+		}
 	}
 	var listener net.ListenConfig
 	if s.bindInterface {

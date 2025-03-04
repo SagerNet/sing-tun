@@ -87,7 +87,8 @@ type Options struct {
 	_TXChecksumOffload bool
 
 	// For library usages.
-	EXP_DisableDNSHijack bool
+	EXP_DisableDNSHijack   bool
+	EXP_DisableFirewallFix bool
 }
 
 func (o *Options) Inet4GatewayAddr() netip.Addr {

@@ -15,15 +15,25 @@ func fixWindowsFirewall() error {
 	if err != nil {
 		return err
 	}
-	rule := winfw.FWRule{
+	_, err = winfw.FirewallRuleAddAdvanced(winfw.FWRule{
 		Name:            "sing-tun (" + absPath + ")",
 		ApplicationName: absPath,
 		Enabled:         true,
 		Protocol:        winfw.NET_FW_IP_PROTOCOL_TCP,
 		Direction:       winfw.NET_FW_RULE_DIR_IN,
 		Action:          winfw.NET_FW_ACTION_ALLOW,
+	})
+	if err != nil {
+		return err
 	}
-	_, err = winfw.FirewallRuleAddAdvanced(rule)
+	_, err = winfw.FirewallRuleAddAdvanced(winfw.FWRule{
+		Name:            "sing-tun UDP (" + absPath + ")",
+		ApplicationName: absPath,
+		Enabled:         true,
+		Protocol:        winfw.NET_FW_IP_PROTOCOL_UDP,
+		Direction:       winfw.NET_FW_RULE_DIR_IN,
+		Action:          winfw.NET_FW_ACTION_ALLOW,
+	})
 	return err
 }
 
