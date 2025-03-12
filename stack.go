@@ -6,7 +6,7 @@ import (
 	"net"
 	"net/netip"
 
-	"github.com/sagernet/sing/common/control"
+	"github.com/metacubex/sing-tun/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 )

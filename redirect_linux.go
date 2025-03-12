@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"runtime"
 
+	"github.com/metacubex/sing-tun/control"
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"

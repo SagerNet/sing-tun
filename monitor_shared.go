@@ -4,11 +4,11 @@ package tun
 
 import (
 	"errors"
-	"net/netip"
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing/common/control"
+	"github.com/metacubex/sing-tun/control"
+	"github.com/sagernet/sing/common/atomic"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
 )
@@ -38,8 +38,7 @@ type defaultInterfaceMonitor struct {
 	interfaceFinder       control.InterfaceFinder
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
-	defaultInterfaceName  string
-	defaultInterfaceIndex int
+	defaultInterface      atomic.Pointer[control.Interface]
 	androidVPNEnabled     bool
 	noRoute               bool
 	networkMonitor        NetworkUpdateMonitor
@@ -56,13 +55,12 @@ func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logg
 		overrideAndroidVPN:    options.OverrideAndroidVPN,
 		underNetworkExtension: options.UnderNetworkExtension,
 		networkMonitor:        networkMonitor,
-		defaultInterfaceIndex: -1,
-		logger: logger,
+		logger:                logger,
 	}, nil
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
-	_ = m.checkUpdate()
+	m.postCheckUpdate()
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
 }
@@ -78,15 +76,15 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	err := m.interfaceFinder.Update()
 	if err != nil {
-		m.logger.Error("update interfaces: ", err)
+		m.logger.Error("update interface: ", err)
+		return
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
 		if !m.noRoute {
 			m.noRoute = true
-			m.defaultInterfaceName = ""
-			m.defaultInterfaceIndex = -1
-			m.emit(EventNoRoute)
+			m.defaultInterface.Store(nil)
+			m.emit(nil, 0)
 		}
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
@@ -102,37 +100,8 @@ func (m *defaultInterfaceMonitor) Close() error {
 	return nil
 }
 
-func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) string {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Name
-			}
-		}
-	}
-	return m.defaultInterfaceName
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) int {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Index
-			}
-		}
-	}
-	return m.defaultInterfaceIndex
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (string, int) {
-	for _, address := range m.interfaceFinder.Interfaces() {
-		for _, prefix := range address.Addresses {
-			if prefix.Contains(destination) {
-				return address.Name, address.Index
-			}
-		}
-	}
-	return m.defaultInterfaceName, m.defaultInterfaceIndex
+func (m *defaultInterfaceMonitor) DefaultInterface() *control.Interface {
+	return m.defaultInterface.Load()
 }
 
 func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
@@ -155,11 +124,11 @@ func (m *defaultInterfaceMonitor) UnregisterCallback(element *list.Element[Defau
 	m.callbacks.Remove(element)
 }
 
-func (m *defaultInterfaceMonitor) emit(event int) {
+func (m *defaultInterfaceMonitor) emit(defaultInterface *control.Interface, flags int) {
 	m.access.Lock()
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		callback(event)
+		callback(defaultInterface, flags)
 	}
 }

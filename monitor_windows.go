@@ -112,16 +112,15 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return ErrNoRoute
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = alias
-	m.defaultInterfaceIndex = index
-
-	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
+	oldInterface := m.defaultInterface.Load()
+	newInterface, err := m.interfaceFinder.ByIndex(index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", alias)
+	}
+	m.defaultInterface.Store(newInterface)
+	if oldInterface != nil && oldInterface.Equals(*newInterface) {
 		return nil
 	}
-
-	m.emit(EventInterfaceUpdate)
+	m.emit(newInterface, 0)
 	return nil
 }

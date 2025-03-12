@@ -1,9 +1,7 @@
 package tun
 
 import (
-	"net/netip"
-
-	"github.com/sagernet/sing/common/control"
+	"github.com/metacubex/sing-tun/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/x/list"
 )
@@ -12,14 +10,10 @@ var ErrNoRoute = E.New("no route to internet")
 
 type (
 	NetworkUpdateCallback          = func()
-	DefaultInterfaceUpdateCallback = func(event int)
+	DefaultInterfaceUpdateCallback = func(defaultInterface *control.Interface, flags int)
 )
 
-const (
-	EventInterfaceUpdate  = 1
-	EventAndroidVPNUpdate = 2
-	EventNoRoute          = 4
-)
+const FlagAndroidVPNUpdate = 1 << iota
 
 type NetworkUpdateMonitor interface {
 	Start() error
@@ -31,9 +25,7 @@ type NetworkUpdateMonitor interface {
 type DefaultInterfaceMonitor interface {
 	Start() error
 	Close() error
-	DefaultInterfaceName(destination netip.Addr) string
-	DefaultInterfaceIndex(destination netip.Addr) int
-	DefaultInterface(destination netip.Addr) (string, int)
+	DefaultInterface() *control.Interface
 	OverrideAndroidVPN() bool
 	AndroidVPNEnabled() bool
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]

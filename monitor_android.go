@@ -51,22 +51,21 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return err
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = link.Attrs().Name
-	m.defaultInterfaceIndex = link.Attrs().Index
-
-	var event int
-	if oldInterface != m.defaultInterfaceName || oldIndex != m.defaultInterfaceIndex {
-		event |= EventInterfaceUpdate
+	oldInterface := m.defaultInterface.Load()
+	newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", link.Attrs().Name)
 	}
+	m.defaultInterface.Store(newInterface)
+
+	if oldInterface != nil && oldInterface.Equals(*newInterface) && oldVPNEnabled == m.androidVPNEnabled {
+		return nil
+	}
+	var flags int
 	if oldVPNEnabled != m.androidVPNEnabled {
-		event |= EventAndroidVPNUpdate
+		flags = FlagAndroidVPNUpdate
 	}
-	if event != 0 {
-		m.emit(event)
-	}
+	m.emit(newInterface, flags)
 
 	return nil
 }

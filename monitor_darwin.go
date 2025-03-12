@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/sing-tun/control"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -107,11 +108,11 @@ func (m *networkUpdateMonitor) Close() error {
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
 	var (
-		defaultInterface *net.Interface
+		defaultInterface *control.Interface
 		err              error
 	)
 	if m.underNetworkExtension {
-		defaultInterface, err = getDefaultInterfaceBySocket()
+		defaultInterface, err = m.getDefaultInterfaceBySocket()
 		if err != nil {
 			return err
 		}
@@ -144,7 +145,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			if ones != 0 {
 				continue
 			}
-			routeInterface, err := net.InterfaceByIndex(routeMessage.Index)
+			routeInterface, err := m.interfaceFinder.ByIndex(routeMessage.Index)
 			if err != nil {
 				return err
 			}
@@ -167,18 +168,20 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	if defaultInterface == nil {
 		return ErrNoRoute
 	}
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-	m.defaultInterfaceIndex = defaultInterface.Index
-	m.defaultInterfaceName = defaultInterface.Name
-	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
+	oldInterface := m.defaultInterface.Load()
+	newInterface, err := m.interfaceFinder.ByIndex(defaultInterface.Index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", defaultInterface.Name)
+	}
+	m.defaultInterface.Store(newInterface)
+	if oldInterface != nil && oldInterface.Equals(*newInterface) {
 		return nil
 	}
-	m.emit(EventInterfaceUpdate)
+	m.emit(newInterface, 0)
 	return nil
 }
 
-func getDefaultInterfaceBySocket() (*net.Interface, error) {
+func (m *defaultInterfaceMonitor) getDefaultInterfaceBySocket() (*control.Interface, error) {
 	socketFd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return nil, E.Cause(err, "create file descriptor")
@@ -221,24 +224,5 @@ func getDefaultInterfaceBySocket() (*net.Interface, error) {
 	case <-time.After(time.Second):
 		return nil, nil
 	}
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil, E.Cause(err, "net.Interfaces")
-	}
-	for _, netInterface := range interfaces {
-		interfaceAddrs, err := netInterface.Addrs()
-		if err != nil {
-			return nil, E.Cause(err, "net.Interfaces.Addrs")
-		}
-		for _, interfaceAddr := range interfaceAddrs {
-			ipNet, isIPNet := interfaceAddr.(*net.IPNet)
-			if !isIPNet {
-				continue
-			}
-			if ipNet.Contains(selectedAddr.AsSlice()) {
-				return &netInterface, nil
-			}
-		}
-	}
-	return nil, E.New("no interface found for address ", selectedAddr)
+	return m.interfaceFinder.ByAddr(selectedAddr)
 }

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/metacubex/sing-tun/control"
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -853,8 +854,8 @@ func (t *NativeTun) resetRules() error {
 	return t.setRules()
 }
 
-func (t *NativeTun) routeUpdate(event int) {
-	if event&EventAndroidVPNUpdate == 0 {
+func (t *NativeTun) routeUpdate(_ *control.Interface, flags int) {
+	if flags&FlagAndroidVPNUpdate == 0 {
 		return
 	}
 	err := t.resetRules()
