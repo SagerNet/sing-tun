@@ -28,6 +28,6 @@ func BenchmarkGChecksum(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		checksum.Checksum(packet[i%1000], 0)
+		checksum.ChecksumDefault(packet[i%1000], 0)
 	}
 }

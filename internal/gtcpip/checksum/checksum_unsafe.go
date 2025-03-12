@@ -1,5 +1,3 @@
-//go:build !amd64
-
 // Copyright 2023 The gVisor Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

@@ -8,6 +8,5 @@ package checksum
 //
 // The initial checksum must have been computed on an even number of bytes.
 func Checksum(buf []byte, initial uint16) uint16 {
-	s, _ := calculateChecksum(buf, false, initial)
-	return s
+	return ChecksumDefault(buf, initial)
 }

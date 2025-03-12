@@ -38,3 +38,8 @@ func Combine(a, b uint16) uint16 {
 	v := uint32(a) + uint32(b)
 	return uint16(v + v>>16)
 }
+
+func ChecksumDefault(buf []byte, initial uint16) uint16 {
+	s, _ := calculateChecksum(buf, false, initial)
+	return s
+}
