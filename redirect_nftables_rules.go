@@ -402,13 +402,13 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if !r.tunOptions.EXP_DisableDNSHijack && ((chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeNAT) ||
 		(r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeNAT)) {
 		if r.enableIPv4 {
-			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv4)
+			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv4, 5, "inet4_local_address_set")
 			if err != nil {
 				return err
 			}
 		}
 		if r.enableIPv6 {
-			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv6)
+			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv6, 6, "inet6_local_address_set")
 			if err != nil {
 				return err
 			}
@@ -553,7 +553,7 @@ func (r *autoRedirect) nftablesCreateRedirect(
 
 func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
-	family nftables.TableFamily,
+	family nftables.TableFamily, setID uint32, setName string,
 ) error {
 	ipProto := &nftables.Set{
 		Table:     table,
@@ -611,6 +611,33 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 				Data:     nftablesIfname("lo"),
 			},
 		)
+	} else {
+		if family == nftables.TableFamilyIPv4 {
+			exprs = append(exprs,
+				&expr.Payload{
+					OperationType: expr.PayloadLoad,
+					DestRegister:  1,
+					Base:          expr.PayloadBaseNetworkHeader,
+					Offset:        12,
+					Len:           4,
+				},
+			)
+		} else {
+			exprs = append(exprs,
+				&expr.Payload{
+					OperationType: expr.PayloadLoad,
+					DestRegister:  1,
+					Base:          expr.PayloadBaseNetworkHeader,
+					Offset:        8,
+					Len:           16,
+				},
+			)
+		}
+		exprs = append(exprs, &expr.Lookup{
+			SourceRegister: 1,
+			SetID:          setID,
+			SetName:        setName,
+		})
 	}
 	exprs = append(exprs,
 		&expr.Meta{
