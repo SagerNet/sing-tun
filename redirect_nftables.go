@@ -101,7 +101,9 @@ func (r *autoRedirect) setupNFTables() error {
 	}
 	r.nftablesCreateUnreachable(nft, table, chainPreRouting)
 	r.nftablesCreateRedirect(nft, table, chainPreRouting)
-	r.nftablesCreateMark(nft, table, chainPreRouting)
+	if r.tunOptions.AutoRedirectMarkMode {
+		r.nftablesCreateMark(nft, table, chainPreRouting)
+	}
 
 	if r.tunOptions.AutoRedirectMarkMode {
 		chainPreRoutingUDP := nft.AddChain(&nftables.Chain{
