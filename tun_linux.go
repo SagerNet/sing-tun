@@ -473,8 +473,8 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		return rules
 	}
 
-	nopPriority := ruleStart + 11
-	for _, excludePort := range t.options.ExcludePort {
+	nopPriority := ruleStart + 10
+	for _, excludePort := range t.options.ExcludeSrcPort {
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
@@ -482,7 +482,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-			priority++
 		}
 		if p6 {
 			it = netlink.NewRule()
@@ -491,7 +490,24 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
-			priority6++
+		}
+	}
+	for _, excludePort := range t.options.ExcludeDstPort {
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Dport = netlink.NewRulePortRange(excludePort.Start, excludePort.End)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Dport = netlink.NewRulePortRange(excludePort.Start, excludePort.End)
+			it.Goto = nopPriority
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
 		}
 	}
 	for _, excludeRange := range excludeRanges {
@@ -512,7 +528,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 		}
 	}
-	if len(excludeRanges) > 0 {
+	if len(t.options.ExcludeSrcPort) > 0 || len(t.options.ExcludeDstPort) > 0 || len(excludeRanges) > 0 {
 		if p4 {
 			priority++
 		}
@@ -854,7 +870,7 @@ func (t *NativeTun) unsetRules() error {
 		}
 		for _, rule := range ruleList {
 			ruleStart := t.options.IPRoute2RuleIndex
-			ruleEnd := ruleStart + 11
+			ruleEnd := ruleStart + 10
 			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
 				ruleToDel := netlink.NewRule()
 				ruleToDel.Family = rule.Family
