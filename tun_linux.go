@@ -668,7 +668,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 	}
 	if len(t.options.IncludeInterface) > 0 {
-		matchPriority := priority + 2*len(t.options.IncludeInterface) + 1
+		matchPriority := priority + 2
 		for _, includeInterface := range t.options.IncludeInterface {
 			if p4 {
 				it = netlink.NewRule()
@@ -677,7 +677,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = matchPriority
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
@@ -686,8 +685,13 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = matchPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
-				priority6++
 			}
+		}
+		if p4 {
+			priority++
+		}
+		if p6 {
+			priority6++
 		}
 		if p4 {
 			it = netlink.NewRule()
@@ -726,7 +730,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = nopPriority
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
@@ -735,8 +738,14 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = nopPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
-				priority6++
 			}
+		}
+
+		if p4 {
+			priority++
+		}
+		if p6 {
+			priority6++
 		}
 	}
 
