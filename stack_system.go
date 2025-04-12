@@ -109,10 +109,7 @@ func (s *System) Start() error {
 }
 
 func (s *System) start() error {
-	err := fixWindowsFirewall()
-	if err != nil {
-		return E.Cause(err, "fix windows firewall for system stack")
-	}
+	_ = fixWindowsFirewall()
 	var listener net.ListenConfig
 	if s.bindInterface || s.enforceBind {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
@@ -127,6 +124,7 @@ func (s *System) start() error {
 		})
 	}
 	var tcpListener net.Listener
+	var err error
 	if s.inet4Address.IsValid() {
 		address := net.JoinHostPort(s.inet4ServerAddress.String(), "0")
 		if s.enforceBind {
