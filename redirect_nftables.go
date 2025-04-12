@@ -60,7 +60,7 @@ func (r *autoRedirect) setupNFTables() error {
 			r.nftablesCreateRedirect(nft, table, chainOutput)
 
 			chainOutputUDP := nft.AddChain(&nftables.Chain{
-				Name:     "output_udp",
+				Name:     "output_udp_icmp",
 				Table:    table,
 				Hooknum:  nftables.ChainHookOutput,
 				Priority: nftables.ChainPriorityMangle,

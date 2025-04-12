@@ -439,6 +439,20 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if r.tunOptions.AutoRedirectMarkMode &&
 		((chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeRoute) ||
 			(chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeFilter)) {
+		ipProto := &nftables.Set{
+			Table:     table,
+			Anonymous: true,
+			Constant:  true,
+			KeyType:   nftables.TypeInetProto,
+		}
+		err := nft.AddSet(ipProto, []nftables.SetElement{
+			{Key: []byte{unix.IPPROTO_UDP}},
+			{Key: []byte{unix.IPPROTO_ICMP}},
+			{Key: []byte{unix.IPPROTO_ICMPV6}},
+		})
+		if err != nil {
+			return err
+		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -447,10 +461,11 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					Key:      expr.MetaKeyL4PROTO,
 					Register: 1,
 				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     []byte{unix.IPPROTO_UDP},
+				&expr.Lookup{
+					SourceRegister: 1,
+					SetID:          ipProto.ID,
+					SetName:        ipProto.Name,
+					Invert:         true,
 				},
 				&expr.Verdict{
 					Kind: expr.VerdictReturn,
