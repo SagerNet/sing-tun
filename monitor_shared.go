@@ -42,11 +42,12 @@ type defaultInterfaceMonitor struct {
 	androidVPNEnabled     bool
 	noRoute               bool
 	networkMonitor        NetworkUpdateMonitor
+	logger                logger.Logger
 	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
-	logger                logger.Logger
+	myInterface           string
 }
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
@@ -131,4 +132,16 @@ func (m *defaultInterfaceMonitor) emit(defaultInterface *control.Interface, flag
 	for _, callback := range callbacks {
 		callback(defaultInterface, flags)
 	}
+}
+
+func (m *defaultInterfaceMonitor) RegisterMyInterface(interfaceName string) {
+	m.access.Lock()
+	defer m.access.Unlock()
+	m.myInterface = interfaceName
+}
+
+func (m *defaultInterfaceMonitor) MyInterface() string {
+	m.access.Lock()
+	defer m.access.Unlock()
+	return m.myInterface
 }
