@@ -30,6 +30,8 @@ type DefaultInterfaceMonitor interface {
 	AndroidVPNEnabled() bool
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
 	UnregisterCallback(element *list.Element[DefaultInterfaceUpdateCallback])
+	RegisterMyInterface(interfaceName string)
+	MyInterface() string
 }
 
 type DefaultInterfaceMonitorOptions struct {

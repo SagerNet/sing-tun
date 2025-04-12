@@ -264,7 +264,7 @@ func (t *NativeTun) Start() error {
 	if t.options.FileDescriptor != 0 {
 		return nil
 	}
-
+	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return err

@@ -163,6 +163,7 @@ func (t *NativeTun) Name() (string, error) {
 }
 
 func (t *NativeTun) Start() error {
+	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
 	if !t.options.AutoRoute {
 		return nil
 	}
