@@ -109,12 +109,6 @@ func (r *autoRedirect) setupNFTables() error {
 			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 2),
 			Type:     nftables.ChainTypeFilter,
 		})
-		if r.enableIPv4 {
-			nftablesCreateExcludeDestinationIPSet(nft, table, chainPreRoutingUDP, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, false)
-		}
-		if r.enableIPv6 {
-			nftablesCreateExcludeDestinationIPSet(nft, table, chainPreRoutingUDP, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, false)
-		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
@@ -124,9 +118,27 @@ func (r *autoRedirect) setupNFTables() error {
 					Register: 1,
 				},
 				&expr.Cmp{
-					Op:       expr.CmpOpEq,
+					Op:       expr.CmpOpNeq,
 					Register: 1,
 					Data:     []byte{unix.IPPROTO_UDP},
+				},
+				&expr.Verdict{
+					Kind: expr.VerdictReturn,
+				},
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chainPreRoutingUDP,
+			Exprs: []expr.Any{
+				&expr.Meta{
+					Key:      expr.MetaKeyIIFNAME,
+					Register: 1,
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpNeq,
+					Register: 1,
+					Data:     nftablesIfname(r.tunOptions.Name),
 				},
 				&expr.Ct{
 					Key:      expr.CtKeyMARK,
@@ -139,6 +151,40 @@ func (r *autoRedirect) setupNFTables() error {
 				},
 				&expr.Meta{
 					Key:            expr.MetaKeyMARK,
+					Register:       1,
+					SourceRegister: true,
+				},
+				&expr.Counter{},
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chainPreRoutingUDP,
+			Exprs: []expr.Any{
+				&expr.Ct{
+					Key:      expr.CtKeyMARK,
+					Register: 1,
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpNeq,
+					Register: 1,
+					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
+				},
+				&expr.Immediate{
+					Register: 1,
+					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
+				},
+				&expr.Meta{
+					Key:            expr.MetaKeyMARK,
+					Register:       1,
+					SourceRegister: true,
+				},
+				&expr.Meta{
+					Key:      expr.MetaKeyMARK,
+					Register: 1,
+				},
+				&expr.Ct{
+					Key:            expr.CtKeyMARK,
 					Register:       1,
 					SourceRegister: true,
 				},
