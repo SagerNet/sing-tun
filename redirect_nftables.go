@@ -5,11 +5,11 @@ package tun
 import (
 	"net/netip"
 
-	"github.com/metacubex/sing-tun/control"
-	"github.com/sagernet/nftables"
-	"github.com/sagernet/nftables/binaryutil"
-	"github.com/sagernet/nftables/expr"
-	"github.com/sagernet/sing/common"
+	"github.com/metacubex/nftables"
+	"github.com/metacubex/nftables/binaryutil"
+	"github.com/metacubex/nftables/expr"
+	"github.com/metacubex/sing/common"
+	"github.com/metacubex/sing/common/control"
 
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"

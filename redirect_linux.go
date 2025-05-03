@@ -7,13 +7,13 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/metacubex/sing-tun/control"
-	"github.com/sagernet/nftables"
-	"github.com/sagernet/sing/common"
-	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
-	"github.com/sagernet/sing/common/x/list"
+	"github.com/metacubex/nftables"
+	"github.com/metacubex/sing/common"
+	"github.com/metacubex/sing/common/control"
+	E "github.com/metacubex/sing/common/exceptions"
+	"github.com/metacubex/sing/common/logger"
+	M "github.com/metacubex/sing/common/metadata"
+	"github.com/metacubex/sing/common/x/list"
 
 	"go4.org/netipx"
 )

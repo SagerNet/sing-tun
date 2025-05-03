@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/metacubex/sing-tun/internal/gtcpip"
-	"github.com/sagernet/sing/common"
+	"github.com/metacubex/sing/common"
 )
 
 // ndpOptionIdentifier is an NDP option type identifier.

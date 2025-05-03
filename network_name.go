@@ -5,8 +5,8 @@ import (
 
 	tcpip "github.com/metacubex/sing-tun/internal/gtcpip"
 	"github.com/metacubex/sing-tun/internal/gtcpip/header"
-	F "github.com/sagernet/sing/common/format"
-	N "github.com/sagernet/sing/common/network"
+	F "github.com/metacubex/sing/common/format"
+	N "github.com/metacubex/sing/common/network"
 )
 
 func NetworkName(network uint8) string {

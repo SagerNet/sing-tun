@@ -22,7 +22,7 @@ import (
 
 	"github.com/metacubex/sing-tun/internal/gtcpip"
 	"github.com/metacubex/sing-tun/internal/gtcpip/checksum"
-	"github.com/sagernet/sing/common"
+	"github.com/metacubex/sing/common"
 )
 
 // RFC 971 defines the fields of the IPv4 header on page 11 using the following

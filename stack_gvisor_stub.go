@@ -2,7 +2,7 @@
 
 package tun
 
-import E "github.com/sagernet/sing/common/exceptions"
+import E "github.com/metacubex/sing/common/exceptions"
 
 const WithGVisor = false
 

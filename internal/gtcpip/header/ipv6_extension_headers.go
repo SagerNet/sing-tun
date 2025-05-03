@@ -21,7 +21,7 @@ import (
 	"math"
 
 	"github.com/metacubex/sing-tun/internal/gtcpip"
-	"github.com/sagernet/sing/common"
+	"github.com/metacubex/sing/common"
 )
 
 // IPv6ExtensionHeaderIdentifier is an IPv6 extension header identifier.

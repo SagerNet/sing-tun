@@ -3,7 +3,7 @@
 package tun
 
 import (
-	"github.com/sagernet/sing/common/bufio"
+	"github.com/metacubex/sing/common/bufio"
 
 	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"

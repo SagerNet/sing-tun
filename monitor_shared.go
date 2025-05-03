@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metacubex/sing-tun/control"
-	"github.com/sagernet/sing/common/atomic"
-	"github.com/sagernet/sing/common/logger"
-	"github.com/sagernet/sing/common/x/list"
+	"github.com/metacubex/sing/common/atomic"
+	"github.com/metacubex/sing/common/control"
+	"github.com/metacubex/sing/common/logger"
+	"github.com/metacubex/sing/common/x/list"
 )
 
 func (m *networkUpdateMonitor) RegisterCallback(callback NetworkUpdateCallback) *list.Element[NetworkUpdateCallback] {

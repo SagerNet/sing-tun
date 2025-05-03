@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	E "github.com/sagernet/sing/common/exceptions"
+	E "github.com/metacubex/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )

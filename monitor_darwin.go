@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metacubex/sing-tun/control"
-	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/logger"
-	"github.com/sagernet/sing/common/x/list"
+	"github.com/metacubex/sing/common/buf"
+	"github.com/metacubex/sing/common/control"
+	E "github.com/metacubex/sing/common/exceptions"
+	"github.com/metacubex/sing/common/logger"
+	"github.com/metacubex/sing/common/x/list"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"

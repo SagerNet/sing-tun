@@ -1,8 +1,8 @@
 package tun
 
 import (
+	E "github.com/metacubex/sing/common/exceptions"
 	"github.com/sagernet/netlink"
-	E "github.com/sagernet/sing/common/exceptions"
 )
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {

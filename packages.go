@@ -1,6 +1,6 @@
 package tun
 
-import "github.com/sagernet/sing/common/logger"
+import "github.com/metacubex/sing/common/logger"
 
 type PackageManager interface {
 	Start() error

@@ -3,8 +3,8 @@ package tun
 import (
 	"context"
 
-	"github.com/metacubex/sing-tun/control"
-	"github.com/sagernet/sing/common/logger"
+	"github.com/metacubex/sing/common/control"
+	"github.com/metacubex/sing/common/logger"
 
 	"go4.org/netipx"
 )

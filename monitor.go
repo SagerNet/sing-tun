@@ -1,9 +1,9 @@
 package tun
 
 import (
-	"github.com/metacubex/sing-tun/control"
-	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/x/list"
+	"github.com/metacubex/sing/common/control"
+	E "github.com/metacubex/sing/common/exceptions"
+	"github.com/metacubex/sing/common/x/list"
 )
 
 var ErrNoRoute = E.New("no route to internet")

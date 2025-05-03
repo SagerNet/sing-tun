@@ -6,8 +6,8 @@ import (
 	"os/exec"
 	"strings"
 
-	E "github.com/sagernet/sing/common/exceptions"
-	F "github.com/sagernet/sing/common/format"
+	E "github.com/metacubex/sing/common/exceptions"
+	F "github.com/metacubex/sing/common/format"
 )
 
 func (r *autoRedirect) setupIPTables() error {

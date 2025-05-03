@@ -12,11 +12,11 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/atomic"
-	"github.com/sagernet/sing/common/buf"
-	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/windnsapi"
+	"github.com/metacubex/sing/common"
+	"github.com/metacubex/sing/common/atomic"
+	"github.com/metacubex/sing/common/buf"
+	E "github.com/metacubex/sing/common/exceptions"
+	"github.com/metacubex/sing/common/windnsapi"
 
 	"github.com/metacubex/sing-tun/internal/winipcfg"
 	"github.com/metacubex/sing-tun/internal/winsys"
