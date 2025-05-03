@@ -697,6 +697,7 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			Register: 1,
 			Data:     binaryutil.BigEndian.PutUint16(53),
 		},
+		&expr.Counter{},
 		&expr.Immediate{
 			Register: 1,
 			Data:     dnsServer.AsSlice(),
@@ -706,7 +707,6 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			Family:     uint32(family),
 			RegAddrMin: 1,
 		},
-		&expr.Counter{},
 	)
 	nft.AddRule(&nftables.Rule{
 		Table: table,
