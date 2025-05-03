@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/sagernet/fswatch"
+	"github.com/metacubex/fswatch"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/abx"
 	E "github.com/sagernet/sing/common/exceptions"
