@@ -105,7 +105,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 		}
 		localAddresses6 = common.Filter(localAddresses6, func(it netip.Prefix) bool {
 			address := it.Addr()
-			return address.IsLoopback() || address.IsGlobalUnicast() && !address.IsPrivate()
+			return address.IsLoopback() || address.IsGlobalUnicast() && address.IsPrivate()
 		})
 		if len(lastAddresses) == 0 || update {
 			_, err := nftablesCreateIPSet(nft, table, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, nil, localAddresses6, false, update)
