@@ -79,8 +79,9 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 	} else {
 		if r.useNFTables {
 			err = r.initializeNFTables()
-			if err != nil {
-				return nil, E.Cause(err, "missing nftables support")
+			if err != nil && err != os.ErrInvalid {
+				r.useNFTables = false
+				r.logger.Debug("missing nftables support: ", err)
 			}
 		}
 		if len(r.tunOptions.Inet4Address) > 0 {
