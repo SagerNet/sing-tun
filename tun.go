@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/netip"
@@ -8,17 +9,23 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/metacubex/sing/common/buf"
 	E "github.com/metacubex/sing/common/exceptions"
 	F "github.com/metacubex/sing/common/format"
 	"github.com/metacubex/sing/common/logger"
+	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
 	"github.com/metacubex/sing/common/ranges"
 )
 
 type Handler interface {
 	N.TCPConnectionHandler
-	N.UDPConnectionHandler
+	PacketHandler
 	E.Handler
+}
+
+type PacketHandler interface {
+	NewPacket(ctx context.Context, key netip.AddrPort, buffer *buf.Buffer, metadata M.Metadata, init func(natConn N.PacketConn) N.PacketWriter)
 }
 
 type Tun interface {

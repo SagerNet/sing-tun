@@ -41,7 +41,7 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler).HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
 	go m.tunLoop()

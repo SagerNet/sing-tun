@@ -15,7 +15,6 @@ import (
 	E "github.com/metacubex/sing/common/exceptions"
 	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
-	"github.com/metacubex/sing/common/udpnat"
 
 	"github.com/metacubex/gvisor/pkg/buffer"
 	"github.com/metacubex/gvisor/pkg/tcpip"
@@ -26,20 +25,20 @@ import (
 )
 
 type UDPForwarder struct {
-	ctx    context.Context
-	stack  *stack.Stack
-	udpNat *udpnat.Service[netip.AddrPort]
+	ctx     context.Context
+	stack   *stack.Stack
+	handler Handler
 
 	// cache
 	cacheProto tcpip.NetworkProtocolNumber
 	cacheID    stack.TransportEndpointID
 }
 
-func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, udpTimeout int64) *UDPForwarder {
+func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler) *UDPForwarder {
 	return &UDPForwarder{
-		ctx:    ctx,
-		stack:  stack,
-		udpNat: udpnat.New[netip.AddrPort](udpTimeout, handler),
+		ctx:     ctx,
+		stack:   stack,
+		handler: handler,
 	}
 }
 
@@ -58,7 +57,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 		sBuffer.Write(view.AsSlice())
 	})
 	f.cacheID = id
-	f.udpNat.NewPacket(
+	f.handler.NewPacket(
 		f.ctx,
 		upstreamMetadata.Source.AddrPort(),
 		sBuffer,

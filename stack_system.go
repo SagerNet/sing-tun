@@ -16,7 +16,6 @@ import (
 	"github.com/metacubex/sing/common/logger"
 	M "github.com/metacubex/sing/common/metadata"
 	N "github.com/metacubex/sing/common/network"
-	"github.com/metacubex/sing/common/udpnat"
 )
 
 var ErrIncludeAllNetworks = E.New("`system` and `mixed` stack are not available when `includeAllNetworks` is enabled. See https://github.com/SagerNet/sing-tun/issues/25")
@@ -41,7 +40,6 @@ type System struct {
 	tcpPort            uint16
 	tcpPort6           uint16
 	tcpNat             *TCPNat
-	udpNat             *udpnat.Service[netip.AddrPort]
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
 	enforceBind        bool
@@ -164,7 +162,6 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	s.tcpNat = NewNat(s.ctx, time.Second*time.Duration(s.udpTimeout))
-	s.udpNat = udpnat.New[netip.AddrPort](s.udpTimeout, s.handler)
 	return nil
 }
 
@@ -535,7 +532,7 @@ func (s *System) processIPv4UDP(ipHdr header.IPv4, udpHdr header.UDP) error {
 		Source:      M.SocksaddrFromNetIP(source),
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
-	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.handler.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
 		headerLen := ipHdr.HeaderLength() + header.UDPMinimumSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, ipHdr[:headerLen])
@@ -564,7 +561,7 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 		Source:      M.SocksaddrFromNetIP(source),
 		Destination: M.SocksaddrFromNetIP(destination),
 	}
-	s.udpNat.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
+	s.handler.NewPacket(s.ctx, source, data.ToOwned(), metadata, func(natConn N.PacketConn) N.PacketWriter {
 		headerLen := len(ipHdr) - int(ipHdr.PayloadLength()) + header.UDPMinimumSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, ipHdr[:headerLen])
