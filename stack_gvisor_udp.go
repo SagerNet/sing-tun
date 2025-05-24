@@ -26,10 +26,6 @@ type UDPForwarder struct {
 	ctx     context.Context
 	stack   *stack.Stack
 	handler Handler
-
-	// cache
-	cacheProto tcpip.NetworkProtocolNumber
-	cacheID    stack.TransportEndpointID
 }
 
 func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler) *UDPForwarder {
@@ -44,34 +40,30 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 	var upstreamMetadata M.Metadata
 	upstreamMetadata.Source = M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	upstreamMetadata.Destination = M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
+	proto := header.IPv6ProtocolNumber
 	if upstreamMetadata.Source.IsIPv4() {
-		f.cacheProto = header.IPv4ProtocolNumber
-	} else {
-		f.cacheProto = header.IPv6ProtocolNumber
+		proto = header.IPv4ProtocolNumber
 	}
 	gBuffer := pkt.Data().ToBuffer()
 	sBuffer := buf.NewSize(int(gBuffer.Size()))
 	gBuffer.Apply(func(view *buffer.View) {
 		sBuffer.Write(view.AsSlice())
 	})
-	f.cacheID = id
 	f.handler.NewPacket(
 		f.ctx,
 		upstreamMetadata.Source.AddrPort(),
 		sBuffer,
 		upstreamMetadata,
-		f.newUDPConn,
+		func(natConn N.PacketConn) N.PacketWriter {
+			return &UDPBackWriter{
+				stack:         f.stack,
+				source:        id.RemoteAddress,
+				sourcePort:    id.RemotePort,
+				sourceNetwork: proto,
+			}
+		},
 	)
 	return true
-}
-
-func (f *UDPForwarder) newUDPConn(natConn N.PacketConn) N.PacketWriter {
-	return &UDPBackWriter{
-		stack:         f.stack,
-		source:        f.cacheID.RemoteAddress,
-		sourcePort:    f.cacheID.RemotePort,
-		sourceNetwork: f.cacheProto,
-	}
 }
 
 type UDPBackWriter struct {
