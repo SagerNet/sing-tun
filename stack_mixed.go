@@ -3,28 +3,20 @@
 package tun
 
 import (
-	"time"
-
-	"github.com/metacubex/sing/common/bufio"
-	"github.com/metacubex/sing/common/canceler"
-	E "github.com/metacubex/sing/common/exceptions"
-	M "github.com/metacubex/sing/common/metadata"
-
 	"github.com/metacubex/gvisor/pkg/buffer"
-	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
 	gHdr "github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/link/channel"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
-	"github.com/metacubex/gvisor/pkg/waiter"
 	"github.com/metacubex/sing-tun/internal/gtcpip/header"
+	"github.com/metacubex/sing/common/bufio"
+	E "github.com/metacubex/sing/common/exceptions"
 )
 
 type Mixed struct {
 	*System
-	endpointIndependentNat bool
-	stack                  *stack.Stack
-	endpoint               *channel.Endpoint
+	stack    *stack.Stack
+	endpoint *channel.Endpoint
 }
 
 func NewMixed(
@@ -35,8 +27,7 @@ func NewMixed(
 		return nil, err
 	}
 	return &Mixed{
-		System:                 system.(*System),
-		endpointIndependentNat: options.EndpointIndependentNat,
+		System: system.(*System),
 	}, nil
 }
 
@@ -50,36 +41,7 @@ func (m *Mixed) Start() error {
 	if err != nil {
 		return err
 	}
-	if !m.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
-			var wq waiter.Queue
-			endpoint, err := request.CreateEndpoint(&wq)
-			if err != nil {
-				return
-			}
-			udpConn := gonet.NewUDPConn(&wq, endpoint)
-			lAddr := udpConn.RemoteAddr()
-			rAddr := udpConn.LocalAddr()
-			if lAddr == nil || rAddr == nil {
-				endpoint.Abort()
-				return
-			}
-			gConn := &gUDPConn{UDPConn: udpConn}
-			go func() {
-				var metadata M.Metadata
-				metadata.Source = M.SocksaddrFromNet(lAddr)
-				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
-				hErr := m.handler.NewPacketConnection(ctx, conn, metadata)
-				if hErr != nil {
-					endpoint.Abort()
-				}
-			}()
-		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
-	} else {
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
-	}
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
 	go m.tunLoop()
