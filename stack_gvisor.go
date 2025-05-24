@@ -105,7 +105,7 @@ func (t *GVisor) Start() error {
 			var metadata M.Metadata
 			metadata.Source = M.SocksaddrFromNet(lAddr)
 			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewConnection(t.ctx, &gTCPConn{tcpConn}, metadata)
+			hErr := t.handler.NewConnection(t.ctx, tcpConn, metadata)
 			if hErr != nil {
 				endpoint.Abort()
 			}
@@ -162,7 +162,7 @@ func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 	})
 	tErr := ipStack.CreateNIC(defaultNIC, ep)
 	if tErr != nil {
-		return nil, E.New("create nic: ", wrapStackError(tErr))
+		return nil, E.New("create nic: ", gonet.TranslateNetstackError(tErr))
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
