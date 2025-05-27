@@ -104,7 +104,7 @@ func buildExcludedRanges(includeRanges []ranges.Range[uint32], excludeRanges []r
 	return ranges.Merge(uidRanges)
 }
 
-const autoRouteUseSubRanges = runtime.GOOS == "darwin"
+const autoRouteUseSubRanges = runtime.GOOS == "darwin" || runtime.GOOS == "freebsd"
 
 func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Prefix, error) {
 	var routeRanges []netip.Prefix
