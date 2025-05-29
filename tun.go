@@ -48,6 +48,7 @@ type LinuxTUN interface {
 const (
 	DefaultIPRoute2TableIndex = 2022
 	DefaultIPRoute2RuleIndex  = 9000
+	DefaultFIBIndex           = 2022
 )
 
 type Options struct {
@@ -63,6 +64,7 @@ type Options struct {
 	DNSServers               []netip.Addr
 	IPRoute2TableIndex       int
 	IPRoute2RuleIndex        int
+	FIBIndex                 int
 	AutoRedirectMarkMode     bool
 	AutoRedirectInputMark    uint32
 	AutoRedirectOutputMark   uint32
@@ -102,6 +104,8 @@ func (o *Options) Inet4GatewayAddr() netip.Addr {
 				return o.Inet4Address[0].Addr().Next()
 			}
 		case "darwin":
+			fallthrough
+		case "freebsd":
 			return o.Inet4Address[0].Addr()
 		default:
 			if !o.InterfaceScope {
@@ -128,6 +132,8 @@ func (o *Options) Inet6GatewayAddr() netip.Addr {
 				return o.Inet6Address[0].Addr().Next()
 			}
 		case "darwin":
+			fallthrough
+		case "freebsd":
 			return o.Inet6Address[0].Addr()
 		default:
 			if !o.InterfaceScope {
