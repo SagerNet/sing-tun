@@ -117,8 +117,61 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 	return nil
 }
 
+func (r *autoRedirect) nftablesCreateLoopbackAddressSets(
+	nft *nftables.Conn, table *nftables.Table,
+) error {
+	if r.enableIPv4 && len(r.tunOptions.Inet4LoopbackAddress) > 0 {
+		_, err := nftablesCreateIPConst(nft, table, 7, "inet4_local_redirect_address_set", nftables.TableFamilyIPv4, r.tunOptions.Inet4LoopbackAddress)
+		if err != nil {
+			return err
+		}
+	}
+	if r.enableIPv6 && len(r.tunOptions.Inet6LoopbackAddress) > 0 {
+		_, err := nftablesCreateIPConst(nft, table, 8, "inet6_local_redirect_address_set", nftables.TableFamilyIPv6, r.tunOptions.Inet6LoopbackAddress)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) error {
 	if r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput {
+		if chain.Type == nftables.ChainTypeRoute {
+			ipProto := &nftables.Set{
+				Table:     table,
+				Anonymous: true,
+				Constant:  true,
+				KeyType:   nftables.TypeInetProto,
+			}
+			err := nft.AddSet(ipProto, []nftables.SetElement{
+				{Key: []byte{unix.IPPROTO_UDP}},
+				{Key: []byte{unix.IPPROTO_ICMP}},
+				{Key: []byte{unix.IPPROTO_ICMPV6}},
+			})
+			if err != nil {
+				return err
+			}
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Meta{
+						Key:      expr.MetaKeyL4PROTO,
+						Register: 1,
+					},
+					&expr.Lookup{
+						SourceRegister: 1,
+						SetID:          ipProto.ID,
+						SetName:        ipProto.Name,
+						Invert:         true,
+					},
+					&expr.Verdict{
+						Kind: expr.VerdictReturn,
+					},
+				},
+			})
+		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -161,6 +214,25 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	}
 	if chain.Hooknum == nftables.ChainHookPrerouting {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{
+					Key:      expr.MetaKeyIIFNAME,
+					Register: 1,
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     nftablesIfname(r.tunOptions.Name),
+				},
+				&expr.Counter{},
+				&expr.Verdict{
+					Kind: expr.VerdictReturn,
+				},
+			},
+		})
 		if len(r.tunOptions.IncludeInterface) > 0 {
 			if len(r.tunOptions.IncludeInterface) > 1 {
 				includeInterface := &nftables.Set{
@@ -436,44 +508,6 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	}
 
-	if r.tunOptions.AutoRedirectMarkMode &&
-		((chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeRoute) ||
-			(chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeFilter)) {
-		ipProto := &nftables.Set{
-			Table:     table,
-			Anonymous: true,
-			Constant:  true,
-			KeyType:   nftables.TypeInetProto,
-		}
-		err := nft.AddSet(ipProto, []nftables.SetElement{
-			{Key: []byte{unix.IPPROTO_UDP}},
-			{Key: []byte{unix.IPPROTO_ICMP}},
-			{Key: []byte{unix.IPPROTO_ICMPV6}},
-		})
-		if err != nil {
-			return err
-		}
-		nft.AddRule(&nftables.Rule{
-			Table: table,
-			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyL4PROTO,
-					Register: 1,
-				},
-				&expr.Lookup{
-					SourceRegister: 1,
-					SetID:          ipProto.ID,
-					SetName:        ipProto.Name,
-					Invert:         true,
-				},
-				&expr.Verdict{
-					Kind: expr.VerdictReturn,
-				},
-			},
-		})
-	}
-
 	if r.enableIPv4 {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, false)
 	}
@@ -527,6 +561,9 @@ func (r *autoRedirect) nftablesCreateMark(nft *nftables.Conn, table *nftables.Ta
 				SourceRegister: true,
 			},
 			&expr.Counter{},
+			&expr.Verdict{
+				Kind: expr.VerdictReturn,
+			},
 		},
 	})
 }
@@ -534,57 +571,193 @@ func (r *autoRedirect) nftablesCreateMark(nft *nftables.Conn, table *nftables.Ta
 func (r *autoRedirect) nftablesCreateRedirect(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
 	exprs ...expr.Any,
-) {
-	if r.enableIPv4 && !r.enableIPv6 {
-		exprs = append(exprs,
-			&expr.Meta{
-				Key:      expr.MetaKeyNFPROTO,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{uint8(nftables.TableFamilyIPv4)},
-			})
-	} else if !r.enableIPv4 && r.enableIPv6 {
-		exprs = append(exprs,
-			&expr.Meta{
-				Key:      expr.MetaKeyNFPROTO,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{uint8(nftables.TableFamilyIPv6)},
-			})
+) error {
+	exprsRedirect := []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyL4PROTO,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{unix.IPPROTO_TCP},
+		},
+		&expr.Counter{},
+		&expr.Immediate{
+			Register: 1,
+			Data:     binaryutil.BigEndian.PutUint16(r.redirectPort()),
+		},
+		&expr.Redir{
+			RegisterProtoMin: 1,
+			Flags:            unix.NF_NAT_RANGE_PROTO_SPECIFIED,
+		},
+		&expr.Verdict{
+			Kind: expr.VerdictReturn,
+		},
 	}
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: append(exprs,
-			&expr.Meta{
-				Key:      expr.MetaKeyL4PROTO,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{unix.IPPROTO_TCP},
-			},
-			&expr.Counter{},
+	if len(r.tunOptions.Inet4LoopbackAddress) == 0 && len(r.tunOptions.Inet6LoopbackAddress) == 0 {
+		if r.enableIPv4 && !r.enableIPv6 {
+			exprs = append(exprs,
+				&expr.Meta{
+					Key:      expr.MetaKeyNFPROTO,
+					Register: 1,
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte{uint8(nftables.TableFamilyIPv4)},
+				})
+		} else if !r.enableIPv4 && r.enableIPv6 {
+			exprs = append(exprs,
+				&expr.Meta{
+					Key:      expr.MetaKeyNFPROTO,
+					Register: 1,
+				},
+				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte{uint8(nftables.TableFamilyIPv6)},
+				})
+		}
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: append(exprs, exprsRedirect...),
+		})
+	} else {
+		if r.enableIPv4 {
+			exprs4 := exprs
+			if len(r.tunOptions.Inet4LoopbackAddress) > 0 {
+				exprs4 = append(exprs4, nftablesCreateDestinationIPSetExprs(7, "inet4_local_redirect_address_set", nftables.TableFamilyIPv4, true)...)
+			} else {
+				exprs4 = append(exprs4, &expr.Meta{
+					Key:      expr.MetaKeyNFPROTO,
+					Register: 1,
+				}, &expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte{uint8(nftables.TableFamilyIPv4)},
+				})
+			}
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: append(exprs4, exprsRedirect...),
+			})
+		}
+		if r.enableIPv6 {
+			exprs6 := exprs
+			if len(r.tunOptions.Inet6LoopbackAddress) > 0 {
+				exprs6 = append(exprs6, nftablesCreateDestinationIPSetExprs(8, "inet6_local_redirect_address_set", nftables.TableFamilyIPv6, true)...)
+			} else {
+				exprs6 = append(exprs6, &expr.Meta{
+					Key:      expr.MetaKeyNFPROTO,
+					Register: 1,
+				}, &expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     []byte{uint8(nftables.TableFamilyIPv6)},
+				})
+			}
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: append(exprs6, exprsRedirect...),
+			})
+		}
+	}
+	return nil
+}
+
+func (r *autoRedirect) nftablesCreateLoopbackReroute(
+	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
+) error {
+	exprs := []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyL4PROTO,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{unix.IPPROTO_TCP},
+		},
+		&expr.Meta{
+			Key:      expr.MetaKeyMARK,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpNeq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
+		},
+	}
+	var exprs4 []expr.Any
+	if r.enableIPv4 && len(r.tunOptions.Inet4LoopbackAddress) > 0 {
+		exprs4 = append(exprs, nftablesCreateDestinationIPSetExprs(7, "inet4_local_redirect_address_set", nftables.TableFamilyIPv4, false)...)
+	}
+	var exprs6 []expr.Any
+	if r.enableIPv6 && len(r.tunOptions.Inet6LoopbackAddress) > 0 {
+		exprs6 = append(exprs, nftablesCreateDestinationIPSetExprs(8, "inet6_local_redirect_address_set", nftables.TableFamilyIPv6, false)...)
+	}
+	var exprsCreateMark []expr.Any
+	if chain.Hooknum == nftables.ChainHookPrerouting {
+		exprsCreateMark = []expr.Any{
 			&expr.Immediate{
 				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(r.redirectPort()),
+				Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
 			},
-			&expr.Redir{
-				RegisterProtoMin: 1,
-				Flags:            unix.NF_NAT_RANGE_PROTO_SPECIFIED,
+			&expr.Meta{
+				Key:            expr.MetaKeyMARK,
+				Register:       1,
+				SourceRegister: true,
 			},
-			&expr.Verdict{
-				Kind: expr.VerdictReturn,
+			&expr.Counter{},
+		}
+	} else {
+		exprsCreateMark = []expr.Any{
+			&expr.Immediate{
+				Register: 1,
+				Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
 			},
-		),
-	})
+			&expr.Meta{
+				Key:            expr.MetaKeyMARK,
+				Register:       1,
+				SourceRegister: true,
+			},
+			&expr.Meta{
+				Key:      expr.MetaKeyMARK,
+				Register: 1,
+			},
+			&expr.Ct{
+				Key:            expr.CtKeyMARK,
+				Register:       1,
+				SourceRegister: true,
+			},
+			&expr.Counter{},
+		}
+	}
+	if len(exprs4) > 0 {
+		exprs4 = append(exprs4, exprsCreateMark...)
+	}
+	if len(exprs6) > 0 {
+		exprs6 = append(exprs6, exprsCreateMark...)
+	}
+	if len(exprs4) > 0 {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: exprs4,
+		})
+	}
+	if len(exprs6) > 0 {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: exprs6,
+		})
+	}
+	return nil
 }
 
 func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
