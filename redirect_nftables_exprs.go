@@ -7,6 +7,7 @@ import (
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/expr"
+	"github.com/sagernet/sing/common"
 
 	"go4.org/netipx"
 )
@@ -21,6 +22,20 @@ func nftablesCreateExcludeDestinationIPSet(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
 	id uint32, name string, family nftables.TableFamily, invert bool,
 ) {
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: append(
+			nftablesCreateDestinationIPSetExprs(id, name, family, invert),
+			&expr.Counter{},
+			&expr.Verdict{
+				Kind: expr.VerdictReturn,
+			},
+		),
+	})
+}
+
+func nftablesCreateDestinationIPSetExprs(id uint32, name string, family nftables.TableFamily, invert bool) []expr.Any {
 	exprs := []expr.Any{
 		&expr.Meta{
 			Key:      expr.MetaKeyNFPROTO,
@@ -53,22 +68,63 @@ func nftablesCreateExcludeDestinationIPSet(
 			},
 		)
 	}
-	exprs = append(exprs,
-		&expr.Lookup{
-			SourceRegister: 1,
-			SetID:          id,
-			SetName:        name,
-			Invert:         invert,
-		},
-		&expr.Counter{},
-		&expr.Verdict{
-			Kind: expr.VerdictReturn,
-		})
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: exprs,
+	exprs = append(exprs, &expr.Lookup{
+		SourceRegister: 1,
+		SetID:          id,
+		SetName:        name,
+		Invert:         invert,
 	})
+	return exprs
+}
+
+func nftablesCreateIPConst(
+	nft *nftables.Conn, table *nftables.Table, id uint32, name string, family nftables.TableFamily, addressList []netip.Addr,
+) (*nftables.Set, error) {
+	var keyType nftables.SetDatatype
+	if family == nftables.TableFamilyIPv4 {
+		keyType = nftables.TypeIPAddr
+	} else {
+		keyType = nftables.TypeIP6Addr
+	}
+	mySet := &nftables.Set{
+		Table:    table,
+		ID:       id,
+		Name:     name,
+		KeyType:  keyType,
+		Constant: true,
+	}
+	if id == 0 {
+		mySet.Anonymous = true
+	}
+	setElements := common.Map(addressList, func(addr netip.Addr) nftables.SetElement { return nftables.SetElement{Key: addr.AsSlice()} })
+	if id == 0 {
+		err := nft.AddSet(mySet, setElements)
+		if err != nil {
+			return nil, err
+		}
+		return mySet, nil
+	} else {
+		err := nft.AddSet(mySet, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for len(setElements) > 0 {
+		toAdd := setElements
+		if len(toAdd) > 1000 {
+			toAdd = toAdd[:1000]
+		}
+		setElements = setElements[len(toAdd):]
+		err := nft.SetAddElements(mySet, toAdd)
+		if err != nil {
+			return nil, err
+		}
+		err = nft.Flush()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mySet, nil
 }
 
 func nftablesCreateIPSet(

@@ -46,6 +46,11 @@ func (r *autoRedirect) setupNFTables() error {
 		return err
 	}
 
+	err = r.nftablesCreateLoopbackAddressSets(nft, table)
+	if err != nil {
+		return err
+	}
+
 	skipOutput := len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
 	if !skipOutput {
 		chainOutput := nft.AddChain(&nftables.Chain{
@@ -61,8 +66,23 @@ func (r *autoRedirect) setupNFTables() error {
 				return err
 			}
 			r.nftablesCreateUnreachable(nft, table, chainOutput)
-			r.nftablesCreateRedirect(nft, table, chainOutput)
-
+			err = r.nftablesCreateRedirect(nft, table, chainOutput)
+			if err != nil {
+				return err
+			}
+			if len(r.tunOptions.Inet4LoopbackAddress) > 0 || len(r.tunOptions.Inet6LoopbackAddress) > 0 {
+				chainOutputRoute := nft.AddChain(&nftables.Chain{
+					Name:     "output_route",
+					Table:    table,
+					Hooknum:  nftables.ChainHookOutput,
+					Priority: nftables.ChainPriorityMangle,
+					Type:     nftables.ChainTypeRoute,
+				})
+				err = r.nftablesCreateLoopbackReroute(nft, table, chainOutputRoute)
+				if err != nil {
+					return err
+				}
+			}
 			chainOutputUDP := nft.AddChain(&nftables.Chain{
 				Name:     "output_udp_icmp",
 				Table:    table,
@@ -77,7 +97,7 @@ func (r *autoRedirect) setupNFTables() error {
 			r.nftablesCreateUnreachable(nft, table, chainOutputUDP)
 			r.nftablesCreateMark(nft, table, chainOutputUDP)
 		} else {
-			r.nftablesCreateRedirect(nft, table, chainOutput, &expr.Meta{
+			err = r.nftablesCreateRedirect(nft, table, chainOutput, &expr.Meta{
 				Key:      expr.MetaKeyOIFNAME,
 				Register: 1,
 			}, &expr.Cmp{
@@ -85,6 +105,9 @@ func (r *autoRedirect) setupNFTables() error {
 				Register: 1,
 				Data:     nftablesIfname(r.tunOptions.Name),
 			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -100,12 +123,25 @@ func (r *autoRedirect) setupNFTables() error {
 		return err
 	}
 	r.nftablesCreateUnreachable(nft, table, chainPreRouting)
-	r.nftablesCreateRedirect(nft, table, chainPreRouting)
+	err = r.nftablesCreateRedirect(nft, table, chainPreRouting)
+	if err != nil {
+		return err
+	}
 	if r.tunOptions.AutoRedirectMarkMode {
 		r.nftablesCreateMark(nft, table, chainPreRouting)
-	}
-
-	if r.tunOptions.AutoRedirectMarkMode {
+		if len(r.tunOptions.Inet4LoopbackAddress) > 0 || len(r.tunOptions.Inet6LoopbackAddress) > 0 {
+			chainPreRoutingFilter := nft.AddChain(&nftables.Chain{
+				Name:     "prerouting_filter",
+				Table:    table,
+				Hooknum:  nftables.ChainHookPrerouting,
+				Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 1),
+				Type:     nftables.ChainTypeFilter,
+			})
+			err = r.nftablesCreateLoopbackReroute(nft, table, chainPreRoutingFilter)
+			if err != nil {
+				return err
+			}
+		}
 		chainPreRoutingUDP := nft.AddChain(&nftables.Chain{
 			Name:     "prerouting_udp",
 			Table:    table,
