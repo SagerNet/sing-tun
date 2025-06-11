@@ -21,30 +21,32 @@ import (
 var ErrIncludeAllNetworks = E.New("`system` and `mixed` stack are not available when `includeAllNetworks` is enabled. See https://github.com/SagerNet/sing-tun/issues/25")
 
 type System struct {
-	ctx                context.Context
-	tun                Tun
-	tunName            string
-	mtu                int
-	handler            Handler
-	logger             logger.Logger
-	inet4Prefixes      []netip.Prefix
-	inet6Prefixes      []netip.Prefix
-	inet4ServerAddress netip.Addr
-	inet4Address       netip.Addr
-	inet6ServerAddress netip.Addr
-	inet6Address       netip.Addr
-	broadcastAddr      netip.Addr
-	udpTimeout         int64
-	tcpListener        net.Listener
-	tcpListener6       net.Listener
-	tcpPort            uint16
-	tcpPort6           uint16
-	tcpNat             *TCPNat
-	bindInterface      bool
-	interfaceFinder    control.InterfaceFinder
-	enforceBind        bool
-	frontHeadroom      int
-	txChecksumOffload  bool
+	ctx                  context.Context
+	tun                  Tun
+	tunName              string
+	mtu                  int
+	handler              Handler
+	logger               logger.Logger
+	inet4Prefixes        []netip.Prefix
+	inet6Prefixes        []netip.Prefix
+	inet4ServerAddress   netip.Addr
+	inet4Address         netip.Addr
+	inet6ServerAddress   netip.Addr
+	inet6Address         netip.Addr
+	broadcastAddr        netip.Addr
+	inet4LoopbackAddress []netip.Addr
+	inet6LoopbackAddress []netip.Addr
+	udpTimeout           int64
+	tcpListener          net.Listener
+	tcpListener6         net.Listener
+	tcpPort              uint16
+	tcpPort6             uint16
+	tcpNat               *TCPNat
+	bindInterface        bool
+	interfaceFinder      control.InterfaceFinder
+	enforceBind          bool
+	frontHeadroom        int
+	txChecksumOffload    bool
 }
 
 type Session struct {
@@ -56,19 +58,21 @@ type Session struct {
 
 func NewSystem(options StackOptions) (Stack, error) {
 	stack := &System{
-		ctx:             options.Context,
-		tun:             options.Tun,
-		tunName:         options.TunOptions.Name,
-		mtu:             int(options.TunOptions.MTU),
-		udpTimeout:      options.UDPTimeout,
-		handler:         options.Handler,
-		logger:          options.Logger,
-		inet4Prefixes:   options.TunOptions.Inet4Address,
-		inet6Prefixes:   options.TunOptions.Inet6Address,
-		broadcastAddr:   BroadcastAddr(options.TunOptions.Inet4Address),
-		bindInterface:   options.ForwarderBindInterface,
-		interfaceFinder: options.InterfaceFinder,
-		enforceBind:     options.EnforceBindInterface,
+		ctx:                  options.Context,
+		tun:                  options.Tun,
+		tunName:              options.TunOptions.Name,
+		mtu:                  int(options.TunOptions.MTU),
+		inet4LoopbackAddress: options.TunOptions.Inet4LoopbackAddress,
+		inet6LoopbackAddress: options.TunOptions.Inet6LoopbackAddress,
+		udpTimeout:           options.UDPTimeout,
+		handler:              options.Handler,
+		logger:               options.Logger,
+		inet4Prefixes:        options.TunOptions.Inet4Address,
+		inet6Prefixes:        options.TunOptions.Inet6Address,
+		broadcastAddr:        BroadcastAddr(options.TunOptions.Inet4Address),
+		bindInterface:        options.ForwarderBindInterface,
+		interfaceFinder:      options.InterfaceFinder,
+		enforceBind:          options.EnforceBindInterface,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
 		if !HasNextAddress(options.TunOptions.Inet4Address[0], 1) {
@@ -371,11 +375,22 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 		ipHdr.SetDestinationAddr(session.Source.Addr())
 		tcpHdr.SetDestinationPort(session.Source.Port())
 	} else {
-		natPort := s.tcpNat.Lookup(source, destination)
-		ipHdr.SetSourceAddr(s.inet4Address)
-		tcpHdr.SetSourcePort(natPort)
-		ipHdr.SetDestinationAddr(s.inet4ServerAddress)
-		tcpHdr.SetDestinationPort(s.tcpPort)
+		var loopback bool
+		for _, inet4LoopbackAddress := range s.inet4LoopbackAddress {
+			if destination.Addr() == inet4LoopbackAddress {
+				ipHdr.SetDestinationAddr(ipHdr.SourceAddr())
+				ipHdr.SetSourceAddr(inet4LoopbackAddress)
+				loopback = true
+				break
+			}
+		}
+		if !loopback {
+			natPort := s.tcpNat.Lookup(source, destination)
+			ipHdr.SetSourceAddr(s.inet4Address)
+			tcpHdr.SetSourcePort(natPort)
+			ipHdr.SetDestinationAddr(s.inet4ServerAddress)
+			tcpHdr.SetDestinationPort(s.tcpPort)
+		}
 	}
 	if !s.txChecksumOffload {
 		tcpHdr.SetChecksum(0)
@@ -451,11 +466,22 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 		ipHdr.SetDestinationAddr(session.Source.Addr())
 		tcpHdr.SetDestinationPort(session.Source.Port())
 	} else {
-		natPort := s.tcpNat.Lookup(source, destination)
-		ipHdr.SetSourceAddr(s.inet6Address)
-		tcpHdr.SetSourcePort(natPort)
-		ipHdr.SetDestinationAddr(s.inet6ServerAddress)
-		tcpHdr.SetDestinationPort(s.tcpPort6)
+		var loopback bool
+		for _, inet6LoopbackAddress := range s.inet6LoopbackAddress {
+			if destination.Addr() == inet6LoopbackAddress {
+				ipHdr.SetDestinationAddr(ipHdr.SourceAddr())
+				ipHdr.SetSourceAddr(inet6LoopbackAddress)
+				loopback = true
+				break
+			}
+		}
+		if !loopback {
+			natPort := s.tcpNat.Lookup(source, destination)
+			ipHdr.SetSourceAddr(s.inet6Address)
+			tcpHdr.SetSourcePort(natPort)
+			ipHdr.SetDestinationAddr(s.inet6ServerAddress)
+			tcpHdr.SetDestinationPort(s.tcpPort6)
+		}
 	}
 	if !s.txChecksumOffload {
 		tcpHdr.SetChecksum(0)
