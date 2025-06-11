@@ -32,6 +32,10 @@ func (r *autoRedirect) setupNFTables() error {
 		return err
 	}
 
+	err = r.interfaceFinder.Update()
+	if err != nil {
+		return err
+	}
 	r.localAddresses = common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
 			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast()
