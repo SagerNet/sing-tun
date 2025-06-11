@@ -15,12 +15,12 @@ github.com/mdlayher/socket v0.4.1 h1:eM9y2/jlbs1M615oshPQOHZzj6R6wMT7bX5NPiQvn2U
 github.com/mdlayher/socket v0.4.1/go.mod h1:cAqeGjoufqdxWkD7DkpyS+wcefOtmu5OQ8KuoJGIReA=
 github.com/metacubex/fswatch v0.1.1 h1:jqU7C/v+g0qc2RUFgmAOPoVvfl2BXXUXEumn6oQuxhU=
 github.com/metacubex/fswatch v0.1.1/go.mod h1:czrTT7Zlbz7vWft8RQu9Qqh+JoX+Nnb+UabuyN1YsgI=
-github.com/metacubex/gvisor v0.0.0-20241126021258-5b028898cc5a h1:cZ6oNVrsmsi3SNlnSnRio4zOgtQq+/XidwsaNgKICcg=
-github.com/metacubex/gvisor v0.0.0-20241126021258-5b028898cc5a/go.mod h1:xBw/SYJPgUMPQ1tklV/brGn2nxhfr3BnvBzNlyi4Nic=
+github.com/metacubex/gvisor v0.0.0-20250324165734-5857f47bd43b h1:RUh4OdVPz/jDrM9MQ2ySuqu2aeBqcA8rtfWUYLZ8RtI=
+github.com/metacubex/gvisor v0.0.0-20250324165734-5857f47bd43b/go.mod h1:8LpS0IJW1VmWzUm3ylb0e2SK5QDm5lO/2qwWLZgRpBU=
 github.com/metacubex/nftables v0.0.0-20250503052935-30a69ab87793 h1:1Qpuy+sU3DmyX9HwI+CrBT/oLNJngvBorR2RbajJcqo=
 github.com/metacubex/nftables v0.0.0-20250503052935-30a69ab87793/go.mod h1:RjRNb4G52yAgfR+Oe/kp9G4PJJ97Fnj89eY1BFO3YyA=
-github.com/metacubex/sing v0.5.2 h1:uHi2iheXFdB9BY7tHqF40zdAcEHWmZAF6oHskugwh0w=
-github.com/metacubex/sing v0.5.2/go.mod h1:ypf0mjwlZm0sKdQSY+yQvmsbWa0hNPtkeqyRMGgoN+w=
+github.com/metacubex/sing v0.5.3 h1:QWdN16WFKMk06x4nzkc8SvZ7y2x+TLQrpkPoHs+WSVM=
+github.com/metacubex/sing v0.5.3/go.mod h1:ypf0mjwlZm0sKdQSY+yQvmsbWa0hNPtkeqyRMGgoN+w=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a h1:ObwtHN2VpqE0ZNjr6sGeT00J8uU7JF4cNUdb44/Duis=
 github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a/go.mod h1:xLnfdiJbSp8rNqYEdIW/6eDO4mVoogml14Bh2hSiFpM=
