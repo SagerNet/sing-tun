@@ -5,11 +5,9 @@ package tun
 import (
 	"context"
 	"net/netip"
-	"time"
 
 	E "github.com/metacubex/sing/common/exceptions"
 	"github.com/metacubex/sing/common/logger"
-	M "github.com/metacubex/sing/common/metadata"
 
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/adapters/gonet"
@@ -20,12 +18,11 @@ import (
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/icmp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
-	"github.com/metacubex/gvisor/pkg/waiter"
 )
 
 const WithGVisor = true
 
-const defaultNIC tcpip.NICID = 1
+const DefaultNIC tcpip.NICID = 1
 
 type GVisor struct {
 	ctx           context.Context
@@ -68,50 +65,11 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
-	ipStack, err := newGVisorStack(linkEndpoint)
+	ipStack, err := NewGVisorStack(linkEndpoint)
 	if err != nil {
 		return err
 	}
-	tcpForwarder := tcp.NewForwarder(ipStack, 0, 1024, func(r *tcp.ForwarderRequest) {
-		var wq waiter.Queue
-		handshakeCtx, cancel := context.WithCancel(context.Background())
-		go func() {
-			select {
-			case <-t.ctx.Done():
-				wq.Notify(wq.Events())
-			case <-handshakeCtx.Done():
-			}
-		}()
-		endpoint, err := r.CreateEndpoint(&wq)
-		cancel()
-		if err != nil {
-			r.Complete(true)
-			return
-		}
-		r.Complete(false)
-		endpoint.SocketOptions().SetKeepAlive(true)
-		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveIdle)
-		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
-		endpoint.SetSockOpt(&keepAliveInterval)
-		tcpConn := gonet.NewTCPConn(&wq, endpoint)
-		lAddr := tcpConn.RemoteAddr()
-		rAddr := tcpConn.LocalAddr()
-		if lAddr == nil || rAddr == nil {
-			tcpConn.Close()
-			return
-		}
-		go func() {
-			var metadata M.Metadata
-			metadata.Source = M.SocksaddrFromNet(lAddr)
-			metadata.Destination = M.SocksaddrFromNet(rAddr)
-			hErr := t.handler.NewConnection(t.ctx, tcpConn, metadata)
-			if hErr != nil {
-				endpoint.Abort()
-			}
-		}()
-	})
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarder(t.ctx, ipStack, t.handler).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler).HandlePacket)
 
 	t.stack = ipStack
@@ -147,7 +105,7 @@ func AddrFromAddress(address tcpip.Address) netip.Addr {
 	}
 }
 
-func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
+func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -160,16 +118,16 @@ func newGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 			icmp.NewProtocol6,
 		},
 	})
-	tErr := ipStack.CreateNIC(defaultNIC, ep)
+	tErr := ipStack.CreateNIC(DefaultNIC, ep)
 	if tErr != nil {
 		return nil, E.New("create nic: ", gonet.TranslateNetstackError(tErr))
 	}
 	ipStack.SetRouteTable([]tcpip.Route{
-		{Destination: header.IPv4EmptySubnet, NIC: defaultNIC},
-		{Destination: header.IPv6EmptySubnet, NIC: defaultNIC},
+		{Destination: header.IPv4EmptySubnet, NIC: DefaultNIC},
+		{Destination: header.IPv6EmptySubnet, NIC: DefaultNIC},
 	})
-	ipStack.SetSpoofing(defaultNIC, true)
-	ipStack.SetPromiscuousMode(defaultNIC, true)
+	ipStack.SetSpoofing(DefaultNIC, true)
+	ipStack.SetPromiscuousMode(DefaultNIC, true)
 	bufSize := 20 * 1024
 	ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpip.TCPReceiveBufferSizeRangeOption{
 		Min:     1,

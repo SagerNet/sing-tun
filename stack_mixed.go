@@ -37,7 +37,7 @@ func (m *Mixed) Start() error {
 		return err
 	}
 	endpoint := channel.New(1024, uint32(m.mtu), "")
-	ipStack, err := newGVisorStack(endpoint)
+	ipStack, err := NewGVisorStack(endpoint)
 	if err != nil {
 		return err
 	}

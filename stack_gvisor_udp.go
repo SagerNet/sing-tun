@@ -86,7 +86,7 @@ func (w *UDPBackWriter) WritePacket(packetBuffer *buf.Buffer, destination M.Sock
 	defer packetBuffer.Release()
 
 	route, err := w.stack.FindRoute(
-		defaultNIC,
+		DefaultNIC,
 		AddressFromAddr(destination.Addr),
 		w.source,
 		w.sourceNetwork,
