@@ -145,8 +145,12 @@ func (c *gLazyConn) Close() error {
 			c.handshakeErr = net.ErrClosed
 			c.handshakeDone = true
 			return nil
+		} else if c.handshakeErr != nil {
+			return nil
 		}
 		c.handshakeAccess.Unlock()
+	} else if c.handshakeErr != nil {
+		return nil
 	}
 	return c.tcpConn.Close()
 }
@@ -159,8 +163,12 @@ func (c *gLazyConn) CloseRead() error {
 			c.handshakeErr = net.ErrClosed
 			c.handshakeDone = true
 			return nil
+		} else if c.handshakeErr != nil {
+			return nil
 		}
 		c.handshakeAccess.Unlock()
+	} else if c.handshakeErr != nil {
+		return nil
 	}
 	return c.tcpConn.CloseRead()
 }
@@ -173,8 +181,12 @@ func (c *gLazyConn) CloseWrite() error {
 			c.handshakeErr = net.ErrClosed
 			c.handshakeDone = true
 			return nil
+		} else if c.handshakeErr != nil {
+			return nil
 		}
 		c.handshakeAccess.Unlock()
+	} else if c.handshakeErr != nil {
+		return nil
 	}
 	return c.tcpConn.CloseRead()
 }
