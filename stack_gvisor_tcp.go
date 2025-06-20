@@ -4,6 +4,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
@@ -37,7 +38,7 @@ func (f *TCPForwarder) Forward(r *tcp.ForwarderRequest) {
 	destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
 	pErr := f.handler.PrepareConnection(N.NetworkTCP, source, destination)
 	if pErr != nil {
-		r.Complete(pErr != ErrDrop)
+		r.Complete(!errors.Is(pErr, ErrDrop))
 		return
 	}
 	conn := &gLazyConn{

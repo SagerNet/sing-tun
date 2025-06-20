@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"syscall"
@@ -354,7 +355,7 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 	} else {
 		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
 		if err != nil {
-			if err == ErrDrop {
+			if errors.Is(err, ErrDrop) {
 				return false, nil
 			} else {
 				return false, s.resetIPv4TCP(ipHdr, tcpHdr)
@@ -441,7 +442,7 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 	} else {
 		natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
 		if err != nil {
-			if err == ErrDrop {
+			if errors.Is(err, ErrDrop) {
 				return false, nil
 			} else {
 				return false, s.resetIPv6TCP(ipHdr, tcpHdr)
@@ -536,7 +537,7 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	pErr := s.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
-		if pErr != ErrDrop {
+		if !errors.Is(pErr, ErrDrop) {
 			if source.IsIPv4() {
 				ipHdr := userData.(header.IPv4)
 				s.rejectIPv4WithICMP(ipHdr, header.ICMPv4PortUnreachable)

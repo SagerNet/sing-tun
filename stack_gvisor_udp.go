@@ -4,6 +4,7 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/netip"
 	"os"
@@ -59,7 +60,7 @@ func rangeIterate(r stack.Range, fn func(*buffer.View))
 func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	pErr := f.handler.PrepareConnection(N.NetworkUDP, source, destination)
 	if pErr != nil {
-		if pErr != ErrDrop {
+		if !errors.Is(pErr, ErrDrop) {
 			gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer))
 		}
 		return false, nil, nil, nil
