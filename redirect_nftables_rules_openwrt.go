@@ -3,101 +3,50 @@
 package tun
 
 import (
-	"github.com/sagernet/nftables"
-	"github.com/sagernet/nftables/expr"
+	"os"
+	"os/exec"
 
-	"golang.org/x/exp/slices"
+	"github.com/sagernet/nftables"
+	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/shell"
 )
 
 func (r *autoRedirect) configureOpenWRTFirewall4(nft *nftables.Conn, cleanup bool) error {
-	tableFW4, err := nft.ListTableOfFamily("fw4", nftables.TableFamilyINet)
+	_, err := nft.ListTableOfFamily("fw4", nftables.TableFamilyINet)
 	if err != nil {
 		return nil
 	}
-	if !cleanup {
-		ruleIif := &nftables.Rule{
-			Table: tableFW4,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyIIFNAME,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     nftablesIfname(r.tunOptions.Name),
-				},
-				&expr.Counter{},
-				&expr.Verdict{
-					Kind: expr.VerdictAccept,
-				},
-			},
-		}
-		ruleOif := &nftables.Rule{
-			Table: tableFW4,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyOIFNAME,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     nftablesIfname(r.tunOptions.Name),
-				},
-				&expr.Counter{},
-				&expr.Verdict{
-					Kind: expr.VerdictAccept,
-				},
-			},
-		}
-		chainForward := &nftables.Chain{
-			Name: "forward",
-		}
-		ruleIif.Chain = chainForward
-		ruleOif.Chain = chainForward
-		nft.InsertRule(ruleOif)
-		nft.InsertRule(ruleIif)
-		chainInput := &nftables.Chain{
-			Name: "input",
-		}
-		ruleIif.Chain = chainInput
-		ruleOif.Chain = chainInput
-		nft.InsertRule(ruleOif)
-		nft.InsertRule(ruleIif)
+	fw4Path, err := exec.LookPath("fw4")
+	if err != nil {
 		return nil
 	}
-	for _, chainName := range []string{"input", "forward"} {
-		var rules []*nftables.Rule
-		rules, err = nft.GetRules(tableFW4, &nftables.Chain{
-			Name: chainName,
-		})
+	rulePath := "/etc/nftables.d/0-" + r.tableName + "-auto-redirect.nft"
+	if !cleanup {
+		err = os.WriteFile(rulePath, []byte(`chain input {
+	type filter hook input priority filter; policy accept;
+	iifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
+	oifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
+}
+chain forward {
+	type filter hook forward priority filter; policy accept;
+	iifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
+	oifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
+}
+`), 0o644)
 		if err != nil {
-			return err
+			return E.Cause(err, "write fw4 rules")
 		}
-		for _, rule := range rules {
-			if len(rule.Exprs) != 4 {
-				continue
-			}
-			exprMeta, isMeta := rule.Exprs[0].(*expr.Meta)
-			if !isMeta {
-				continue
-			}
-			if exprMeta.Key != expr.MetaKeyIIFNAME && exprMeta.Key != expr.MetaKeyOIFNAME {
-				continue
-			}
-			exprCmp, isCmp := rule.Exprs[1].(*expr.Cmp)
-			if !isCmp {
-				continue
-			}
-			if !slices.Equal(exprCmp.Data, nftablesIfname(r.tunOptions.Name)) {
-				continue
-			}
-			err = nft.DelRule(rule)
-			if err != nil {
-				return err
-			}
+	} else if _, err = os.Stat(rulePath); os.IsNotExist(err) {
+		return nil
+	} else {
+		err = os.Remove(rulePath)
+		if err != nil {
+			return E.Cause(err, "clean fw4 rules")
 		}
+	}
+	_, err = shell.Exec(fw4Path, "reload").Read()
+	if err != nil {
+		return E.Cause(err, "reload fw4 rules")
 	}
 	return nil
 }
