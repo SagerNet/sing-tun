@@ -10,6 +10,8 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
+	"github.com/sagernet/sing-tun/internal/rawfile_darwin"
+	"github.com/sagernet/sing-tun/internal/stopfd_darwin"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -21,15 +23,64 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var _ DarwinTUN = (*NativeTun)(nil)
+
 const PacketOffset = 4
 
 type NativeTun struct {
-	tunFile      *os.File
-	tunWriter    N.VectorisedWriter
-	options      Options
-	inet4Address [4]byte
-	inet6Address [16]byte
-	routeSet     bool
+	tunFd         int
+	tunFile       *os.File
+	batchSize     int
+	iovecs        []iovecBuffer
+	iovecsOutput  []iovecBuffer
+	msgHdrs       []rawfile.MsgHdrX
+	msgHdrsOutput []rawfile.MsgHdrX
+	buffers       []*buf.Buffer
+	stopFd        stopfd.StopFD
+	tunWriter     N.VectorisedWriter
+	options       Options
+	inet4Address  [4]byte
+	inet6Address  [16]byte
+	routeSet      bool
+}
+
+type iovecBuffer struct {
+	mtu    int
+	buffer *buf.Buffer
+	iovecs []unix.Iovec
+}
+
+func newIovecBuffer(mtu int) iovecBuffer {
+	return iovecBuffer{
+		mtu:    mtu,
+		iovecs: make([]unix.Iovec, 2),
+	}
+}
+
+func (b *iovecBuffer) nextIovecs() []unix.Iovec {
+	if b.iovecs[0].Len == 0 {
+		headBuffer := make([]byte, PacketOffset)
+		b.iovecs[0].Base = &headBuffer[0]
+		b.iovecs[0].SetLen(PacketOffset)
+	}
+	if b.buffer == nil {
+		b.buffer = buf.NewSize(b.mtu)
+		b.iovecs[1].Base = &b.buffer.FreeBytes()[0]
+		b.iovecs[1].SetLen(b.mtu)
+	}
+	return b.iovecs
+}
+
+func (b *iovecBuffer) nextIovecsOutput(buffer *buf.Buffer) []unix.Iovec {
+	switch header.IPVersion(buffer.Bytes()) {
+	case header.IPv4Version:
+		b.iovecs[0] = packetHeaderVec4
+	case header.IPv6Version:
+		b.iovecs[0] = packetHeaderVec6
+	}
+	b.iovecs[1].Base = &buffer.Bytes()[0]
+	b.iovecs[1].SetLen(buffer.Len())
+	return b.iovecs
 }
 
 func (t *NativeTun) Name() (string, error) {
@@ -42,6 +93,7 @@ func (t *NativeTun) Name() (string, error) {
 
 func New(options Options) (Tun, error) {
 	var tunFd int
+	batchSize := ((512 * 1024) / int(options.MTU)) + 1
 	if options.FileDescriptor == 0 {
 		ifIndex := -1
 		_, err := fmt.Sscanf(options.Name, "utun%d", &ifIndex)
@@ -54,18 +106,37 @@ func New(options Options) (Tun, error) {
 			return nil, err
 		}
 
-		err = configure(tunFd, ifIndex, options.Name, options)
+		err = create(tunFd, ifIndex, options.Name, options)
+		if err != nil {
+			unix.Close(tunFd)
+			return nil, err
+		}
+		err = configure(tunFd, batchSize)
 		if err != nil {
 			unix.Close(tunFd)
 			return nil, err
 		}
 	} else {
 		tunFd = options.FileDescriptor
+		err := configure(tunFd, batchSize)
+		if err != nil {
+			return nil, err
+		}
 	}
-
 	nativeTun := &NativeTun{
-		tunFile: os.NewFile(uintptr(tunFd), "utun"),
-		options: options,
+		tunFd:         tunFd,
+		tunFile:       os.NewFile(uintptr(tunFd), "utun"),
+		options:       options,
+		batchSize:     batchSize,
+		iovecs:        make([]iovecBuffer, batchSize),
+		iovecsOutput:  make([]iovecBuffer, batchSize),
+		msgHdrs:       make([]rawfile.MsgHdrX, batchSize),
+		msgHdrsOutput: make([]rawfile.MsgHdrX, batchSize),
+		stopFd:        common.Must1(stopfd.New()),
+	}
+	for i := 0; i < batchSize; i++ {
+		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU))
+		nativeTun.iovecsOutput[i] = newIovecBuffer(int(options.MTU))
 	}
 	if len(options.Inet4Address) > 0 {
 		nativeTun.inet4Address = options.Inet4Address[0].Addr().As4()
@@ -100,9 +171,16 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 }
 
 var (
-	packetHeader4 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET}
-	packetHeader6 = [4]byte{0x00, 0x00, 0x00, unix.AF_INET6}
+	packetHeader4    = []byte{0x00, 0x00, 0x00, unix.AF_INET}
+	packetHeader6    = []byte{0x00, 0x00, 0x00, unix.AF_INET6}
+	packetHeaderVec4 = unix.Iovec{Base: &packetHeader4[0]}
+	packetHeaderVec6 = unix.Iovec{Base: &packetHeader6[0]}
 )
+
+func init() {
+	packetHeaderVec4.SetLen(4)
+	packetHeaderVec6.SetLen(4)
+}
 
 func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
 	var packetHeader []byte
@@ -147,7 +225,7 @@ type addrLifetime6 struct {
 	Pltime    uint32
 }
 
-func configure(tunFd int, ifIndex int, name string, options Options) error {
+func create(tunFd int, ifIndex int, name string, options Options) error {
 	ctlInfo := &unix.CtlInfo{}
 	copy(ctlInfo.Name[:], utunControlName)
 	err := unix.IoctlCtlInfo(tunFd, ctlInfo)
@@ -161,11 +239,6 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 	})
 	if err != nil {
 		return os.NewSyscallError("Connect", err)
-	}
-
-	err = unix.SetNonblock(tunFd, true)
-	if err != nil {
-		return os.NewSyscallError("SetNonblock", err)
 	}
 
 	err = useSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, func(socketFd int) error {
@@ -257,6 +330,65 @@ func configure(tunFd int, ifIndex int, name string, options Options) error {
 		}
 	}
 	return nil
+}
+
+func configure(tunFd int, batchSize int) error {
+	err := unix.SetNonblock(tunFd, true)
+	if err != nil {
+		return os.NewSyscallError("SetNonblock", err)
+	}
+	const UTUN_OPT_MAX_PENDING_PACKETS = 16
+	err = unix.SetsockoptInt(tunFd, 2, UTUN_OPT_MAX_PENDING_PACKETS, batchSize)
+	if err != nil {
+		return os.NewSyscallError("SetsockoptInt UTUN_OPT_MAX_PENDING_PACKETS", err)
+	}
+	return nil
+}
+
+func (t *NativeTun) BatchSize() int {
+	return t.batchSize
+}
+
+func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
+	for i := 0; i < t.batchSize; i++ {
+		iovecs := t.iovecs[i].nextIovecs()
+		t.msgHdrs[i].DataLen = 0
+		t.msgHdrs[i].Msg.Iov = &iovecs[0]
+		t.msgHdrs[i].Msg.Iovlen = 2
+	}
+	n, errno := rawfile.BlockingRecvMMsgUntilStopped(t.stopFd.ReadFD, t.tunFd, t.msgHdrs)
+	if errno != 0 {
+		return nil, errno
+	}
+	if n < 1 {
+		return nil, nil
+	}
+	buffers := t.buffers
+	for k := 0; k < n; k++ {
+		buffer := t.iovecs[k].buffer
+		t.iovecs[k].buffer = nil
+		buffer.Truncate(int(t.msgHdrs[k].DataLen) - PacketOffset)
+		buffers = append(buffers, buffer)
+	}
+	t.buffers = buffers[:0]
+	return buffers, nil
+}
+
+func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
+	for i, buffer := range buffers {
+		iovecs := t.iovecsOutput[i].nextIovecsOutput(buffer)
+		t.msgHdrsOutput[i].Msg.Iov = &iovecs[0]
+		t.msgHdrsOutput[i].Msg.Iovlen = 2
+	}
+	_, errno := rawfile.NonBlockingSendMMsg(t.tunFd, t.msgHdrsOutput[:len(buffers)])
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func (t *NativeTun) TXChecksumOffload() bool {
+	return false
 }
 
 func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {

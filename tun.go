@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
@@ -43,6 +44,12 @@ type LinuxTUN interface {
 	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
 	BatchWrite(buffers [][]byte, offset int) (n int, err error)
 	TXChecksumOffload() bool
+}
+
+type DarwinTUN interface {
+	Tun
+	BatchRead() ([]*buf.Buffer, error)
+	BatchWrite(buffers []*buf.Buffer) error
 }
 
 const (

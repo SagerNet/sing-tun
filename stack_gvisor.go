@@ -40,7 +40,7 @@ type GVisor struct {
 
 type GVisorTun interface {
 	Tun
-	NewEndpoint() (stack.LinkEndpoint, error)
+	NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error)
 }
 
 func NewGVisor(
@@ -65,12 +65,12 @@ func NewGVisor(
 }
 
 func (t *GVisor) Start() error {
-	linkEndpoint, err := t.tun.NewEndpoint()
+	linkEndpoint, nicOptions, err := t.tun.NewEndpoint()
 	if err != nil {
 		return err
 	}
 	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
-	ipStack, err := NewGVisorStack(linkEndpoint)
+	ipStack, err := NewGVisorStackWithOptions(linkEndpoint, nicOptions)
 	if err != nil {
 		return err
 	}
@@ -110,6 +110,10 @@ func AddrFromAddress(address tcpip.Address) netip.Addr {
 }
 
 func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
+	return NewGVisorStackWithOptions(ep, stack.NICOptions{})
+}
+
+func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions) (*stack.Stack, error) {
 	ipStack := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -122,7 +126,7 @@ func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 			icmp.NewProtocol6,
 		},
 	})
-	err := ipStack.CreateNIC(DefaultNIC, ep)
+	err := ipStack.CreateNICWithOptions(DefaultNIC, ep, opts)
 	if err != nil {
 		return nil, gonet.TranslateNetstackError(err)
 	}
