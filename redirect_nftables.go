@@ -10,6 +10,7 @@ import (
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
@@ -235,7 +236,12 @@ func (r *autoRedirect) setupNFTables() error {
 
 	err = r.configureOpenWRTFirewall4(nft, false)
 	if err != nil {
-		return err
+		return E.Cause(err, "configure OpenWRT firewall")
+	}
+
+	err = r.configureFirewalld(nft, false)
+	if err != nil {
+		return E.Cause(err, "configure firewalld")
 	}
 
 	err = nft.Flush()
@@ -308,7 +314,8 @@ func (r *autoRedirect) cleanupNFTables() {
 		Name:   r.tableName,
 		Family: nftables.TableFamilyINet,
 	})
-	common.Must(r.configureOpenWRTFirewall4(nft, true))
+	_ = r.configureOpenWRTFirewall4(nft, true)
+	_ = r.configureFirewalld(nft, true)
 	_ = nft.Flush()
 	_ = nft.CloseLasting()
 }

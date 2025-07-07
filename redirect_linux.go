@@ -41,6 +41,7 @@ type autoRedirect struct {
 	suPath                 string
 	routeAddressSet        *[]*netipx.IPSet
 	routeExcludeAddressSet *[]*netipx.IPSet
+	firewalldListener      *firewalldListener
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
