@@ -48,6 +48,12 @@ type LinuxTUN interface {
 	TXChecksumOffload() bool
 }
 
+type DarwinTUN interface {
+	Tun
+	BatchRead() ([]*buf.Buffer, error)
+	BatchWrite(buffers []*buf.Buffer) error
+}
+
 const (
 	DefaultIPRoute2TableIndex = 2022
 	DefaultIPRoute2RuleIndex  = 9000

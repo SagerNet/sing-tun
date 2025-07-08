@@ -9,6 +9,7 @@ import (
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/gvisor/pkg/tcpip/transport/udp"
 	"github.com/metacubex/sing-tun/internal/gtcpip/header"
+	"github.com/metacubex/sing/common/buf"
 	"github.com/metacubex/sing/common/bufio"
 	E "github.com/metacubex/sing/common/exceptions"
 )
@@ -59,9 +60,13 @@ func (m *Mixed) tunLoop() {
 		m.txChecksumOffload = linuxTUN.TXChecksumOffload()
 		batchSize := linuxTUN.BatchSize()
 		if batchSize > 1 {
-			m.batchLoop(linuxTUN, batchSize)
+			m.batchLoopLinux(linuxTUN, batchSize)
 			return
 		}
+	}
+	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN {
+		m.batchLoopDarwin(darwinTUN)
+		return
 	}
 	packetBuffer := make([]byte, m.mtu+PacketOffset)
 	for {
@@ -106,12 +111,12 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
+func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
 	writeBuffers := make([][]byte, batchSize)
 	packetSizes := make([]int, batchSize)
 	for i := range packetBuffers {
-		packetBuffers[i] = make([]byte, m.mtu+m.frontHeadroom)
+		packetBuffers[i] = make([]byte, m.mtu+PacketOffset+m.frontHeadroom)
 	}
 	for {
 		n, err := linuxTUN.BatchRead(packetBuffers, m.frontHeadroom, packetSizes)
@@ -141,6 +146,40 @@ func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 				m.logger.Trace(E.Cause(err, "batch write packet"))
 			}
 			writeBuffers = writeBuffers[:0]
+		}
+	}
+}
+
+func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
+	var writeBuffers []*buf.Buffer
+	for {
+		buffers, err := darwinTUN.BatchRead()
+		if err != nil {
+			if E.IsClosed(err) {
+				return
+			}
+			m.logger.Error(E.Cause(err, "batch read packet"))
+		}
+		if len(buffers) == 0 {
+			continue
+		}
+		writeBuffers = writeBuffers[:0]
+		for _, buffer := range buffers {
+			packetSize := buffer.Len()
+			if packetSize < header.IPv4MinimumSize {
+				continue
+			}
+			if m.processPacket(buffer.Bytes()) {
+				writeBuffers = append(writeBuffers, buffer)
+			} else {
+				buffer.Release()
+			}
+		}
+		if len(writeBuffers) > 0 {
+			err = darwinTUN.BatchWrite(writeBuffers)
+			if err != nil {
+				m.logger.Trace(E.Cause(err, "batch write packet"))
+			}
 		}
 	}
 }

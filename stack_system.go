@@ -179,9 +179,13 @@ func (s *System) tunLoop() {
 		s.txChecksumOffload = linuxTUN.TXChecksumOffload()
 		batchSize := linuxTUN.BatchSize()
 		if batchSize > 1 {
-			s.batchLoop(linuxTUN, batchSize)
+			s.batchLoopLinux(linuxTUN, batchSize)
 			return
 		}
+	}
+	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN {
+		s.batchLoopDarwin(darwinTUN)
+		return
 	}
 	packetBuffer := make([]byte, s.mtu+PacketOffset)
 	for {
@@ -226,7 +230,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (s *System) batchLoop(linuxTUN LinuxTUN, batchSize int) {
+func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
 	writeBuffers := make([][]byte, batchSize)
 	packetSizes := make([]int, batchSize)
@@ -261,6 +265,40 @@ func (s *System) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 				s.logger.Trace(E.Cause(err, "batch write packet"))
 			}
 			writeBuffers = writeBuffers[:0]
+		}
+	}
+}
+
+func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
+	var writeBuffers []*buf.Buffer
+	for {
+		buffers, err := darwinTUN.BatchRead()
+		if err != nil {
+			if E.IsClosed(err) {
+				return
+			}
+			s.logger.Error(E.Cause(err, "batch read packet"))
+		}
+		if len(buffers) == 0 {
+			continue
+		}
+		writeBuffers = writeBuffers[:0]
+		for _, buffer := range buffers {
+			packetSize := buffer.Len()
+			if packetSize < header.IPv4MinimumSize {
+				continue
+			}
+			if s.processPacket(buffer.Bytes()) {
+				writeBuffers = append(writeBuffers, buffer)
+			} else {
+				buffer.Release()
+			}
+		}
+		if len(writeBuffers) > 0 {
+			err = darwinTUN.BatchWrite(writeBuffers)
+			if err != nil {
+				s.logger.Trace(E.Cause(err, "batch write packet"))
+			}
 		}
 	}
 }
