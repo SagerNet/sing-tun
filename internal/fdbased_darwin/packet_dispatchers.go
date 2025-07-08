@@ -25,51 +25,31 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// BufConfig defines the shape of the buffer used to read packets from the NIC.
-var BufConfig = []int{4, 128, 256, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768}
-
-// +stateify savable
 type iovecBuffer struct {
-	// buffer is the actual buffer that holds the packet contents. Some contents
-	// are reused across calls to pullBuffer if number of requested bytes is
-	// smaller than the number of bytes allocated in the buffer.
-	views []*buffer.View
-
-	// iovecs are initialized with base pointers/len of the corresponding
-	// entries in the views defined above, except when GSO is enabled
-	// (skipsVnetHdr) then the first iovec points to a buffer for the vnet header
-	// which is stripped before the views are passed up the stack for further
-	// processing.
+	mtu    int
+	views  []*buffer.View
 	iovecs []unix.Iovec `state:"nosave"`
-
-	// sizes is an array of buffer sizes for the underlying views. sizes is
-	// immutable.
-	sizes []int
-
-	// pulledIndex is the index of the last []byte buffer pulled from the
-	// underlying buffer storage during a call to pullBuffers. It is -1
-	// if no buffer is pulled.
-	pulledIndex int
 }
 
-func newIovecBuffer(sizes []int) *iovecBuffer {
+func newIovecBuffer(mtu uint32) *iovecBuffer {
 	b := &iovecBuffer{
-		views:  make([]*buffer.View, len(sizes)),
-		iovecs: make([]unix.Iovec, len(sizes)),
-		sizes:  sizes,
+		mtu:    int(mtu),
+		views:  make([]*buffer.View, 2),
+		iovecs: make([]unix.Iovec, 2),
 	}
 	return b
 }
 
 func (b *iovecBuffer) nextIovecs() []unix.Iovec {
-	for i := range b.views {
-		if b.views[i] != nil {
-			break
-		}
-		v := buffer.NewViewSize(b.sizes[i])
-		b.views[i] = v
-		b.iovecs[i] = unix.Iovec{Base: v.BasePtr()}
-		b.iovecs[i].SetLen(v.Size())
+	if b.views[0] == nil {
+		b.views[0] = buffer.NewViewSize(4)
+		b.iovecs[0] = unix.Iovec{Base: b.views[0].BasePtr()}
+		b.iovecs[0].SetLen(4)
+	}
+	if b.views[1] == nil {
+		b.views[1] = buffer.NewViewSize(b.mtu)
+		b.iovecs[1] = unix.Iovec{Base: b.views[1].BasePtr()}
+		b.iovecs[1].SetLen(b.mtu)
 	}
 	return b.iovecs
 }
@@ -80,25 +60,13 @@ func (b *iovecBuffer) nextIovecs() []unix.Iovec {
 // of b.buffer's storage must be reallocated during the next call to
 // nextIovecs.
 func (b *iovecBuffer) pullBuffer(n int) buffer.Buffer {
-	var views []*buffer.View
-	c := 0
-	// Remove the used views from the buffer.
-	for i, v := range b.views {
-		c += v.Size()
-		if c >= n {
-			b.views[i].CapLength(v.Size() - (c - n))
-			views = append(views, b.views[:i+1]...)
-			break
-		}
-	}
-	for i := range views {
-		b.views[i] = nil
-	}
 	pulled := buffer.Buffer{}
-	for _, v := range views {
-		pulled.Append(v)
-	}
+	pulled.Append(b.views[0])
+	pulled.Append(b.views[1])
 	pulled.Truncate(int64(n))
+	pulled.TrimFront(4)
+	b.views[0] = nil
+	b.views[1] = nil
 	return pulled
 }
 
@@ -147,7 +115,12 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 	if err != nil {
 		return nil, err
 	}
-	batchSize := int((512*1024)/(opts.MTU)) + 1
+	var batchSize int
+	if opts.MTU < 49152 {
+		batchSize = int((512*1024)/(opts.MTU)) + 1
+	} else {
+		batchSize = 1
+	}
 	d := &recvMMsgDispatcher{
 		StopFD:  stopFD,
 		fd:      fd,
@@ -155,9 +128,8 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 		bufs:    make([]*iovecBuffer, batchSize),
 		msgHdrs: make([]rawfile.MsgHdrX, batchSize),
 	}
-	bufConfig := []int{4, int(opts.MTU)}
 	for i := range d.bufs {
-		d.bufs[i] = newIovecBuffer(bufConfig)
+		d.bufs[i] = newIovecBuffer(opts.MTU)
 	}
 	d.gro.Init(false)
 	d.mgr = newProcessorManager(opts, e)
@@ -178,12 +150,11 @@ func (d *recvMMsgDispatcher) release() {
 func (d *recvMMsgDispatcher) dispatch() (bool, tcpip.Error) {
 	// Fill message headers.
 	for k := range d.msgHdrs {
-		if d.msgHdrs[k].Msg.Iovlen > 0 {
-			break
-		}
 		iovecs := d.bufs[k].nextIovecs()
 		iovLen := len(iovecs)
-		d.msgHdrs[k].DataLen = 0
+		// Cannot clear only the length field. Older versions of the darwin kernel will check whether other data is empty.
+		// https://github.com/Darm64/XNU/blob/xnu-2782.40.9/bsd/kern/uipc_syscalls.c#L2026-L2048
+		d.msgHdrs[k] = rawfile.MsgHdrX{}
 		d.msgHdrs[k].Msg.Iov = &iovecs[0]
 		d.msgHdrs[k].Msg.SetIovlen(iovLen)
 	}
@@ -209,7 +180,6 @@ func (d *recvMMsgDispatcher) dispatch() (bool, tcpip.Error) {
 	for k := 0; k < nMsgs; k++ {
 		n := int(d.msgHdrs[k].DataLen)
 		payload := d.bufs[k].pullBuffer(n)
-		payload.TrimFront(4)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: payload,
 		})
