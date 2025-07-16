@@ -111,14 +111,14 @@ func New(options Options) (Tun, error) {
 			unix.Close(tunFd)
 			return nil, err
 		}
-		err = configure(tunFd, options.MTU, batchSize)
+		err = configure(tunFd, batchSize)
 		if err != nil {
 			unix.Close(tunFd)
 			return nil, err
 		}
 	} else {
 		tunFd = options.FileDescriptor
-		err := configure(tunFd, options.MTU, batchSize)
+		err := configure(tunFd, batchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -332,17 +332,15 @@ func create(tunFd int, ifIndex int, name string, options Options) error {
 	return nil
 }
 
-func configure(tunFd int, tunMTU uint32, batchSize int) error {
+func configure(tunFd int, batchSize int) error {
 	err := unix.SetNonblock(tunFd, true)
 	if err != nil {
 		return os.NewSyscallError("SetNonblock", err)
 	}
-	if tunMTU < 49152 {
-		const UTUN_OPT_MAX_PENDING_PACKETS = 16
-		err = unix.SetsockoptInt(tunFd, 2, UTUN_OPT_MAX_PENDING_PACKETS, batchSize)
-		if err != nil {
-			return os.NewSyscallError("SetsockoptInt UTUN_OPT_MAX_PENDING_PACKETS", err)
-		}
+	const UTUN_OPT_MAX_PENDING_PACKETS = 16
+	err = unix.SetsockoptInt(tunFd, 2, UTUN_OPT_MAX_PENDING_PACKETS, batchSize)
+	if err != nil {
+		return os.NewSyscallError("SetsockoptInt UTUN_OPT_MAX_PENDING_PACKETS", err)
 	}
 	return nil
 }
@@ -354,19 +352,12 @@ func (t *NativeTun) BatchSize() int {
 func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 	for i := 0; i < t.batchSize; i++ {
 		iovecs := t.iovecs[i].nextIovecs()
-		// Cannot clear only the length field. Older versions of the darwin kernel will check whether other data is empty.
-		// https://github.com/Darm64/XNU/blob/xnu-2782.40.9/bsd/kern/uipc_syscalls.c#L2026-L2048
-		t.msgHdrs[i] = rawfile.MsgHdrX{}
+		t.msgHdrs[i].DataLen = 0
 		t.msgHdrs[i].Msg.Iov = &iovecs[0]
 		t.msgHdrs[i].Msg.Iovlen = 2
 	}
 	n, errno := rawfile.BlockingRecvMMsgUntilStopped(t.stopFd.ReadFD, t.tunFd, t.msgHdrs)
 	if errno != 0 {
-		for k := 0; k < n; k++ {
-			t.iovecs[k].buffer.Release()
-			t.iovecs[k].buffer = nil
-		}
-		t.buffers = t.buffers[:0]
 		return nil, errno
 	}
 	if n < 1 {

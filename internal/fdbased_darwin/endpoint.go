@@ -74,29 +74,12 @@ const (
 	// dispatch options but the one that is supported by all underlying FD
 	// types.
 	Readv PacketDispatchMode = iota
-	// RecvMMsg enables use of recvmmsg() syscall instead of readv() to
-	// read inbound packets. This reduces # of syscalls needed to process
-	// packets.
-	//
-	// NOTE: recvmmsg() is only supported for sockets, so if the underlying
-	// FD is not a socket then the code will still fall back to the readv()
-	// path.
-	RecvMMsg
-	// PacketMMap enables use of PACKET_RX_RING to receive packets from the
-	// NIC. PacketMMap requires that the underlying FD be an AF_PACKET. The
-	// primary use-case for this is runsc which uses an AF_PACKET FD to
-	// receive packets from the veth device.
-	PacketMMap
 )
 
 func (p PacketDispatchMode) String() string {
 	switch p {
 	case Readv:
 		return "Readv"
-	case RecvMMsg:
-		return "RecvMMsg"
-	case PacketMMap:
-		return "PacketMMap"
 	default:
 		return fmt.Sprintf("unknown packet dispatch mode '%d'", p)
 	}
@@ -298,6 +281,14 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 	}
 
 	return e, nil
+}
+
+func isSocketFD(fd int) (bool, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return false, fmt.Errorf("unix.Fstat(%v,...) failed: %v", fd, err)
+	}
+	return (stat.Mode & unix.S_IFSOCK) == unix.S_IFSOCK, nil
 }
 
 // Attach launches the goroutine that reads packets from the file descriptor and
