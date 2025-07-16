@@ -6,7 +6,7 @@
 package wintun
 
 import (
-	"runtime"
+	"log"
 	"syscall"
 	"unsafe"
 
@@ -30,6 +30,7 @@ var (
 )
 
 func closeAdapter(wintun *Adapter) {
+	log.Println("[tomi] closeAdapter")
 	syscall.SyscallN(procWintunCloseAdapter.Addr(), 1, wintun.handle, 0, 0)
 }
 
@@ -39,6 +40,7 @@ func closeAdapter(wintun *Adapter) {
 // deterministically. If it is set to nil, the GUID is chosen by the system at random,
 // and hence a new NLA entry is created for each new adapter.
 func CreateAdapter(name string, tunnelType string, requestedGUID *windows.GUID) (wintun *Adapter, err error) {
+	log.Println("[tomi] CreateAdapter")
 	var name16 *uint16
 	name16, err = windows.UTF16PtrFromString(name)
 	if err != nil {
@@ -55,12 +57,13 @@ func CreateAdapter(name string, tunnelType string, requestedGUID *windows.GUID) 
 		return
 	}
 	wintun = &Adapter{handle: r0}
-	runtime.SetFinalizer(wintun, closeAdapter)
+	//runtime.SetFinalizer(wintun, closeAdapter)
 	return
 }
 
 // OpenAdapter opens an existing Wintun adapter by name.
 func OpenAdapter(name string) (wintun *Adapter, err error) {
+	log.Println("[tomi] OpenAdapter")
 	var name16 *uint16
 	name16, err = windows.UTF16PtrFromString(name)
 	if err != nil {
@@ -72,13 +75,15 @@ func OpenAdapter(name string) (wintun *Adapter, err error) {
 		return
 	}
 	wintun = &Adapter{handle: r0}
-	runtime.SetFinalizer(wintun, closeAdapter)
+	//runtime.SetFinalizer(wintun, closeAdapter)
 	return
 }
 
 // Close closes a Wintun adapter.
 func (wintun *Adapter) Close() (err error) {
-	runtime.SetFinalizer(wintun, nil)
+	log.Println("[tomi] CloseAdapter")
+
+	//runtime.SetFinalizer(wintun, nil)
 	r1, _, e1 := syscall.Syscall(procWintunCloseAdapter.Addr(), 1, wintun.handle, 0, 0)
 	if r1 == 0 {
 		err = e1
