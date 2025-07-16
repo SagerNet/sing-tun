@@ -174,7 +174,7 @@ func (s *System) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN && s.mtu < 49152 {
+	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN {
 		s.batchLoopDarwin(darwinTUN)
 		return
 	}

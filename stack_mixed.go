@@ -77,7 +77,7 @@ func (m *Mixed) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.mtu < 49152 {
+	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN {
 		m.batchLoopDarwin(darwinTUN)
 		return
 	}
