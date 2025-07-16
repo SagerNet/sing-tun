@@ -42,14 +42,29 @@ func New(options Options) (WinTun, error) {
 	if options.FileDescriptor != 0 {
 		return nil, os.ErrInvalid
 	}
-	adapter, err := wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
-	if err != nil {
-		return nil, err
+
+	var adapter *wintun.Adapter = nil
+
+	// check tun device
+	netInterface, err := net.InterfaceByName(options.Name)
+
+	if err == nil && netInterface.Name == options.Name {
+		adapter, err = wintun.OpenAdapter(options.Name)
+		if err != nil {
+			return nil, errors.New("open tun adapter failed: " + err.Error())
+		}
+	} else {
+		adapter, err = wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
+		if err != nil {
+			return nil, errors.New("create tun adapter failed: " + err.Error())
+		}
 	}
+
 	nativeTun := &NativeTun{
 		adapter: adapter,
 		options: options,
 	}
+
 	session, err := adapter.StartSession(0x800000)
 	if err != nil {
 		return nil, err
@@ -528,7 +543,7 @@ func (t *NativeTun) Close() error {
 		windows.SetEvent(t.readWait)
 		t.running.Wait()
 		t.session.End()
-		t.adapter.Close()
+		//t.adapter.Close()
 		if t.fwpmSession != 0 {
 			winsys.FwpmEngineClose0(t.fwpmSession)
 		}
