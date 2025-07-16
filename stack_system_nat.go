@@ -66,7 +66,9 @@ func (n *TCPNat) LookupBack(port uint16) *TCPSession {
 	session := n.portMap[port]
 	n.portAccess.RUnlock()
 	if session != nil {
+		n.portAccess.Lock()
 		session.LastActive = time.Now()
+		n.portAccess.Unlock()
 	}
 	return session
 }
