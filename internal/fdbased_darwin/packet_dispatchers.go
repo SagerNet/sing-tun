@@ -179,13 +179,12 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 	if err != nil {
 		return nil, err
 	}
-	batchSize := int((512*1024)/(opts.MTU)) + 1
 	d := &recvMMsgDispatcher{
 		StopFD:  stopFD,
 		fd:      fd,
 		e:       e,
-		bufs:    make([]*iovecBuffer, batchSize),
-		msgHdrs: make([]rawfile.MsgHdrX, batchSize),
+		bufs:    make([]*iovecBuffer, e.batchSize),
+		msgHdrs: make([]rawfile.MsgHdrX, e.batchSize),
 	}
 	for i := range d.bufs {
 		d.bufs[i] = newIovecBuffer(opts.MTU)
