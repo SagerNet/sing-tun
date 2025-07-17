@@ -116,7 +116,7 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 		return nil, err
 	}
 	var batchSize int
-	if opts.MTU < 49152 {
+	if opts.MultiPendingPackets {
 		batchSize = int((512*1024)/(opts.MTU)) + 1
 	} else {
 		batchSize = 1

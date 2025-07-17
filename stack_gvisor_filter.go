@@ -8,8 +8,6 @@ import (
 	"github.com/metacubex/gvisor/pkg/tcpip"
 	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
-	"github.com/metacubex/sing/common/bufio"
-	N "github.com/metacubex/sing/common/network"
 )
 
 var _ stack.LinkEndpoint = (*LinkEndpointFilter)(nil)
@@ -17,7 +15,7 @@ var _ stack.LinkEndpoint = (*LinkEndpointFilter)(nil)
 type LinkEndpointFilter struct {
 	stack.LinkEndpoint
 	BroadcastAddress netip.Addr
-	Writer           N.VectorisedWriter
+	Writer           GVisorTun
 }
 
 func (w *LinkEndpointFilter) Attach(dispatcher stack.NetworkDispatcher) {
@@ -29,7 +27,7 @@ var _ stack.NetworkDispatcher = (*networkDispatcherFilter)(nil)
 type networkDispatcherFilter struct {
 	stack.NetworkDispatcher
 	broadcastAddress netip.Addr
-	writer           N.VectorisedWriter
+	writer           GVisorTun
 }
 
 func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
@@ -49,7 +47,7 @@ func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkPro
 	}
 	destination := AddrFromAddress(network.DestinationAddress())
 	if destination == w.broadcastAddress || !destination.IsGlobalUnicast() {
-		_, _ = bufio.WriteVectorised(w.writer, pkt.AsSlices())
+		w.writer.WritePacket(pkt)
 		return
 	}
 	w.NetworkDispatcher.DeliverNetworkPacket(protocol, pkt)

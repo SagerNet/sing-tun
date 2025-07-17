@@ -47,6 +47,7 @@ type System struct {
 	enforceBind          bool
 	frontHeadroom        int
 	txChecksumOffload    bool
+	multiPendingPackets  bool
 }
 
 type Session struct {
@@ -72,6 +73,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		broadcastAddr:        BroadcastAddr(options.TunOptions.Inet4Address),
 		bindInterface:        options.ForwarderBindInterface,
 		interfaceFinder:      options.InterfaceFinder,
+		multiPendingPackets:  options.TunOptions.EXP_MultiPendingPackets,
 		enforceBind:          options.EnforceBindInterface,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
@@ -183,7 +185,7 @@ func (s *System) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN && s.mtu < 49152 {
+	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN && s.multiPendingPackets {
 		s.batchLoopDarwin(darwinTUN)
 		return
 	}
@@ -327,6 +329,13 @@ func (s *System) acceptLoop(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			return
+		}
+		err = acceptConn(conn)
+		if err != nil {
+			s.logger.Error("set buffer for conn: ", err)
+			_ = conn.Close()
+			listener.Close()
 			return
 		}
 		connPort := M.SocksaddrFromNet(conn.RemoteAddr()).Port

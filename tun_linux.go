@@ -12,11 +12,8 @@ import (
 	"unsafe"
 
 	"github.com/metacubex/sing/common"
-	"github.com/metacubex/sing/common/buf"
-	"github.com/metacubex/sing/common/bufio"
 	"github.com/metacubex/sing/common/control"
 	E "github.com/metacubex/sing/common/exceptions"
-	N "github.com/metacubex/sing/common/network"
 	"github.com/metacubex/sing/common/rw"
 	"github.com/metacubex/sing/common/shell"
 	"github.com/metacubex/sing/common/x/list"
@@ -28,20 +25,20 @@ import (
 var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
-	tunFd             int
-	tunFile           *os.File
-	tunWriter         N.VectorisedWriter
-	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
-	options           Options
-	ruleIndex6        []int
-	gsoEnabled        bool
-	gsoBuffer         []byte
-	gsoToWrite        []int
-	gsoReadAccess     sync.Mutex
-	tcpGROAccess      sync.Mutex
-	tcp4GROTable      *tcpGROTable
-	tcp6GROTable      *tcpGROTable
-	txChecksumOffload bool
+	tunFd               int
+	tunFile             *os.File
+	iovecsOutputDefault []unix.Iovec
+	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
+	options             Options
+	ruleIndex6          []int
+	gsoEnabled          bool
+	gsoBuffer           []byte
+	gsoToWrite          []int
+	gsoReadAccess       sync.Mutex
+	tcpGROAccess        sync.Mutex
+	tcp4GROTable        *tcpGROTable
+	tcp6GROTable        *tcpGROTable
+	txChecksumOffload   bool
 }
 
 func New(options Options) (Tun, error) {
@@ -70,11 +67,6 @@ func New(options Options) (Tun, error) {
 			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
 			options: options,
 		}
-	}
-	var ok bool
-	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
-	if !ok {
-		panic("create vectorised writer")
 	}
 	return nativeTun, nil
 }
@@ -117,20 +109,6 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 		return
 	}
 	return t.tunFile.Write(p)
-}
-
-func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	if t.gsoEnabled {
-		n := buf.LenMulti(buffers)
-		buffer := buf.NewSize(virtioNetHdrLen + n)
-		buffer.Truncate(virtioNetHdrLen)
-		buf.CopyMulti(buffer.Extend(n), buffers)
-		_, err := t.tunFile.Write(buffer.Bytes())
-		buffer.Release()
-		return err
-	} else {
-		return t.tunWriter.WriteVectorised(buffers)
-	}
 }
 
 func (t *NativeTun) BatchSize() int {

@@ -15,7 +15,6 @@ import (
 	"github.com/metacubex/gvisor/pkg/waiter"
 	"github.com/metacubex/sing-tun/internal/gtcpip/checksum"
 	"github.com/metacubex/sing/common"
-	"github.com/metacubex/sing/common/bufio"
 	M "github.com/metacubex/sing/common/metadata"
 )
 
@@ -57,7 +56,7 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 			tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 				header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress(), ipHdr.PayloadLength()),
 			)))
-			bufio.WriteVectorised(f.tun, pkt.AsSlices())
+			f.tun.WritePacket(pkt)
 			return true
 		}
 	}
@@ -71,7 +70,7 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 			tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 				header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress(), ipHdr.PayloadLength()),
 			)))
-			bufio.WriteVectorised(f.tun, pkt.AsSlices())
+			f.tun.WritePacket(pkt)
 			return true
 		}
 	}

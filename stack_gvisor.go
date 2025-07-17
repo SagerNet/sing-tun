@@ -39,6 +39,7 @@ type GVisor struct {
 
 type GVisorTun interface {
 	Tun
+	WritePacket(pkt *stack.PacketBuffer) (int, error)
 	NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error)
 }
 

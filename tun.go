@@ -30,7 +30,6 @@ type PacketHandler interface {
 
 type Tun interface {
 	io.ReadWriter
-	N.VectorisedWriter
 	Close() error
 }
 
@@ -99,6 +98,9 @@ type Options struct {
 
 	// For library usages.
 	EXP_DisableDNSHijack bool
+
+	EXP_MultiPendingPackets bool
+	EXP_WriteMsgX           bool
 }
 
 func (o *Options) Inet4GatewayAddr() netip.Addr {
