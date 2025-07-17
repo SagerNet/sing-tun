@@ -18,10 +18,8 @@ import (
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -32,22 +30,22 @@ import (
 var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
-	tunFd             int
-	tunFile           *os.File
-	tunWriter         N.VectorisedWriter
-	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
-	options           Options
-	ruleIndex6        []int
-	readAccess        sync.Mutex
-	writeAccess       sync.Mutex
-	vnetHdr           bool
-	writeBuffer       []byte
-	gsoToWrite        []int
-	tcpGROTable       *tcpGROTable
-	udpGroAccess      sync.Mutex
-	udpGROTable       *udpGROTable
-	gro               groDisablementFlags
-	txChecksumOffload bool
+	tunFd               int
+	tunFile             *os.File
+	iovecsOutputDefault []unix.Iovec
+	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
+	options             Options
+	ruleIndex6          []int
+	readAccess          sync.Mutex
+	writeAccess         sync.Mutex
+	vnetHdr             bool
+	writeBuffer         []byte
+	gsoToWrite          []int
+	tcpGROTable         *tcpGROTable
+	udpGroAccess        sync.Mutex
+	udpGROTable         *udpGROTable
+	gro                 groDisablementFlags
+	txChecksumOffload   bool
 }
 
 func New(options Options) (Tun, error) {
@@ -76,11 +74,6 @@ func New(options Options) (Tun, error) {
 			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
 			options: options,
 		}
-	}
-	var ok bool
-	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
-	if !ok {
-		panic("create vectorised writer")
 	}
 	return nativeTun, nil
 }
@@ -400,20 +393,6 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 		return
 	}
 	return t.tunFile.Write(p)
-}
-
-func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	if t.vnetHdr {
-		n := buf.LenMulti(buffers)
-		buffer := buf.NewSize(virtioNetHdrLen + n)
-		buffer.Truncate(virtioNetHdrLen)
-		buf.CopyMulti(buffer.Extend(n), buffers)
-		_, err := t.tunFile.Write(buffer.Bytes())
-		buffer.Release()
-		return err
-	} else {
-		return t.tunWriter.WriteVectorised(buffers)
-	}
 }
 
 func (t *NativeTun) FrontHeadroom() int {

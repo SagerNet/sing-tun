@@ -168,6 +168,7 @@ type endpoint struct {
 	mtu uint32
 
 	batchSize int
+	sendMsgX  bool
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -223,6 +224,9 @@ type Options struct {
 	// ProcessorsPerChannel is the number of goroutines used to handle packets
 	// from each FD.
 	ProcessorsPerChannel int
+
+	MultiPendingPackets bool
+	SendMsgX            bool
 }
 
 // New creates a new fd-based endpoint.
@@ -261,6 +265,12 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 	if opts.MaxSyscallHeaderBytes < 0 {
 		return nil, fmt.Errorf("opts.MaxSyscallHeaderBytes is negative")
 	}
+	var batchSize int
+	if opts.MultiPendingPackets {
+		batchSize = int((512*1024)/(opts.MTU)) + 1
+	} else {
+		batchSize = 1
+	}
 
 	e := &endpoint{
 		mtu:                   opts.MTU,
@@ -271,7 +281,8 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		packetDispatchMode:    opts.PacketDispatchMode,
 		maxSyscallHeaderBytes: uintptr(opts.MaxSyscallHeaderBytes),
 		writevMaxIovs:         rawfile.MaxIovs,
-		batchSize:             int((512*1024)/(opts.MTU)) + 1,
+		batchSize:             batchSize,
+		sendMsgX:              opts.SendMsgX,
 	}
 	if e.maxSyscallHeaderBytes != 0 {
 		if max := int(e.maxSyscallHeaderBytes / rawfile.SizeofIovec); max < e.writevMaxIovs {
@@ -478,7 +489,7 @@ func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 
 func (e *endpoint) sendBatch(batchFDInfo fdInfo, pkts []*stack.PacketBuffer) (int, tcpip.Error) {
 	// Degrade to writePacket if underlying fd is not a socket.
-	if !batchFDInfo.isSocket {
+	if !batchFDInfo.isSocket || !e.sendMsgX {
 		var written int
 		var err tcpip.Error
 		for written < len(pkts) {

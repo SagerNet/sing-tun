@@ -25,7 +25,6 @@ type Handler interface {
 
 type Tun interface {
 	io.ReadWriter
-	N.VectorisedWriter
 	Name() (string, error)
 	Start() error
 	Close() error
@@ -97,6 +96,13 @@ type Options struct {
 
 	// For library usages.
 	EXP_DisableDNSHijack bool
+
+	// For gvisor stack, it should be enabled when MTU is less than 32768; otherwise it should be less than or equal to 8192.
+	// The above condition is just an estimate and not exact, calculated on M4 pro.
+	EXP_MultiPendingPackets bool
+
+	// Will cause the darwin network to die, do not use.
+	EXP_SendMsgX bool
 }
 
 func (o *Options) Inet4GatewayAddr() netip.Addr {

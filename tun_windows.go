@@ -17,7 +17,6 @@ import (
 	"github.com/sagernet/sing-tun/internal/wintun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/atomic"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/windnsapi"
 
@@ -515,11 +514,6 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 		return 0, nil // Dropping when ring is full.
 	}
 	return 0, fmt.Errorf("write failed: %w", err)
-}
-
-func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	defer buf.ReleaseMulti(buffers)
-	return common.Error(t.write(buf.ToSliceMulti(buffers)))
 }
 
 func (t *NativeTun) Close() error {

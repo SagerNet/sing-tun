@@ -2,6 +2,7 @@ package tun
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -30,4 +31,8 @@ func fixWindowsFirewall() error {
 
 func retryableListenError(err error) bool {
 	return errors.Is(err, windows.WSAEADDRNOTAVAIL)
+}
+
+func acceptConn(conn net.Conn) error {
+	return nil
 }

@@ -11,12 +11,12 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
 type Mixed struct {
 	*System
+	tun      GVisorTun
 	stack    *stack.Stack
 	endpoint *channel.Endpoint
 }
@@ -30,6 +30,7 @@ func NewMixed(
 	}
 	return &Mixed{
 		System: system.(*System),
+		tun:    system.(*System).tun.(GVisorTun),
 	}, nil
 }
 
@@ -77,7 +78,7 @@ func (m *Mixed) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.mtu < 49152 {
+	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.multiPendingPackets {
 		m.batchLoopDarwin(darwinTUN)
 		return
 	}
@@ -265,11 +266,11 @@ func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 
 func (m *Mixed) packetLoop() {
 	for {
-		packet := m.endpoint.ReadContext(m.ctx)
-		if packet == nil {
+		pkt := m.endpoint.ReadContext(m.ctx)
+		if pkt == nil {
 			break
 		}
-		bufio.WriteVectorised(m.tun, packet.AsSlices())
-		packet.DecRef()
+		m.tun.WritePacket(pkt)
+		pkt.DecRef()
 	}
 }
