@@ -390,6 +390,7 @@ func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
 	for i, buffer := range buffers {
 		iovecs := t.iovecsOutput[i].nextIovecsOutput(buffer)
+		t.msgHdrsOutput[i] = rawfile.MsgHdrX{}
 		t.msgHdrsOutput[i].Msg.Iov = &iovecs[0]
 		t.msgHdrsOutput[i].Msg.Iovlen = 2
 	}

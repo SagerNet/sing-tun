@@ -20,9 +20,7 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) 
 	if err != nil {
 		return nil, stack.NICOptions{}, err
 	}
-	var nicOptions stack.NICOptions
-	if t.options.MTU < 49152 {
-		nicOptions.QDisc = fifo.New(ep, 1, 1000)
-	}
-	return ep, nicOptions, nil
+	return ep, stack.NICOptions{
+		QDisc: fifo.New(ep, 1, 1000),
+	}, nil
 }

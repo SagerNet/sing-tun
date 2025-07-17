@@ -7,6 +7,10 @@ import (
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 )
 
+func init() {
+	fdbased.BufConfig = []int{65535}
+}
+
 var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) {
