@@ -65,7 +65,7 @@ func (m *Mixed) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.multiPendingPackets {
+	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.recvMsgX {
 		m.batchLoopDarwin(darwinTUN)
 		return
 	}

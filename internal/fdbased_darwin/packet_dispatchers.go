@@ -79,6 +79,70 @@ func (b *iovecBuffer) release() {
 	}
 }
 
+// readVDispatcher uses readv() system call to read inbound packets and
+// dispatches them.
+//
+// +stateify savable
+type readVDispatcher struct {
+	stopfd.StopFD
+	// fd is the file descriptor used to send and receive packets.
+	fd int
+
+	// e is the endpoint this dispatcher is attached to.
+	e *endpoint
+
+	// buf is the iovec buffer that contains the packet contents.
+	buf *iovecBuffer
+
+	// mgr is the processor goroutine manager.
+	mgr *processorManager
+}
+
+func newReadVDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, error) {
+	stopFD, err := stopfd.New()
+	if err != nil {
+		return nil, err
+	}
+	d := &readVDispatcher{
+		StopFD: stopFD,
+		fd:     fd,
+		e:      e,
+	}
+	d.buf = newIovecBuffer(opts.MTU)
+	d.mgr = newProcessorManager(opts, e)
+	d.mgr.start()
+	return d, nil
+}
+
+func (d *readVDispatcher) release() {
+	d.buf.release()
+	d.mgr.close()
+}
+
+// dispatch reads one packet from the file descriptor and dispatches it.
+func (d *readVDispatcher) dispatch() (bool, tcpip.Error) {
+	n, errno := rawfile.BlockingReadvUntilStopped(d.ReadFD, d.fd, d.buf.nextIovecs())
+	if n <= 0 || errno != 0 {
+		return false, TranslateErrno(errno)
+	}
+
+	payload := d.buf.pullBuffer(n)
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+		Payload: payload,
+	})
+	defer pkt.DecRef()
+
+	d.e.mu.RLock()
+	addr := d.e.addr
+	d.e.mu.RUnlock()
+	if !d.e.parseInboundHeader(pkt, addr) {
+		return false, nil
+	}
+	d.mgr.queuePacket(pkt, d.e.hdrSize > 0)
+	d.mgr.wakeReady()
+	return true, nil
+}
+
 // recvMMsgDispatcher uses the recvmmsg system call to read inbound packets and
 // dispatches them.
 //
@@ -115,12 +179,7 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 	if err != nil {
 		return nil, err
 	}
-	var batchSize int
-	if opts.MultiPendingPackets {
-		batchSize = int((512*1024)/(opts.MTU)) + 1
-	} else {
-		batchSize = 1
-	}
+	batchSize := int((512*1024)/(opts.MTU)) + 1
 	d := &recvMMsgDispatcher{
 		StopFD:  stopFD,
 		fd:      fd,

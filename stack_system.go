@@ -47,7 +47,7 @@ type System struct {
 	enforceBind          bool
 	frontHeadroom        int
 	txChecksumOffload    bool
-	multiPendingPackets  bool
+	recvMsgX             bool
 }
 
 type Session struct {
@@ -73,7 +73,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		broadcastAddr:        BroadcastAddr(options.TunOptions.Inet4Address),
 		bindInterface:        options.ForwarderBindInterface,
 		interfaceFinder:      options.InterfaceFinder,
-		multiPendingPackets:  options.TunOptions.EXP_MultiPendingPackets,
+		recvMsgX:             options.TunOptions.EXP_RecvMsgX,
 		enforceBind:          options.EnforceBindInterface,
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
@@ -185,7 +185,7 @@ func (s *System) tunLoop() {
 			return
 		}
 	}
-	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN && s.multiPendingPackets {
+	if darwinTUN, isDarwinTUN := s.tun.(DarwinTUN); isDarwinTUN && s.recvMsgX {
 		s.batchLoopDarwin(darwinTUN)
 		return
 	}

@@ -99,8 +99,9 @@ type Options struct {
 	// For library usages.
 	EXP_DisableDNSHijack bool
 
-	EXP_MultiPendingPackets bool
-	EXP_WriteMsgX           bool
+	// For darwin tun
+	EXP_RecvMsgX bool
+	EXP_SendMsgX bool
 }
 
 func (o *Options) Inet4GatewayAddr() netip.Addr {

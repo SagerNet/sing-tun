@@ -60,48 +60,6 @@ type linkDispatcher interface {
 	release()
 }
 
-// PacketDispatchMode are the various supported methods of receiving and
-// dispatching packets from the underlying FD.
-type PacketDispatchMode int
-
-// BatchSize is the number of packets to write in each syscall. It is 47
-// because when GVisorGSO is in use then a single 65KB TCP segment can get
-// split into 46 segments of 1420 bytes and a single 216 byte segment.
-const BatchSize = 47
-
-const (
-	// Readv is the default dispatch mode and is the least performant of the
-	// dispatch options but the one that is supported by all underlying FD
-	// types.
-	Readv PacketDispatchMode = iota
-	// RecvMMsg enables use of recvmmsg() syscall instead of readv() to
-	// read inbound packets. This reduces # of syscalls needed to process
-	// packets.
-	//
-	// NOTE: recvmmsg() is only supported for sockets, so if the underlying
-	// FD is not a socket then the code will still fall back to the readv()
-	// path.
-	RecvMMsg
-	// PacketMMap enables use of PACKET_RX_RING to receive packets from the
-	// NIC. PacketMMap requires that the underlying FD be an AF_PACKET. The
-	// primary use-case for this is runsc which uses an AF_PACKET FD to
-	// receive packets from the veth device.
-	PacketMMap
-)
-
-func (p PacketDispatchMode) String() string {
-	switch p {
-	case Readv:
-		return "Readv"
-	case RecvMMsg:
-		return "RecvMMsg"
-	case PacketMMap:
-		return "PacketMMap"
-	default:
-		return fmt.Sprintf("unknown packet dispatch mode '%d'", p)
-	}
-}
-
 var (
 	_ stack.LinkEndpoint = (*endpoint)(nil)
 	_ stack.GSOEndpoint  = (*endpoint)(nil)
@@ -109,8 +67,7 @@ var (
 
 // +stateify savable
 type fdInfo struct {
-	fd       int
-	isSocket bool
+	fd int
 }
 
 // +stateify savable
@@ -136,10 +93,6 @@ type endpoint struct {
 	mu endpointRWMutex `state:"nosave"`
 	// +checklocks:mu
 	dispatcher stack.NetworkDispatcher
-
-	// packetDispatchMode controls the packet dispatcher used by this
-	// endpoint.
-	packetDispatchMode PacketDispatchMode
 
 	// wg keeps track of running goroutines.
 	wg sync.WaitGroup `state:"nosave"`
@@ -168,7 +121,7 @@ type endpoint struct {
 	mtu uint32
 
 	batchSize int
-	writeMsgX bool
+	sendMsgX  bool
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -201,10 +154,6 @@ type Options struct {
 	// include CapabilityDisconnectOk.
 	DisconnectOk bool
 
-	// PacketDispatchMode specifies the type of inbound dispatcher to be
-	// used for this endpoint.
-	PacketDispatchMode PacketDispatchMode
-
 	// TXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityTXChecksumOffload.
 	TXChecksumOffload bool
@@ -225,8 +174,8 @@ type Options struct {
 	// from each FD.
 	ProcessorsPerChannel int
 
-	MultiPendingPackets bool
-	WriteMsgX           bool
+	RecvMsgX bool
+	SendMsgX bool
 }
 
 // New creates a new fd-based endpoint.
@@ -266,7 +215,7 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		return nil, fmt.Errorf("opts.MaxSyscallHeaderBytes is negative")
 	}
 	var batchSize int
-	if opts.MultiPendingPackets {
+	if opts.RecvMsgX {
 		batchSize = int((512*1024)/(opts.MTU)) + 1
 	} else {
 		batchSize = 1
@@ -278,11 +227,10 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		closed:                opts.ClosedFunc,
 		addr:                  opts.Address,
 		hdrSize:               hdrSize,
-		packetDispatchMode:    opts.PacketDispatchMode,
 		maxSyscallHeaderBytes: uintptr(opts.MaxSyscallHeaderBytes),
 		writevMaxIovs:         rawfile.MaxIovs,
 		batchSize:             batchSize,
-		writeMsgX:             opts.WriteMsgX,
+		sendMsgX:              opts.SendMsgX,
 	}
 	if e.maxSyscallHeaderBytes != 0 {
 		if max := int(e.maxSyscallHeaderBytes / rawfile.SizeofIovec); max < e.writevMaxIovs {
@@ -296,14 +244,23 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 			return nil, fmt.Errorf("unix.SetNonblock(%v) failed: %v", fd, err)
 		}
 
-		e.fds = append(e.fds, fdInfo{fd: fd, isSocket: true})
+		e.fds = append(e.fds, fdInfo{fd: fd})
 		if opts.ProcessorsPerChannel == 0 {
 			opts.ProcessorsPerChannel = common.Max(1, runtime.GOMAXPROCS(0)/len(opts.FDs))
 		}
 
-		inboundDispatcher, err := newRecvMMsgDispatcher(fd, e, opts)
-		if err != nil {
-			return nil, fmt.Errorf("createInboundDispatcher(...) = %v", err)
+		var inboundDispatcher linkDispatcher
+		var err error
+		if opts.RecvMsgX {
+			inboundDispatcher, err = newRecvMMsgDispatcher(fd, e, opts)
+			if err != nil {
+				return nil, fmt.Errorf("newRecvMMsgDispatcher(%d, %+v) = %v", fd, e, err)
+			}
+		} else {
+			inboundDispatcher, err = newReadVDispatcher(fd, e, opts)
+			if err != nil {
+				return nil, fmt.Errorf("newReadVDispatcher(%d, %+v) = %v", fd, e, err)
+			}
 		}
 		e.inboundDispatchers = append(e.inboundDispatchers, inboundDispatcher)
 	}
@@ -489,7 +446,7 @@ func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 
 func (e *endpoint) sendBatch(batchFDInfo fdInfo, pkts []*stack.PacketBuffer) (int, tcpip.Error) {
 	// Degrade to writePacket if underlying fd is not a socket.
-	if !batchFDInfo.isSocket || !e.writeMsgX {
+	if !e.sendMsgX {
 		var written int
 		var err tcpip.Error
 		for written < len(pkts) {
@@ -597,7 +554,7 @@ func (e *endpoint) sendBatch(batchFDInfo fdInfo, pkts []*stack.PacketBuffer) (in
 func (e *endpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 	// Preallocate to avoid repeated reallocation as we append to batch.
 	batch := make([]*stack.PacketBuffer, 0, e.batchSize)
-	batchFDInfo := fdInfo{fd: -1, isSocket: false}
+	batchFDInfo := fdInfo{fd: -1}
 	sentPackets := 0
 	for _, pkt := range pkts.AsSlice() {
 		if len(batch) == 0 {

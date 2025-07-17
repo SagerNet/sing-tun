@@ -101,14 +101,14 @@ func New(options Options) (Tun, error) {
 			unix.Close(tunFd)
 			return nil, err
 		}
-		err = configure(tunFd, options.EXP_MultiPendingPackets, batchSize)
+		err = configure(tunFd, options.EXP_RecvMsgX, batchSize)
 		if err != nil {
 			unix.Close(tunFd)
 			return nil, err
 		}
 	} else {
 		tunFd = options.FileDescriptor
-		err := configure(tunFd, options.EXP_MultiPendingPackets, batchSize)
+		err := configure(tunFd, options.EXP_RecvMsgX, batchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +123,7 @@ func New(options Options) (Tun, error) {
 		msgHdrs:       make([]rawfile.MsgHdrX, batchSize),
 		msgHdrsOutput: make([]rawfile.MsgHdrX, batchSize),
 		stopFd:        common.Must1(stopfd.New()),
-		writeMsgX:     options.EXP_WriteMsgX,
+		writeMsgX:     options.EXP_SendMsgX,
 	}
 	for i := 0; i < batchSize; i++ {
 		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU))
@@ -321,12 +321,12 @@ func create(tunFd int, ifIndex int, name string, options Options) error {
 	return nil
 }
 
-func configure(tunFd int, multiPendingPackets bool, batchSize int) error {
+func configure(tunFd int, recvMsgX bool, batchSize int) error {
 	err := unix.SetNonblock(tunFd, true)
 	if err != nil {
 		return os.NewSyscallError("SetNonblock", err)
 	}
-	if multiPendingPackets {
+	if recvMsgX {
 		const UTUN_OPT_MAX_PENDING_PACKETS = 16
 		err = unix.SetsockoptInt(tunFd, 2, UTUN_OPT_MAX_PENDING_PACKETS, batchSize)
 		if err != nil {
