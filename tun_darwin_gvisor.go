@@ -3,6 +3,7 @@
 package tun
 
 import (
+	"github.com/metacubex/gvisor/pkg/tcpip/header"
 	"github.com/metacubex/gvisor/pkg/tcpip/link/qdisc/fifo"
 	"github.com/metacubex/gvisor/pkg/tcpip/stack"
 	"github.com/metacubex/sing-tun/internal/fdbased_darwin"
@@ -15,6 +16,11 @@ var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
 	iovecs := t.iovecsOutputDefault
+	if pkt.NetworkProtocolNumber == header.IPv4ProtocolNumber {
+		iovecs = append(iovecs, packetHeaderVec4)
+	} else {
+		iovecs = append(iovecs, packetHeaderVec6)
+	}
 	var dataLen int
 	for _, packetSlice := range pkt.AsSlices() {
 		dataLen += len(packetSlice)
