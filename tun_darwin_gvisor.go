@@ -15,23 +15,30 @@ import (
 var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
-	iovecs := t.iovecsOutputDefault
+	views := pkt.AsSlices()
+	numIovecs := len(views)
+	numIovecs++ // for packetHeaderVec4/6
+
+	// Allocate small iovec arrays on the stack.
+	var iovecsArr [8]unix.Iovec
+	iovecs := iovecsArr[:0]
+	if numIovecs > len(iovecsArr) {
+		iovecs = make([]unix.Iovec, 0, numIovecs)
+	}
+
 	if pkt.NetworkProtocolNumber == header.IPv4ProtocolNumber {
 		iovecs = append(iovecs, packetHeaderVec4)
 	} else {
 		iovecs = append(iovecs, packetHeaderVec6)
 	}
 	var dataLen int
-	for _, packetSlice := range pkt.AsSlices() {
+	for _, packetSlice := range views {
 		dataLen += len(packetSlice)
 		iovec := unix.Iovec{
 			Base: &packetSlice[0],
 		}
 		iovec.SetLen(len(packetSlice))
 		iovecs = append(iovecs, iovec)
-	}
-	if cap(iovecs) > cap(t.iovecsOutputDefault) {
-		t.iovecsOutputDefault = iovecs[:0]
 	}
 	errno := rawfile.NonBlockingWriteIovec(t.tunFd, iovecs)
 	if errno == 0 {

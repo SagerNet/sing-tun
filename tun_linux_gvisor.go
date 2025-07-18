@@ -17,18 +17,24 @@ func init() {
 var _ GVisorTun = (*NativeTun)(nil)
 
 func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
-	iovecs := t.iovecsOutputDefault
+	views := pkt.AsSlices()
+	numIovecs := len(views)
+
+	// Allocate small iovec arrays on the stack.
+	var iovecsArr [8]unix.Iovec
+	iovecs := iovecsArr[:0]
+	if numIovecs > len(iovecsArr) {
+		iovecs = make([]unix.Iovec, 0, numIovecs)
+	}
+
 	var dataLen int
-	for _, packetSlice := range pkt.AsSlices() {
+	for _, packetSlice := range views {
 		dataLen += len(packetSlice)
 		iovec := unix.Iovec{
 			Base: &packetSlice[0],
 		}
 		iovec.SetLen(len(packetSlice))
 		iovecs = append(iovecs, iovec)
-	}
-	if cap(iovecs) > cap(t.iovecsOutputDefault) {
-		t.iovecsOutputDefault = iovecs[:0]
 	}
 	errno := rawfile.NonBlockingWriteIovec(t.tunFd, iovecs)
 	if errno == 0 {

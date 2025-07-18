@@ -25,20 +25,19 @@ import (
 var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
-	tunFd               int
-	tunFile             *os.File
-	iovecsOutputDefault []unix.Iovec
-	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
-	options             Options
-	ruleIndex6          []int
-	gsoEnabled          bool
-	gsoBuffer           []byte
-	gsoToWrite          []int
-	gsoReadAccess       sync.Mutex
-	tcpGROAccess        sync.Mutex
-	tcp4GROTable        *tcpGROTable
-	tcp6GROTable        *tcpGROTable
-	txChecksumOffload   bool
+	tunFd             int
+	tunFile           *os.File
+	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
+	options           Options
+	ruleIndex6        []int
+	gsoEnabled        bool
+	gsoBuffer         []byte
+	gsoToWrite        []int
+	gsoReadAccess     sync.Mutex
+	tcpGROAccess      sync.Mutex
+	tcp4GROTable      *tcpGROTable
+	tcp6GROTable      *tcpGROTable
+	txChecksumOffload bool
 }
 
 func New(options Options) (Tun, error) {

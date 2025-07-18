@@ -25,21 +25,20 @@ var _ DarwinTUN = (*NativeTun)(nil)
 const PacketOffset = 4
 
 type NativeTun struct {
-	tunFd               int
-	tunFile             *os.File
-	batchSize           int
-	iovecs              []iovecBuffer
-	iovecsOutput        []iovecBuffer
-	iovecsOutputDefault []unix.Iovec
-	msgHdrs             []rawfile.MsgHdrX
-	msgHdrsOutput       []rawfile.MsgHdrX
-	buffers             []*buf.Buffer
-	stopFd              stopfd.StopFD
-	options             Options
-	inet4Address        [4]byte
-	inet6Address        [16]byte
-	routeSet            bool
-	writeMsgX           bool
+	tunFd         int
+	tunFile       *os.File
+	batchSize     int
+	iovecs        []iovecBuffer
+	iovecsOutput  []iovecBuffer
+	msgHdrs       []rawfile.MsgHdrX
+	msgHdrsOutput []rawfile.MsgHdrX
+	buffers       []*buf.Buffer
+	stopFd        stopfd.StopFD
+	options       Options
+	inet4Address  [4]byte
+	inet6Address  [16]byte
+	routeSet      bool
+	writeMsgX     bool
 }
 
 type iovecBuffer struct {
