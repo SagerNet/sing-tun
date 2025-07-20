@@ -385,9 +385,13 @@ func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
 			t.msgHdrsOutput[i].Msg.Iov = &iovecs[0]
 			t.msgHdrsOutput[i].Msg.Iovlen = 2
 		}
-		_, errno := rawfile.NonBlockingSendMMsg(t.tunFd, t.msgHdrsOutput[:len(buffers)])
-		if errno != 0 {
-			return errno
+		var n int
+		for n != len(buffers) {
+			sent, errno := rawfile.NonBlockingSendMMsg(t.tunFd, t.msgHdrsOutput[n:len(buffers)])
+			if errno != 0 {
+				return errno
+			}
+			n += sent
 		}
 	}
 	return nil
