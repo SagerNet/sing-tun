@@ -40,7 +40,7 @@ type NativeTun struct {
 	inet4Address        [4]byte
 	inet6Address        [16]byte
 	routeSet            bool
-	writeMsgX           bool
+	sendMsgX            bool
 }
 
 type iovecBuffer struct {
@@ -64,8 +64,7 @@ func (b *iovecBuffer) nextIovecs() []unix.Iovec {
 	}
 	if b.buffer == nil {
 		b.buffer = buf.NewSize(b.mtu)
-		b.iovecs[1].Base = &b.buffer.FreeBytes()[0]
-		b.iovecs[1].SetLen(b.mtu)
+		b.iovecs[1] = b.buffer.Iovec(b.buffer.Cap())
 	}
 	return b.iovecs
 }
@@ -77,8 +76,7 @@ func (b *iovecBuffer) nextIovecsOutput(buffer *buf.Buffer) []unix.Iovec {
 	case header.IPv6Version:
 		b.iovecs[0] = packetHeaderVec6
 	}
-	b.iovecs[1].Base = &buffer.Bytes()[0]
-	b.iovecs[1].SetLen(buffer.Len())
+	b.iovecs[1] = buffer.Iovec(buffer.Len())
 	return b.iovecs
 }
 
@@ -132,7 +130,7 @@ func New(options Options) (Tun, error) {
 		msgHdrs:       make([]rawfile.MsgHdrX, batchSize),
 		msgHdrsOutput: make([]rawfile.MsgHdrX, batchSize),
 		stopFd:        common.Must1(stopfd.New()),
-		writeMsgX:     options.EXP_SendMsgX,
+		sendMsgX:      options.EXP_SendMsgX,
 	}
 	for i := 0; i < batchSize; i++ {
 		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU))
@@ -364,7 +362,7 @@ func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 }
 
 func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
-	if !t.writeMsgX {
+	if !t.sendMsgX {
 		for i, buffer := range buffers {
 			t.iovecsOutput[i].nextIovecsOutput(buffer)
 		}
@@ -381,9 +379,13 @@ func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
 			t.msgHdrsOutput[i].Msg.Iov = &iovecs[0]
 			t.msgHdrsOutput[i].Msg.Iovlen = 2
 		}
-		_, errno := rawfile.NonBlockingSendMMsg(t.tunFd, t.msgHdrsOutput[:len(buffers)])
-		if errno != 0 {
-			return errno
+		var n int
+		for n != len(buffers) {
+			sent, errno := rawfile.NonBlockingSendMMsg(t.tunFd, t.msgHdrsOutput[n:len(buffers)])
+			if errno != 0 {
+				return errno
+			}
+			n += sent
 		}
 	}
 	return nil
