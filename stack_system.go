@@ -331,13 +331,6 @@ func (s *System) acceptLoop(listener net.Listener) {
 		if err != nil {
 			return
 		}
-		err = acceptConn(conn)
-		if err != nil {
-			s.logger.Error("set buffer for conn: ", err)
-			_ = conn.Close()
-			listener.Close()
-			return
-		}
 		connPort := M.SocksaddrFromNet(conn.RemoteAddr()).Port
 		session := s.tcpNat.LookupBack(connPort)
 		if session == nil {
