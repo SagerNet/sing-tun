@@ -308,7 +308,7 @@ func (r *autoRedirect) cleanupNFTables() {
 		Name:   r.tableName,
 		Family: nftables.TableFamilyINet,
 	})
-	common.Must(r.configureOpenWRTFirewall4(nft, true))
+	_ = r.configureOpenWRTFirewall4(nft, true)
 	_ = nft.Flush()
 	_ = nft.CloseLasting()
 }
