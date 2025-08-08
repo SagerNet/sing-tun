@@ -44,9 +44,9 @@ chain forward {
 			return E.Cause(err, "clean fw4 rules")
 		}
 	}
-	_, err = shell.Exec(fw4Path, "reload").Read()
+	output, err := shell.Exec(fw4Path, "reload").Read()
 	if err != nil {
-		return E.Cause(err, "reload fw4 rules")
+		return E.Extend(E.Cause(err, "reload fw4 rules"), output)
 	}
 	return nil
 }
