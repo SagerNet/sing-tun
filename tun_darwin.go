@@ -62,8 +62,7 @@ func (b *iovecBuffer) nextIovecs() []unix.Iovec {
 	}
 	if b.buffer == nil {
 		b.buffer = buf.NewSize(b.mtu)
-		b.iovecs[1].Base = &b.buffer.FreeBytes()[0]
-		b.iovecs[1].SetLen(b.mtu)
+		b.iovecs[1] = b.buffer.Iovec(b.buffer.Cap())
 	}
 	return b.iovecs
 }
@@ -75,8 +74,7 @@ func (b *iovecBuffer) nextIovecsOutput(buffer *buf.Buffer) []unix.Iovec {
 	case header.IPv6Version:
 		b.iovecs[0] = packetHeaderVec6
 	}
-	b.iovecs[1].Base = &buffer.Bytes()[0]
-	b.iovecs[1].SetLen(buffer.Len())
+	b.iovecs[1] = buffer.Iovec(buffer.Len())
 	return b.iovecs
 }
 
