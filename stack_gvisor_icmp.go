@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
+	"github.com/sagernet/gvisor/pkg/tcpip/header/parse"
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv4"
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
@@ -178,7 +179,8 @@ func (w *ICMPBackWriter) WritePacket(p []byte) error {
 			Payload: buffer.MakeWithData(p),
 		})
 		defer packet.DecRef()
-		err = route.WriteHeaderIncludedPacket(packet)
+		parse.IPv4(packet)
+		err = route.WritePacketDirect(packet)
 		if err != nil {
 			return gonet.TranslateNetstackError(err)
 		}
@@ -198,7 +200,7 @@ func (w *ICMPBackWriter) WritePacket(p []byte) error {
 			Payload: buffer.MakeWithData(p),
 		})
 		defer packet.DecRef()
-		err = route.WriteHeaderIncludedPacket(packet)
+		err = route.WritePacketDirect(packet)
 		if err != nil {
 			return gonet.TranslateNetstackError(err)
 		}

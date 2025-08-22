@@ -36,10 +36,10 @@ func (m *RouteMapping) Lookup(session DirectRouteSession, constructor func() (Di
 	)
 	action, _, ok := m.status.GetAndRefreshOrAdd(session, func() (DirectRouteDestination, bool) {
 		created, err = constructor()
-		return created, err != nil
+		return created, err == nil
 	})
 	if !ok {
-		return created, err
+		return nil, err
 	}
 	return action, nil
 }
