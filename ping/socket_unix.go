@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
+
 	"golang.org/x/sys/unix"
 )
 

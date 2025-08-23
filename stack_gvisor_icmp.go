@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv4"
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
+	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -62,8 +63,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		}
 		if action != nil {
 			// TODO: handle error
-			pkt.IncRef()
-			_ = action.WritePacketBuffer(pkt)
+			_ = icmpWritePacketBuffer(action, pkt)
 			return true
 		}
 		icmpHdr.SetType(header.ICMPv4EchoReply)
@@ -120,7 +120,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		if action != nil {
 			// TODO: handle error
 			pkt.IncRef()
-			_ = action.WritePacketBuffer(pkt)
+			_ = icmpWritePacketBuffer(action, pkt)
 			return true
 		}
 		icmpHdr.SetType(header.ICMPv6EchoReply)
@@ -206,4 +206,10 @@ func (w *ICMPBackWriter) WritePacket(p []byte) error {
 		}
 	}
 	return nil
+}
+
+func icmpWritePacketBuffer(action DirectRouteDestination, packetBuffer *stack.PacketBuffer) error {
+	packetSlice := packetBuffer.TransportHeader().Slice()
+	packetSlice = append(packetSlice, packetBuffer.Data().AsRange().ToSlice()...)
+	return action.WritePacket(buf.As(packetSlice).ToOwned())
 }

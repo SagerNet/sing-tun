@@ -1,6 +1,7 @@
 package ping
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os"
@@ -16,12 +17,13 @@ import (
 var _ tun.DirectRouteDestination = (*Destination)(nil)
 
 type Destination struct {
-	logger       logger.Logger
+	ctx          context.Context
+	logger       logger.ContextLogger
 	routeContext tun.DirectRouteContext
 	conn         *Conn
 }
 
-func ConnectDestination(logger logger.Logger, controlFunc control.Func, address netip.Addr, routeContext tun.DirectRouteContext) (tun.DirectRouteDestination, error) {
+func ConnectDestination(ctx context.Context, logger logger.ContextLogger, controlFunc control.Func, address netip.Addr, routeContext tun.DirectRouteContext) (tun.DirectRouteDestination, error) {
 	var (
 		conn *Conn
 		err  error
@@ -39,6 +41,7 @@ func ConnectDestination(logger logger.Logger, controlFunc control.Func, address 
 		return nil, err
 	}
 	d := &Destination{
+		ctx:          ctx,
 		logger:       logger,
 		routeContext: routeContext,
 		conn:         conn,
@@ -54,13 +57,13 @@ func (d *Destination) loopRead() {
 		if err != nil {
 			buffer.Release()
 			if !E.IsClosed(err) {
-				d.logger.Error(E.Cause(err, "receive ICMP echo reply"))
+				d.logger.ErrorContext(d.ctx, E.Cause(err, "receive ICMP echo reply"))
 			}
 			return
 		}
 		err = d.routeContext.WritePacket(buffer.Bytes())
 		if err != nil {
-			d.logger.Error(E.Cause(err, "write ICMP echo reply"))
+			d.logger.Error(d.ctx, E.Cause(err, "write ICMP echo reply"))
 		}
 		buffer.Release()
 	}

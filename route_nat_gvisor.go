@@ -5,15 +5,8 @@ package tun
 import (
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
-	stack "github.com/sagernet/gvisor/pkg/tcpip/stack"
-	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 )
-
-type DirectRouteDestination interface {
-	WritePacket(packet *buf.Buffer) error
-	WritePacketBuffer(packetBuffer *stack.PacketBuffer) error
-	Close() error
-}
 
 func (w *NatWriter) RewritePacketBuffer(packetBuffer *stack.PacketBuffer) {
 	var bindAddr tcpip.Address

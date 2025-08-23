@@ -6,7 +6,13 @@ import (
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
+	"github.com/sagernet/sing/common/buf"
 )
+
+type DirectRouteDestination interface {
+	WritePacket(packet *buf.Buffer) error
+	Close() error
+}
 
 type NatMapping struct {
 	access    sync.RWMutex
