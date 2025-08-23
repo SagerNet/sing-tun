@@ -28,6 +28,8 @@ const DefaultNIC tcpip.NICID = 1
 type GVisor struct {
 	ctx                  context.Context
 	tun                  GVisorTun
+	inet4Address         netip.Addr
+	inet6Address         netip.Addr
 	inet4LoopbackAddress []netip.Addr
 	inet6LoopbackAddress []netip.Addr
 	udpTimeout           time.Duration
@@ -52,9 +54,22 @@ func NewGVisor(
 		return nil, E.New("gVisor stack is unsupported on current platform")
 	}
 
+	var (
+		inet4Address netip.Addr
+		inet6Address netip.Addr
+	)
+	if len(options.TunOptions.Inet4Address) > 0 {
+		inet4Address = options.TunOptions.Inet4Address[0].Addr()
+	}
+	if len(options.TunOptions.Inet6Address) > 0 {
+		inet6Address = options.TunOptions.Inet6Address[0].Addr()
+	}
+
 	gStack := &GVisor{
 		ctx:                  options.Context,
 		tun:                  gTun,
+		inet4Address:         inet4Address,
+		inet6Address:         inet6Address,
 		inet4LoopbackAddress: options.TunOptions.Inet4LoopbackAddress,
 		inet6LoopbackAddress: options.TunOptions.Inet6LoopbackAddress,
 		udpTimeout:           options.UDPTimeout,
@@ -77,7 +92,7 @@ func (t *GVisor) Start() error {
 	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
-	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout)
+	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.inet4Address, t.inet6Address, t.handler, t.udpTimeout)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
 	t.stack = ipStack

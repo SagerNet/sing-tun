@@ -4,6 +4,7 @@ package tun
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -21,18 +22,29 @@ import (
 )
 
 type ICMPForwarder struct {
-	ctx       context.Context
-	stack     *stack.Stack
-	handler   Handler
-	directNat *RouteMapping
+	ctx          context.Context
+	stack        *stack.Stack
+	inet4Address netip.Addr
+	inet6Address netip.Addr
+	handler      Handler
+	directNat    *RouteMapping
 }
 
-func NewICMPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, timeout time.Duration) *ICMPForwarder {
+func NewICMPForwarder(
+	ctx context.Context,
+	stack *stack.Stack,
+	inet4Address netip.Addr,
+	inet6Address netip.Addr,
+	handler Handler,
+	timeout time.Duration,
+) *ICMPForwarder {
 	return &ICMPForwarder{
-		ctx:       ctx,
-		stack:     stack,
-		handler:   handler,
-		directNat: NewRouteMapping(timeout),
+		ctx:          ctx,
+		stack:        stack,
+		inet4Address: inet4Address,
+		inet6Address: inet6Address,
+		handler:      handler,
+		directNat:    NewRouteMapping(timeout),
 	}
 }
 
@@ -45,26 +57,28 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		}
 		sourceAddr := M.AddrFromIP(ipHdr.SourceAddressSlice())
 		destinationAddr := M.AddrFromIP(ipHdr.DestinationAddressSlice())
-		action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
-			return f.handler.PrepareConnection(
-				N.NetworkICMPv4,
-				M.SocksaddrFrom(sourceAddr, 0),
-				M.SocksaddrFrom(destinationAddr, 0),
-				&ICMPBackWriter{
-					stack:         f.stack,
-					packet:        pkt,
-					source:        ipHdr.SourceAddress(),
-					sourceNetwork: header.IPv4ProtocolNumber,
-				},
-			)
-		})
-		if err != nil {
-			return true
-		}
-		if action != nil {
-			// TODO: handle error
-			_ = icmpWritePacketBuffer(action, pkt)
-			return true
+		if destinationAddr != f.inet4Address {
+			action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+				return f.handler.PrepareConnection(
+					N.NetworkICMPv4,
+					M.SocksaddrFrom(sourceAddr, 0),
+					M.SocksaddrFrom(destinationAddr, 0),
+					&ICMPBackWriter{
+						stack:         f.stack,
+						packet:        pkt,
+						source:        ipHdr.SourceAddress(),
+						sourceNetwork: header.IPv4ProtocolNumber,
+					},
+				)
+			})
+			if err != nil {
+				return true
+			}
+			if action != nil {
+				// TODO: handle error
+				_ = icmpWritePacketBuffer(action, pkt)
+				return true
+			}
 		}
 		icmpHdr.SetType(header.ICMPv4EchoReply)
 		sourceAddress := ipHdr.SourceAddress()
@@ -101,27 +115,29 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		}
 		sourceAddr := M.AddrFromIP(ipHdr.SourceAddressSlice())
 		destinationAddr := M.AddrFromIP(ipHdr.DestinationAddressSlice())
-		action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
-			return f.handler.PrepareConnection(
-				N.NetworkICMPv6,
-				M.SocksaddrFrom(sourceAddr, 0),
-				M.SocksaddrFrom(destinationAddr, 0),
-				&ICMPBackWriter{
-					stack:         f.stack,
-					packet:        pkt,
-					source:        ipHdr.SourceAddress(),
-					sourceNetwork: header.IPv6ProtocolNumber,
-				},
-			)
-		})
-		if err != nil {
-			return true
-		}
-		if action != nil {
-			// TODO: handle error
-			pkt.IncRef()
-			_ = icmpWritePacketBuffer(action, pkt)
-			return true
+		if destinationAddr != f.inet6Address {
+			action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+				return f.handler.PrepareConnection(
+					N.NetworkICMPv6,
+					M.SocksaddrFrom(sourceAddr, 0),
+					M.SocksaddrFrom(destinationAddr, 0),
+					&ICMPBackWriter{
+						stack:         f.stack,
+						packet:        pkt,
+						source:        ipHdr.SourceAddress(),
+						sourceNetwork: header.IPv6ProtocolNumber,
+					},
+				)
+			})
+			if err != nil {
+				return true
+			}
+			if action != nil {
+				// TODO: handle error
+				pkt.IncRef()
+				_ = icmpWritePacketBuffer(action, pkt)
+				return true
+			}
 		}
 		icmpHdr.SetType(header.ICMPv6EchoReply)
 		sourceAddress := ipHdr.SourceAddress()

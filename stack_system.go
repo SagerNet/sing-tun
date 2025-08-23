@@ -31,10 +31,10 @@ type System struct {
 	logger               logger.Logger
 	inet4Prefixes        []netip.Prefix
 	inet6Prefixes        []netip.Prefix
-	inet4ServerAddress   netip.Addr
 	inet4Address         netip.Addr
-	inet6ServerAddress   netip.Addr
+	inet4NextAddress     netip.Addr
 	inet6Address         netip.Addr
+	inet6NextAddress     netip.Addr
 	broadcastAddr        netip.Addr
 	inet4LoopbackAddress []netip.Addr
 	inet6LoopbackAddress []netip.Addr
@@ -82,17 +82,17 @@ func NewSystem(options StackOptions) (Stack, error) {
 		if !HasNextAddress(options.TunOptions.Inet4Address[0], 1) {
 			return nil, E.New("need one more IPv4 address in first prefix for system stack")
 		}
-		stack.inet4ServerAddress = options.TunOptions.Inet4Address[0].Addr()
-		stack.inet4Address = stack.inet4ServerAddress.Next()
+		stack.inet4Address = options.TunOptions.Inet4Address[0].Addr()
+		stack.inet4NextAddress = stack.inet4Address.Next()
 	}
 	if len(options.TunOptions.Inet6Address) > 0 {
 		if !HasNextAddress(options.TunOptions.Inet6Address[0], 1) {
 			return nil, E.New("need one more IPv6 address in first prefix for system stack")
 		}
-		stack.inet6ServerAddress = options.TunOptions.Inet6Address[0].Addr()
-		stack.inet6Address = stack.inet6ServerAddress.Next()
+		stack.inet6Address = options.TunOptions.Inet6Address[0].Addr()
+		stack.inet6NextAddress = stack.inet6Address.Next()
 	}
-	if !stack.inet4Address.IsValid() && !stack.inet6Address.IsValid() {
+	if !stack.inet4NextAddress.IsValid() && !stack.inet6NextAddress.IsValid() {
 		return nil, E.New("missing interface address")
 	}
 	return stack, nil
@@ -128,9 +128,9 @@ func (s *System) start() error {
 	}
 	var tcpListener net.Listener
 	var err error
-	if s.inet4Address.IsValid() {
+	if s.inet4NextAddress.IsValid() {
 		for i := 0; i < 3; i++ {
-			tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4ServerAddress.String(), "0"))
+			tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
 			}
@@ -143,9 +143,9 @@ func (s *System) start() error {
 		s.tcpPort = M.SocksaddrFromNet(tcpListener.Addr()).Port
 		go s.acceptLoop(tcpListener)
 	}
-	if s.inet6Address.IsValid() {
+	if s.inet6NextAddress.IsValid() {
 		for i := 0; i < 3; i++ {
-			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6ServerAddress.String(), "0"))
+			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
 			}
@@ -395,7 +395,7 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 	destination := netip.AddrPortFrom(ipHdr.DestinationAddr(), tcpHdr.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
 		return false, nil
-	} else if source.Addr() == s.inet4ServerAddress && source.Port() == s.tcpPort {
+	} else if source.Addr() == s.inet4Address && source.Port() == s.tcpPort {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
 			return false, E.New("ipv4: tcp: session not found: ", destination.Port())
@@ -423,9 +423,9 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 					return false, s.resetIPv4TCP(ipHdr, tcpHdr)
 				}
 			}
-			ipHdr.SetSourceAddr(s.inet4Address)
+			ipHdr.SetSourceAddr(s.inet4NextAddress)
 			tcpHdr.SetSourcePort(natPort)
-			ipHdr.SetDestinationAddr(s.inet4ServerAddress)
+			ipHdr.SetDestinationAddr(s.inet4Address)
 			tcpHdr.SetDestinationPort(s.tcpPort)
 		}
 	}
@@ -493,7 +493,7 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 	destination := netip.AddrPortFrom(ipHdr.DestinationAddr(), tcpHdr.DestinationPort())
 	if !destination.Addr().IsGlobalUnicast() {
 		return false, nil
-	} else if source.Addr() == s.inet6ServerAddress && source.Port() == s.tcpPort6 {
+	} else if source.Addr() == s.inet6Address && source.Port() == s.tcpPort6 {
 		session := s.tcpNat.LookupBack(destination.Port())
 		if session == nil {
 			return false, E.New("ipv6: tcp: session not found: ", destination.Port())
@@ -521,9 +521,9 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 					return false, s.resetIPv6TCP(ipHdr, tcpHdr)
 				}
 			}
-			ipHdr.SetSourceAddr(s.inet6Address)
+			ipHdr.SetSourceAddr(s.inet6NextAddress)
 			tcpHdr.SetSourcePort(natPort)
-			ipHdr.SetDestinationAddr(s.inet6ServerAddress)
+			ipHdr.SetDestinationAddr(s.inet6Address)
 			tcpHdr.SetDestinationPort(s.tcpPort6)
 		}
 	}
@@ -657,19 +657,21 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 	}
 	sourceAddr := ipHdr.SourceAddr()
 	destinationAddr := ipHdr.DestinationAddr()
-	action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
-		return s.handler.PrepareConnection(
-			N.NetworkICMPv4,
-			M.SocksaddrFrom(sourceAddr, 0),
-			M.SocksaddrFrom(destinationAddr, 0),
-			&systemICMPDirectPacketWriter4{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
-		)
-	})
-	if err != nil {
-		return false, nil
-	}
-	if action != nil {
-		return false, action.WritePacket(buf.As(ipHdr).ToOwned())
+	if destinationAddr != s.inet4Address {
+		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+			return s.handler.PrepareConnection(
+				N.NetworkICMPv4,
+				M.SocksaddrFrom(sourceAddr, 0),
+				M.SocksaddrFrom(destinationAddr, 0),
+				&systemICMPDirectPacketWriter4{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
+			)
+		})
+		if err != nil {
+			return false, nil
+		}
+		if action != nil {
+			return false, action.WritePacket(buf.As(ipHdr).ToOwned())
+		}
 	}
 	icmpHdr.SetType(header.ICMPv4EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
@@ -726,19 +728,21 @@ func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool
 	}
 	sourceAddr := ipHdr.SourceAddr()
 	destinationAddr := ipHdr.DestinationAddr()
-	action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
-		return s.handler.PrepareConnection(
-			N.NetworkICMPv6,
-			M.SocksaddrFrom(sourceAddr, 0),
-			M.SocksaddrFrom(destinationAddr, 0),
-			&systemICMPDirectPacketWriter6{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
-		)
-	})
-	if err != nil {
-		return false, nil
-	}
-	if action != nil {
-		return false, action.WritePacket(buf.As(ipHdr).ToOwned())
+	if destinationAddr != s.inet6Address {
+		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+			return s.handler.PrepareConnection(
+				N.NetworkICMPv6,
+				M.SocksaddrFrom(sourceAddr, 0),
+				M.SocksaddrFrom(destinationAddr, 0),
+				&systemICMPDirectPacketWriter6{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
+			)
+		})
+		if err != nil {
+			return false, nil
+		}
+		if action != nil {
+			return false, action.WritePacket(buf.As(ipHdr).ToOwned())
+		}
 	}
 	icmpHdr.SetType(header.ICMPv6EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
