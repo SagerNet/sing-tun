@@ -7,6 +7,6 @@ import (
 )
 
 type DirectRouteDestination interface {
-	DirectRouteAction
 	WritePacket(packet *buf.Buffer) error
+	Close() error
 }

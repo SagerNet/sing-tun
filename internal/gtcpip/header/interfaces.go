@@ -88,11 +88,15 @@ type Network interface {
 
 	SourceAddr() netip.Addr
 
+	SourceAddressSlice() []byte
+
 	// DestinationAddress returns the value of the "destination address"
 	// field.
 	DestinationAddress() tcpip.Address
 
 	DestinationAddr() netip.Addr
+
+	DestinationAddressSlice() []byte
 
 	// Checksum returns the value of the "checksum" field.
 	Checksum() uint16

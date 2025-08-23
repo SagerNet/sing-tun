@@ -29,5 +29,5 @@ lint_install:
 
 test:
 	go build -v .
-	go test -bench=. ./internal/checksum_test
-	#go test -v .
+	#go test -bench=. ./internal/checksum_test
+	go test -v .

@@ -26,12 +26,14 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ^1.23
+          go-version: ^1.25.0
       - name: Build
         run: |
           make test
-  build_go120:
-    name: Linux (Go 1.20)
+          go test -c -o ping_test ./ping
+          sudo ./ping_test -test.v
+  build_go124:
+    name: Linux (Go 1.24)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,13 +43,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ~1.20
+          go-version: ~1.24
         continue-on-error: true
       - name: Build
         run: |
           make test
-  build_go121:
-    name: Linux (Go 1.21)
+          go test -c -o ping_test ./ping
+          sudo ./ping_test -test.v
+  build_go123:
+    name: Linux (Go 1.23)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -57,27 +61,13 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ~1.21
+          go-version: ~1.23
         continue-on-error: true
       - name: Build
         run: |
           make test
-  build_go122:
-    name: Linux (Go 1.22)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ~1.22
-        continue-on-error: true
-      - name: Build
-        run: |
-          make test
+          go test -c -o ping_test ./ping
+          sudo ./ping_test -test.v
   build_windows:
     name: Windows
     runs-on: windows-latest
@@ -94,6 +84,7 @@ jobs:
       - name: Build
         run: |
           make test
+          go test -v ./ping
   build_darwin:
     name: macOS
     runs-on: macos-latest
@@ -110,3 +101,6 @@ jobs:
       - name: Build
         run: |
           make test
+          go test -v ./ping
+          go test -c -o ping_test ./ping
+          sudo ./ping_test -test.v

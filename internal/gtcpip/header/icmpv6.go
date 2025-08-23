@@ -276,8 +276,8 @@ func (b ICMPv6) Payload() []byte {
 // ICMPv6ChecksumParams contains parameters to calculate ICMPv6 checksum.
 type ICMPv6ChecksumParams struct {
 	Header      ICMPv6
-	Src         tcpip.Address
-	Dst         tcpip.Address
+	Src         []byte
+	Dst         []byte
 	PayloadCsum uint16
 	PayloadLen  int
 }
@@ -287,7 +287,7 @@ type ICMPv6ChecksumParams struct {
 func ICMPv6Checksum(params ICMPv6ChecksumParams) uint16 {
 	h := params.Header
 
-	xsum := PseudoHeaderChecksum(ICMPv6ProtocolNumber, params.Src.AsSlice(), params.Dst.AsSlice(), uint16(len(h)+params.PayloadLen))
+	xsum := PseudoHeaderChecksum(ICMPv6ProtocolNumber, params.Src, params.Dst, uint16(len(h)+params.PayloadLen))
 	xsum = checksum.Combine(xsum, params.PayloadCsum)
 
 	// h[2:4] is the checksum itself, skip it to avoid checksumming the checksum.

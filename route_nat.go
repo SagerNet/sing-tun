@@ -98,8 +98,8 @@ func (w *NatWriter) RewritePacket(packet []byte) {
 		icmpHdr.SetChecksum(0)
 		icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 			Header: icmpHdr,
-			Src:    ipHdr.SourceAddress(),
-			Dst:    ipHdr.DestinationAddress(),
+			Src:    ipHdr.SourceAddressSlice(),
+			Dst:    ipHdr.DestinationAddressSlice(),
 		}))
 	}
 	if ipHdr4, isIPv4 := ipHdr.(header.IPv4); isIPv4 {
