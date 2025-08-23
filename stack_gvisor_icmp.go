@@ -225,7 +225,8 @@ func (w *ICMPBackWriter) WritePacket(p []byte) error {
 }
 
 func icmpWritePacketBuffer(action DirectRouteDestination, packetBuffer *stack.PacketBuffer) error {
-	packetSlice := packetBuffer.TransportHeader().Slice()
+	packetSlice := packetBuffer.NetworkHeader().Slice()
+	packetSlice = append(packetSlice, packetBuffer.TransportHeader().Slice()...)
 	packetSlice = append(packetSlice, packetBuffer.Data().AsRange().ToSlice()...)
 	return action.WritePacket(buf.As(packetSlice).ToOwned())
 }
