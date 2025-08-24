@@ -63,7 +63,7 @@ func (d *Destination) loopRead() {
 		}
 		err = d.routeContext.WritePacket(buffer.Bytes())
 		if err != nil {
-			d.logger.Error(d.ctx, E.Cause(err, "write ICMP echo reply"))
+			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP echo reply"))
 		}
 		buffer.Release()
 	}
