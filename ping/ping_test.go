@@ -1,6 +1,7 @@
 package ping_test
 
 import (
+	"context"
 	"net/netip"
 	"os"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing-tun/ping"
 	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/logger"
 
 	"github.com/stretchr/testify/require"
 )
@@ -71,7 +73,7 @@ func TestPing(t *testing.T) {
 }
 
 func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), logger.NOP(), privileged, nil, netip.MustParseAddr(addr))
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -103,7 +105,7 @@ func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), logger.NOP(), privileged, nil, netip.MustParseAddr(addr))
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -134,7 +136,7 @@ func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), logger.NOP(), privileged, nil, netip.MustParseAddr(addr))
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -165,7 +167,7 @@ func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv6ReadICMP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), logger.NOP(), privileged, nil, netip.MustParseAddr(addr))
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}

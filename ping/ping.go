@@ -1,6 +1,7 @@
 package ping
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"golang.org/x/net/ipv4"
@@ -21,18 +23,22 @@ import (
 )
 
 type Conn struct {
+	ctx         context.Context
+	logger      logger.ContextLogger
 	privileged  bool
 	conn        net.Conn
 	destination netip.Addr
 	source      atomic.TypedValue[netip.Addr]
 }
 
-func Connect(privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
+func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
 	conn, err := connect(privileged, controlFunc, destination)
 	if err != nil {
 		return nil, err
 	}
 	return &Conn{
+		ctx:         ctx,
+		logger:      logger,
 		privileged:  privileged,
 		conn:        conn,
 		destination: destination,
@@ -95,6 +101,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				TotalLength: uint16(buffer.Len()),
 			})
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
+			c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		} else {
 			oob := make([]byte, 1024)
 			buffer.Advance(header.IPv6MinimumSize)
@@ -131,6 +138,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				SrcAddr:           addr,
 				DstAddr:           c.source.Load(),
 			})
+			c.logger.TraceContext(c.ctx, "read icmpv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		}
 	} else {
 		_, err := buffer.ReadOnceFrom(c.conn)
@@ -144,6 +152,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
 			ipHdr.SetDestinationAddr(c.source.Load())
@@ -153,6 +162,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				Src:    ipHdr.SourceAddressSlice(),
 				Dst:    ipHdr.DestinationAddressSlice(),
 			}))
+			c.logger.TraceContext(c.ctx, "read icmpv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		}
 	}
 	return nil
@@ -169,9 +179,11 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
 		buffer.Advance(int(ipHdr.HeaderLength()))
+		c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
 		buffer.Advance(buffer.Len() - int(ipHdr.PayloadLength()))
+		c.logger.TraceContext(c.ctx, "read icmpv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 	}
 	return nil
 }
@@ -181,10 +193,12 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
+		c.logger.TraceContext(c.ctx, "write icmpv4 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		return common.Error(c.conn.Write(ipHdr.Payload()))
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
+		c.logger.TraceContext(c.ctx, "write icmpv6 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		return common.Error(c.conn.Write(ipHdr.Payload()))
 	}
 }

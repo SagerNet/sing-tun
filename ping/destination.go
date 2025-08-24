@@ -30,11 +30,11 @@ func ConnectDestination(ctx context.Context, logger logger.ContextLogger, contro
 	)
 	switch runtime.GOOS {
 	case "darwin", "ios", "windows":
-		conn, err = Connect(false, controlFunc, address)
+		conn, err = Connect(ctx, logger, false, controlFunc, address)
 	default:
-		conn, err = Connect(true, controlFunc, address)
+		conn, err = Connect(ctx, logger, true, controlFunc, address)
 		if errors.Is(err, os.ErrPermission) {
-			conn, err = Connect(false, controlFunc, address)
+			conn, err = Connect(ctx, logger, false, controlFunc, address)
 		}
 	}
 	if err != nil {
