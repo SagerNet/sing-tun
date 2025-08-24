@@ -27,25 +27,26 @@ type ICMPForwarder struct {
 	inet4Address netip.Addr
 	inet6Address netip.Addr
 	handler      Handler
-	directNat    *RouteMapping
+	mapping      *DirectRouteMapping
 }
 
 func NewICMPForwarder(
 	ctx context.Context,
 	stack *stack.Stack,
-	inet4Address netip.Addr,
-	inet6Address netip.Addr,
 	handler Handler,
 	timeout time.Duration,
 ) *ICMPForwarder {
 	return &ICMPForwarder{
-		ctx:          ctx,
-		stack:        stack,
-		inet4Address: inet4Address,
-		inet6Address: inet6Address,
-		handler:      handler,
-		directNat:    NewRouteMapping(timeout),
+		ctx:     ctx,
+		stack:   stack,
+		handler: handler,
+		mapping: NewDirectRouteMapping(timeout),
 	}
+}
+
+func (f *ICMPForwarder) SetLocalAddresses(inet4Address, inet6Address netip.Addr) {
+	f.inet4Address = inet4Address
+	f.inet6Address = inet6Address
 }
 
 func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
@@ -58,7 +59,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		sourceAddr := M.AddrFromIP(ipHdr.SourceAddressSlice())
 		destinationAddr := M.AddrFromIP(ipHdr.DestinationAddressSlice())
 		if destinationAddr != f.inet4Address {
-			action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+			action, err := f.mapping.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
 				return f.handler.PrepareConnection(
 					N.NetworkICMPv4,
 					M.SocksaddrFrom(sourceAddr, 0),
@@ -116,7 +117,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		sourceAddr := M.AddrFromIP(ipHdr.SourceAddressSlice())
 		destinationAddr := M.AddrFromIP(ipHdr.DestinationAddressSlice())
 		if destinationAddr != f.inet6Address {
-			action, err := f.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
+			action, err := f.mapping.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() (DirectRouteDestination, error) {
 				return f.handler.PrepareConnection(
 					N.NetworkICMPv6,
 					M.SocksaddrFrom(sourceAddr, 0),

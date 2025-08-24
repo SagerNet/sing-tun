@@ -45,7 +45,7 @@ type System struct {
 	tcpPort6             uint16
 	tcpNat               *TCPNat
 	udpNat               *udpnat.Service
-	directNat            *RouteMapping
+	directNat            *DirectRouteMapping
 	bindInterface        bool
 	interfaceFinder      control.InterfaceFinder
 	frontHeadroom        int
@@ -160,7 +160,7 @@ func (s *System) start() error {
 	}
 	s.tcpNat = NewNat(s.ctx, s.udpTimeout)
 	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)
-	s.directNat = NewRouteMapping(s.udpTimeout)
+	s.directNat = NewDirectRouteMapping(s.udpTimeout)
 	return nil
 }
 

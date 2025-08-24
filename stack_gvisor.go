@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/icmp"
+	"github.com/sagernet/gvisor/pkg/tcpip/transport/raw"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -86,13 +87,14 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
-	ipStack, err := NewGVisorStackWithOptions(linkEndpoint, nicOptions)
+	ipStack, err := NewGVisorStackWithOptions(linkEndpoint, nicOptions, false)
 	if err != nil {
 		return err
 	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
-	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.inet4Address, t.inet6Address, t.handler, t.udpTimeout)
+	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout)
+	icmpForwarder.SetLocalAddresses(t.inet4Address, t.inet6Address)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
 	t.stack = ipStack
@@ -129,11 +131,11 @@ func AddrFromAddress(address tcpip.Address) netip.Addr {
 }
 
 func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
-	return NewGVisorStackWithOptions(ep, stack.NICOptions{})
+	return NewGVisorStackWithOptions(ep, stack.NICOptions{}, false)
 }
 
-func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions) (*stack.Stack, error) {
-	ipStack := stack.New(stack.Options{
+func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions, allowRawEndpoint bool) (*stack.Stack, error) {
+	stackOptions := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
 			ipv6.NewProtocol,
@@ -144,7 +146,11 @@ func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions) (*s
 			icmp.NewProtocol4,
 			icmp.NewProtocol6,
 		},
-	})
+	}
+	if allowRawEndpoint {
+		stackOptions.RawFactory = new(raw.EndpointFactory)
+	}
+	ipStack := stack.New(stackOptions)
 	err := ipStack.CreateNICWithOptions(DefaultNIC, ep, opts)
 	if err != nil {
 		return nil, gonet.TranslateNetstackError(err)
