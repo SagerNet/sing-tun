@@ -5,14 +5,16 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
-	"github.com/sagernet/sing/common/atomic"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/common/pipe"
 )
 
 type UnprivilegedConn struct {
@@ -21,7 +23,9 @@ type UnprivilegedConn struct {
 	controlFunc  control.Func
 	destination  netip.Addr
 	receiveChan  chan *unprivilegedResponse
-	readDeadline atomic.TypedValue[time.Time]
+	readDeadline pipe.Deadline
+	natMap       map[uint16]net.Conn
+	natMapMutex  sync.Mutex
 }
 
 type unprivilegedResponse struct {
@@ -38,11 +42,13 @@ func newUnprivilegedConn(ctx context.Context, controlFunc control.Func, destinat
 	conn.Close()
 	ctx, cancel := context.WithCancel(ctx)
 	return &UnprivilegedConn{
-		ctx:         ctx,
-		cancel:      cancel,
-		controlFunc: controlFunc,
-		destination: destination,
-		receiveChan: make(chan *unprivilegedResponse),
+		ctx:          ctx,
+		cancel:       cancel,
+		controlFunc:  controlFunc,
+		destination:  destination,
+		receiveChan:  make(chan *unprivilegedResponse),
+		readDeadline: pipe.MakeDeadline(),
+		natMap:       make(map[uint16]net.Conn),
 	}, nil
 }
 
@@ -55,6 +61,8 @@ func (c *UnprivilegedConn) Read(b []byte) (n int, err error) {
 		return
 	case <-c.ctx.Done():
 		return 0, os.ErrClosed
+	case <-c.readDeadline.Wait():
+		return 0, os.ErrDeadlineExceeded
 	}
 }
 
@@ -69,14 +77,12 @@ func (c *UnprivilegedConn) ReadMsg(b []byte, oob []byte) (n, oobn int, addr neti
 		return
 	case <-c.ctx.Done():
 		return 0, 0, netip.Addr{}, os.ErrClosed
+	case <-c.readDeadline.Wait():
+		return 0, 0, netip.Addr{}, os.ErrDeadlineExceeded
 	}
 }
 
 func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
-	conn, err := connect(false, c.controlFunc, c.destination)
-	if err != nil {
-		return
-	}
 	var identifier uint16
 	if !c.destination.Is6() {
 		icmpHdr := header.ICMPv4(b)
@@ -85,62 +91,85 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 		icmpHdr := header.ICMPv6(b)
 		identifier = icmpHdr.Ident()
 	}
-	if readDeadline := c.readDeadline.Load(); !readDeadline.IsZero() {
-		conn.SetReadDeadline(readDeadline)
+
+	c.natMapMutex.Lock()
+	if err = c.ctx.Err(); err != nil {
+		c.natMapMutex.Unlock()
+		return 0, err
 	}
+	conn, ok := c.natMap[identifier]
+	if !ok {
+		conn, err = connect(false, c.controlFunc, c.destination)
+		if err != nil {
+			c.natMapMutex.Unlock()
+			return 0, err
+		}
+		go c.fetchResponse(conn.(*net.UDPConn), identifier)
+	}
+	c.natMapMutex.Unlock()
+
 	n, err = conn.Write(b)
 	if err != nil {
-		conn.Close()
+		c.removeConn(conn.(*net.UDPConn), identifier)
 		return
 	}
-	go c.fetchResponse(conn, identifier)
 	return
 }
 
-func (c *UnprivilegedConn) fetchResponse(conn net.Conn, identifier uint16) {
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-c.ctx.Done():
-		case <-done:
+func (c *UnprivilegedConn) fetchResponse(conn *net.UDPConn, identifier uint16) {
+	defer c.removeConn(conn, identifier)
+	for {
+		buffer := buf.NewPacket()
+		cmsgBuffer := buf.NewSize(1024)
+		n, oobN, _, addr, err := conn.ReadMsgUDPAddrPort(buffer.FreeBytes(), cmsgBuffer.FreeBytes())
+		if err != nil {
+			buffer.Release()
+			cmsgBuffer.Release()
+			return
 		}
-		conn.Close()
-	}()
-	buffer := buf.NewPacket()
-	cmsgBuffer := buf.NewSize(1024)
-	n, oobN, _, addr, err := conn.(*net.UDPConn).ReadMsgUDPAddrPort(buffer.FreeBytes(), cmsgBuffer.FreeBytes())
-	if err != nil {
-		buffer.Release()
-		cmsgBuffer.Release()
-		return
-	}
-	buffer.Truncate(n)
-	cmsgBuffer.Truncate(oobN)
-	if !c.destination.Is6() {
-		icmpHdr := header.ICMPv4(buffer.Bytes())
-		icmpHdr.SetIdent(identifier)
-		icmpHdr.SetChecksum(0)
-		icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
-	} else {
-		icmpHdr := header.ICMPv6(buffer.Bytes())
-		icmpHdr.SetIdent(identifier)
-		// offload checksum here since we don't have source address here
-	}
-	select {
-	case c.receiveChan <- &unprivilegedResponse{
-		Buffer: buffer,
-		Cmsg:   cmsgBuffer,
-		Addr:   addr.Addr(),
-	}:
-	case <-c.ctx.Done():
-		buffer.Release()
-		cmsgBuffer.Release()
+		buffer.Truncate(n)
+		cmsgBuffer.Truncate(oobN)
+		if !c.destination.Is6() {
+			icmpHdr := header.ICMPv4(buffer.Bytes())
+			icmpHdr.SetIdent(identifier)
+			icmpHdr.SetChecksum(0)
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+		} else {
+			icmpHdr := header.ICMPv6(buffer.Bytes())
+			icmpHdr.SetIdent(identifier)
+			// offload checksum here since we don't have source address here
+		}
+		select {
+		case c.receiveChan <- &unprivilegedResponse{
+			Buffer: buffer,
+			Cmsg:   cmsgBuffer,
+			Addr:   addr.Addr(),
+		}:
+		case <-c.ctx.Done():
+			buffer.Release()
+			cmsgBuffer.Release()
+			return
+		}
 	}
 }
 
+func (c *UnprivilegedConn) removeConn(conn *net.UDPConn, identifier uint16) {
+	c.natMapMutex.Lock()
+	_ = conn.Close()
+	if c.natMap[identifier] == conn {
+		delete(c.natMap, identifier)
+	}
+	c.natMapMutex.Unlock()
+}
+
 func (c *UnprivilegedConn) Close() error {
+	c.natMapMutex.Lock()
 	c.cancel()
+	for _, conn := range c.natMap {
+		_ = conn.Close()
+	}
+	common.ClearMap(c.natMap)
+	c.natMapMutex.Unlock()
 	return nil
 }
 
@@ -153,14 +182,14 @@ func (c *UnprivilegedConn) RemoteAddr() net.Addr {
 }
 
 func (c *UnprivilegedConn) SetDeadline(t time.Time) error {
-	return os.ErrInvalid
+	return c.SetReadDeadline(t)
 }
 
 func (c *UnprivilegedConn) SetReadDeadline(t time.Time) error {
-	c.readDeadline.Store(t)
+	c.readDeadline.Set(t)
 	return nil
 }
 
 func (c *UnprivilegedConn) SetWriteDeadline(t time.Time) error {
-	return os.ErrInvalid
+	return nil
 }
