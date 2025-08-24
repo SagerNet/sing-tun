@@ -12,7 +12,6 @@ import (
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -42,11 +41,17 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 	}
 	file := os.NewFile(uintptr(fd), "datagram-oriented icmp")
 	defer file.Close()
-	err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
-	if err != nil {
-		return nil, E.Cause(err, "connect()")
+	if controlFunc != nil {
+		var syscallConn syscall.RawConn
+		syscallConn, err = file.SyscallConn()
+		if err != nil {
+			return nil, err
+		}
+		err = controlFunc(network, destination.String(), syscallConn)
+		if err != nil {
+			return nil, err
+		}
 	}
-
 	if destination.Is4() && (runtime.GOOS == "linux" || runtime.GOOS == "android") {
 		//err = unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_RECVTOS, 1)
 		//if err != nil {
@@ -68,20 +73,14 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		}
 	}
 
+	err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
+	if err != nil {
+		return nil, E.Cause(err, "connect()")
+	}
+	
 	conn, err := net.FileConn(file)
 	if err != nil {
 		return nil, err
-	}
-	if controlFunc != nil {
-		var syscallConn syscall.RawConn
-		syscallConn, err = conn.(syscall.Conn).SyscallConn()
-		if err != nil {
-			return nil, err
-		}
-		err = controlFunc(network, destination.String(), syscallConn)
-		if err != nil {
-			return nil, err
-		}
 	}
 	return conn, nil
 }
