@@ -32,7 +32,7 @@ type Conn struct {
 }
 
 func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
-	conn, err := connect(privileged, controlFunc, destination)
+	conn, err := connect0(ctx, privileged, controlFunc, destination)
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +45,14 @@ func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, 
 	}, nil
 }
 
+func connect0(ctx context.Context, privileged bool, controlFunc control.Func, destination netip.Addr) (net.Conn, error) {
+	if (runtime.GOOS == "linux" || runtime.GOOS == "android") && !privileged {
+		return newUnprivilegedConn(ctx, controlFunc, destination)
+	} else {
+		return connect(privileged, controlFunc, destination)
+	}
+}
+
 func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 	if c.destination.Is6() || (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged {
 		var readMsg func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
@@ -53,20 +61,22 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
 				var ipAddr *net.IPAddr
 				n, oobn, _, ipAddr, err = conn.ReadMsgIP(b, oob)
-				if ipAddr != nil {
+				if err == nil {
 					addr = M.AddrFromNet(ipAddr)
 				}
 				return
 			}
 		case *net.UDPConn:
 			readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
-				var udpAddr *net.UDPAddr
-				n, oobn, _, udpAddr, err = conn.ReadMsgUDP(b, oob)
-				if udpAddr != nil {
-					addr = M.AddrFromNet(udpAddr)
+				var addrPort netip.AddrPort
+				n, oobn, _, addrPort, err = conn.ReadMsgUDPAddrPort(b, oob)
+				if err == nil {
+					addr = addrPort.Addr()
 				}
 				return
 			}
+		case *UnprivilegedConn:
+			readMsg = conn.ReadMsg
 		default:
 			return E.New("unsupported conn type: ", reflect.TypeOf(c.conn))
 		}
@@ -124,6 +134,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				trafficClass = controlMessage.TrafficClass
 			}
 			icmpHdr := header.ICMPv6(buffer.Bytes())
+			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr[:header.ICMPv6DstUnreachableMinimumSize],
 				Src:    addr.AsSlice(),
@@ -151,12 +162,14 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
+			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
 			c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
 			ipHdr.SetDestinationAddr(c.source.Load())
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
+			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    ipHdr.SourceAddressSlice(),

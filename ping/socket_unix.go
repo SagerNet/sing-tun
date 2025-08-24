@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -77,7 +78,7 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 	if err != nil {
 		return nil, E.Cause(err, "connect()")
 	}
-	
+
 	conn, err := net.FileConn(file)
 	if err != nil {
 		return nil, err
