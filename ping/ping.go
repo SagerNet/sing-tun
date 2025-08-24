@@ -40,7 +40,7 @@ func Connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 }
 
 func (c *Conn) ReadIP(buffer *buf.Buffer) error {
-	if c.destination.Is6() || runtime.GOOS == "linux" && !c.privileged {
+	if c.destination.Is6() || (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged {
 		var readMsg func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
 		switch conn := c.conn.(type) {
 		case *net.IPConn:
@@ -163,7 +163,7 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 	if err != nil {
 		return err
 	}
-	if c.destination.Is6() || runtime.GOOS == "linux" && !c.privileged {
+	if c.destination.Is6() || (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged {
 		return nil
 	}
 	if !c.destination.Is6() {

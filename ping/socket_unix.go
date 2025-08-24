@@ -47,7 +47,7 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		return nil, E.Cause(err, "connect()")
 	}
 
-	if destination.Is4() && runtime.GOOS == "linux" {
+	if destination.Is4() && (runtime.GOOS == "linux" || runtime.GOOS == "android") {
 		//err = unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_RECVTOS, 1)
 		//if err != nil {
 		//	return nil, err
