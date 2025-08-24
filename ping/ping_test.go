@@ -102,6 +102,7 @@ func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
 	require.NotZero(t, ipHdr.TTL())
 	icmpHdr := header.ICMPv4(ipHdr.Payload())
 	require.Equal(t, header.ICMPv4EchoReply, icmpHdr.Type())
+	require.Equal(t, request.Ident(), icmpHdr.Ident())
 }
 
 func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
@@ -133,6 +134,7 @@ func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
 
 	icmpHdr := header.ICMPv4(response.Bytes())
 	require.Equal(t, header.ICMPv4EchoReply, icmpHdr.Type())
+	require.Equal(t, request.Ident(), icmpHdr.Ident())
 }
 
 func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
@@ -164,6 +166,7 @@ func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
 	require.NotZero(t, ipHdr.HopLimit())
 	icmpHdr := header.ICMPv6(ipHdr.Payload())
 	require.Equal(t, header.ICMPv6EchoReply, icmpHdr.Type())
+	require.Equal(t, request.Ident(), icmpHdr.Ident())
 }
 
 func testPingIPv6ReadICMP(t *testing.T, privileged bool, addr string) {
@@ -192,4 +195,5 @@ func testPingIPv6ReadICMP(t *testing.T, privileged bool, addr string) {
 	}
 	icmpHdr := header.ICMPv6(response.Bytes())
 	require.Equal(t, header.ICMPv6EchoReply, icmpHdr.Type())
+	require.Equal(t, request.Ident(), icmpHdr.Ident())
 }
