@@ -104,6 +104,7 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 			return
 		}
 		go c.fetchResponse(conn.(*net.UDPConn), identifier)
+		c.mapping[identifier] = conn
 	}
 	c.mappingAccess.Unlock()
 	n, err = conn.Write(b)
