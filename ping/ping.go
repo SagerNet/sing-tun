@@ -159,6 +159,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 		}
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
+			if !ipHdr.IsValid(buffer.Len()) {
+				return E.New("invalid IPv4 header received")
+			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
@@ -168,6 +171,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
+			if !ipHdr.IsValid(buffer.Len()) {
+				return E.New("invalid IPv6 header received")
+			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetChecksum(0)
