@@ -23,14 +23,14 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		err     error
 	)
 	if destination.Is4() {
-		network = "ip4:icmp"
+		network = "ip4" // like std's netFD.ctrlNetwork
 		if !privileged {
 			fd, err = unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_ICMP)
 		} else {
 			fd, err = unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP)
 		}
 	} else {
-		network = "ip6:icmp"
+		network = "ip6" // like std's netFD.ctrlNetwork
 		if !privileged {
 			fd, err = unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, unix.IPPROTO_ICMPV6)
 		} else {
