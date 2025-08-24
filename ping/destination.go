@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/buf"
@@ -17,13 +18,21 @@ import (
 var _ tun.DirectRouteDestination = (*Destination)(nil)
 
 type Destination struct {
+	conn         *Conn
 	ctx          context.Context
 	logger       logger.ContextLogger
 	routeContext tun.DirectRouteContext
-	conn         *Conn
+	timeout      time.Duration
 }
 
-func ConnectDestination(ctx context.Context, logger logger.ContextLogger, controlFunc control.Func, address netip.Addr, routeContext tun.DirectRouteContext) (tun.DirectRouteDestination, error) {
+func ConnectDestination(
+	ctx context.Context,
+	logger logger.ContextLogger,
+	controlFunc control.Func,
+	address netip.Addr,
+	routeContext tun.DirectRouteContext,
+	timeout time.Duration,
+) (tun.DirectRouteDestination, error) {
 	var (
 		conn *Conn
 		err  error
@@ -41,19 +50,25 @@ func ConnectDestination(ctx context.Context, logger logger.ContextLogger, contro
 		return nil, err
 	}
 	d := &Destination{
+		conn:         conn,
 		ctx:          ctx,
 		logger:       logger,
 		routeContext: routeContext,
-		conn:         conn,
+		timeout:      timeout,
 	}
 	go d.loopRead()
 	return d, nil
 }
 
 func (d *Destination) loopRead() {
+	defer d.Close()
 	for {
 		buffer := buf.NewPacket()
-		err := d.conn.ReadIP(buffer)
+		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
+		if err != nil {
+			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
+		}
+		err = d.conn.ReadIP(buffer)
 		if err != nil {
 			buffer.Release()
 			if !E.IsClosed(err) {
@@ -75,4 +90,8 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 
 func (d *Destination) Close() error {
 	return d.conn.Close()
+}
+
+func (d *Destination) IsClosed() bool {
+	return d.conn.IsClosed()
 }

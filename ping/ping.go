@@ -29,6 +29,7 @@ type Conn struct {
 	conn        net.Conn
 	destination netip.Addr
 	source      atomic.TypedValue[netip.Addr]
+	closed      atomic.Bool
 }
 
 func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
@@ -230,5 +231,10 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 }
 
 func (c *Conn) Close() error {
+	defer c.closed.Store(true)
 	return c.conn.Close()
+}
+
+func (c *Conn) IsClosed() bool {
+	return c.closed.Load()
 }

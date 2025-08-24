@@ -13,6 +13,7 @@ import (
 type DirectRouteDestination interface {
 	WritePacket(packet *buf.Buffer) error
 	Close() error
+	IsClosed() bool
 }
 
 type DirectRouteSession struct {
@@ -28,6 +29,9 @@ type DirectRouteMapping struct {
 
 func NewDirectRouteMapping(timeout time.Duration) *DirectRouteMapping {
 	mapping := common.Must1(freelru.NewSharded[DirectRouteSession, DirectRouteDestination](1024, maphash.NewHasher[DirectRouteSession]().Hash32))
+	mapping.SetHealthCheck(func(session DirectRouteSession, destination DirectRouteDestination) bool {
+		return !destination.IsClosed()
+	})
 	mapping.SetOnEvict(func(session DirectRouteSession, action DirectRouteDestination) {
 		action.Close()
 	})

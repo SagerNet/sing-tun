@@ -5,11 +5,13 @@ package ping
 import (
 	"context"
 	"net/netip"
+	"time"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
+	"github.com/sagernet/gvisor/pkg/tcpip/transport"
 	"github.com/sagernet/gvisor/pkg/waiter"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
@@ -23,8 +25,10 @@ var _ tun.DirectRouteDestination = (*GVisorDestination)(nil)
 type GVisorDestination struct {
 	ctx      context.Context
 	logger   logger.ContextLogger
+	endpoint tcpip.Endpoint
 	conn     *gonet.TCPConn
 	rewriter *Rewriter
+	timeout  time.Duration
 }
 
 func ConnectGVisor(
@@ -33,6 +37,7 @@ func ConnectGVisor(
 	routeContext tun.DirectRouteContext,
 	stack *stack.Stack,
 	bindAddress4, bindAddress6 netip.Addr,
+	timeout time.Duration,
 ) (*GVisorDestination, error) {
 	var (
 		bindAddress tcpip.Address
@@ -76,16 +81,23 @@ func ConnectGVisor(
 	destination := &GVisorDestination{
 		ctx:      ctx,
 		logger:   logger,
+		endpoint: endpoint,
 		conn:     gonet.NewTCPConn(&wq, endpoint),
 		rewriter: rewriter,
+		timeout:  timeout,
 	}
 	go destination.loopRead()
 	return destination, nil
 }
 
 func (d *GVisorDestination) loopRead() {
+	defer d.endpoint.Close()
 	for {
 		buffer := buf.NewPacket()
+		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
+		if err != nil {
+			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
+		}
 		n, err := d.conn.Read(buffer.FreeBytes())
 		if err != nil {
 			buffer.Release()
@@ -110,4 +122,8 @@ func (d *GVisorDestination) WritePacket(packet *buf.Buffer) error {
 
 func (d *GVisorDestination) Close() error {
 	return d.conn.Close()
+}
+
+func (d *GVisorDestination) IsClosed() bool {
+	return transport.DatagramEndpointState(d.endpoint.State()) == transport.DatagramEndpointStateClosed
 }

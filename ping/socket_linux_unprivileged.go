@@ -16,13 +16,12 @@ import (
 )
 
 type UnprivilegedConn struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	controlFunc   control.Func
-	destination   netip.Addr
-	receiveChan   chan *unprivilegedResponse
-	readDeadline  atomic.TypedValue[time.Time]
-	writeDeadline atomic.TypedValue[time.Time]
+	ctx          context.Context
+	cancel       context.CancelFunc
+	controlFunc  control.Func
+	destination  netip.Addr
+	receiveChan  chan *unprivilegedResponse
+	readDeadline atomic.TypedValue[time.Time]
 }
 
 type unprivilegedResponse struct {
@@ -89,9 +88,6 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 	if readDeadline := c.readDeadline.Load(); !readDeadline.IsZero() {
 		conn.SetReadDeadline(readDeadline)
 	}
-	if writeDeadline := c.writeDeadline.Load(); !writeDeadline.IsZero() {
-		conn.SetWriteDeadline(writeDeadline)
-	}
 	n, err = conn.Write(b)
 	if err != nil {
 		conn.Close()
@@ -157,9 +153,7 @@ func (c *UnprivilegedConn) RemoteAddr() net.Addr {
 }
 
 func (c *UnprivilegedConn) SetDeadline(t time.Time) error {
-	c.readDeadline.Store(t)
-	c.writeDeadline.Store(t)
-	return nil
+	return os.ErrInvalid
 }
 
 func (c *UnprivilegedConn) SetReadDeadline(t time.Time) error {
@@ -168,6 +162,5 @@ func (c *UnprivilegedConn) SetReadDeadline(t time.Time) error {
 }
 
 func (c *UnprivilegedConn) SetWriteDeadline(t time.Time) error {
-	c.writeDeadline.Store(t)
-	return nil
+	return os.ErrInvalid
 }
