@@ -25,6 +25,7 @@ type DirectRouteSession struct {
 
 type DirectRouteMapping struct {
 	mapping freelru.Cache[DirectRouteSession, DirectRouteDestination]
+	timeout time.Duration
 }
 
 func NewDirectRouteMapping(timeout time.Duration) *DirectRouteMapping {
@@ -36,16 +37,16 @@ func NewDirectRouteMapping(timeout time.Duration) *DirectRouteMapping {
 		action.Close()
 	})
 	mapping.SetLifetime(timeout)
-	return &DirectRouteMapping{mapping}
+	return &DirectRouteMapping{mapping, timeout}
 }
 
-func (m *DirectRouteMapping) Lookup(session DirectRouteSession, constructor func() (DirectRouteDestination, error)) (DirectRouteDestination, error) {
+func (m *DirectRouteMapping) Lookup(session DirectRouteSession, constructor func(timeout time.Duration) (DirectRouteDestination, error)) (DirectRouteDestination, error) {
 	var (
 		created DirectRouteDestination
 		err     error
 	)
 	action, _, ok := m.mapping.GetAndRefreshOrAdd(session, func() (DirectRouteDestination, bool) {
-		created, err = constructor()
+		created, err = constructor(m.timeout)
 		return created, err == nil
 	})
 	if !ok {

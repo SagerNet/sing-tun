@@ -79,7 +79,7 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 func (f *TCPForwarder) Forward(r *tcp.ForwarderRequest) {
 	source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-	_, pErr := f.handler.PrepareConnection(N.NetworkTCP, source, destination, nil)
+	_, pErr := f.handler.PrepareConnection(N.NetworkTCP, source, destination, nil, 0)
 	if pErr != nil {
 		r.Complete(!errors.Is(pErr, ErrDrop))
 		return
