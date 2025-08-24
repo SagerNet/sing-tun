@@ -159,6 +159,10 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 		}
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
+			if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+				ipHdr.SetTotalLength(ipHdr.TotalLengthDarwinRaw())
+				ipHdr.SetFlagsFragmentOffset(ipHdr.FlagsDarwinRaw(), ipHdr.FragmentOffsetDarwinRaw())
+			}
 			if !ipHdr.IsValid(buffer.Len()) {
 				return E.New("invalid IPv4 header received")
 			}

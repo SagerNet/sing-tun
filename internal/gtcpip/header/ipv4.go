@@ -315,6 +315,10 @@ func (b IPv4) Flags() uint8 {
 	return uint8(binary.BigEndian.Uint16(b[flagsFO:]) >> 13)
 }
 
+func (b IPv4) FlagsDarwinRaw() uint8 {
+	return uint8(binary.BigEndian.Uint16(b[flagsFO:]) >> 13)
+}
+
 // More returns whether the more fragments flag is set.
 func (b IPv4) More() bool {
 	return b.Flags()&IPv4FlagMoreFragments != 0
@@ -330,9 +334,17 @@ func (b IPv4) FragmentOffset() uint16 {
 	return binary.BigEndian.Uint16(b[flagsFO:]) << 3
 }
 
+func (b IPv4) FragmentOffsetDarwinRaw() uint16 {
+	return binary.NativeEndian.Uint16(b[flagsFO:]) << 3
+}
+
 // TotalLength returns the "total length" field of the IPv4 header.
 func (b IPv4) TotalLength() uint16 {
 	return binary.BigEndian.Uint16(b[IPv4TotalLenOffset:])
+}
+
+func (b IPv4) TotalLengthDarwinRaw() uint16 {
+	return binary.NativeEndian.Uint16(b[IPv4TotalLenOffset:]) + uint16(b.HeaderLength())
 }
 
 // Checksum returns the checksum field of the IPv4 header.
@@ -428,6 +440,10 @@ func (b IPv4) SetTotalLength(totalLength uint16) {
 	binary.BigEndian.PutUint16(b[IPv4TotalLenOffset:], totalLength)
 }
 
+func (b IPv4) SetTotalLengthDarwinRaw(totalLength uint16) {
+	binary.NativeEndian.PutUint16(b[IPv4TotalLenOffset:], totalLength)
+}
+
 // SetChecksum sets the checksum field of the IPv4 header.
 func (b IPv4) SetChecksum(v uint16) {
 	checksum.Put(b[xsum:], v)
@@ -438,6 +454,11 @@ func (b IPv4) SetChecksum(v uint16) {
 func (b IPv4) SetFlagsFragmentOffset(flags uint8, offset uint16) {
 	v := (uint16(flags) << 13) | (offset >> 3)
 	binary.BigEndian.PutUint16(b[flagsFO:], v)
+}
+
+func (b IPv4) SetFlagsFragmentOffsetDarwinRaw(flags uint8, offset uint16) {
+	v := (uint16(flags) << 13) | (offset >> 3)
+	binary.NativeEndian.PutUint16(b[flagsFO:], v)
 }
 
 // SetID sets the identification field.
