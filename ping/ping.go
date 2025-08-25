@@ -26,6 +26,7 @@ type Conn struct {
 	ctx         context.Context
 	logger      logger.ContextLogger
 	privileged  bool
+	bitwiseID   bool
 	conn        net.Conn
 	destination netip.Addr
 	source      atomic.TypedValue[netip.Addr]
@@ -37,10 +38,15 @@ func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, 
 	if err != nil {
 		return nil, err
 	}
+	replaceID := true
+	if _, ok := conn.(*UnprivilegedConn); ok {
+		replaceID = false
+	}
 	return &Conn{
 		ctx:         ctx,
 		logger:      logger,
 		privileged:  privileged,
+		bitwiseID:   replaceID,
 		conn:        conn,
 		destination: destination,
 	}, nil
@@ -102,6 +108,12 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				}
 				ttl = controlMessage.TTL
 			}
+			if c.bitwiseID {
+				icmpHdr := header.ICMPv4(buffer.Bytes())
+				icmpHdr.SetIdent(^icmpHdr.Ident())
+				icmpHdr.SetChecksum(0)
+				icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			}
 			ipHdr := header.IPv4(buffer.ExtendHeader(header.IPv4MinimumSize))
 			ipHdr.Encode(&header.IPv4Fields{
 				// TOS:         uint8(tos),
@@ -135,6 +147,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				trafficClass = controlMessage.TrafficClass
 			}
 			icmpHdr := header.ICMPv6(buffer.Bytes())
+			if c.bitwiseID {
+				icmpHdr.SetIdent(^icmpHdr.Ident())
+			}
 			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr[:header.ICMPv6DstUnreachableMinimumSize],
@@ -173,6 +188,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
+			if c.bitwiseID {
+				icmpHdr.SetIdent(^icmpHdr.Ident())
+			}
 			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
 			c.logger.TraceContext(c.ctx, "read icmpv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
@@ -183,6 +201,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
+			if c.bitwiseID {
+				icmpHdr.SetIdent(^icmpHdr.Ident())
+			}
 			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
@@ -219,11 +240,27 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	defer buffer.Release()
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
+		if c.bitwiseID {
+			icmpHdr := header.ICMPv4(ipHdr.Payload())
+			icmpHdr.SetIdent(^icmpHdr.Ident())
+			icmpHdr.SetChecksum(0)
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+		}
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
 		c.logger.TraceContext(c.ctx, "write icmpv4 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		return common.Error(c.conn.Write(ipHdr.Payload()))
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
+		if c.bitwiseID {
+			icmpHdr := header.ICMPv6(ipHdr.Payload())
+			icmpHdr.SetIdent(^icmpHdr.Ident())
+			icmpHdr.SetChecksum(0)
+			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
+				Header: icmpHdr,
+				Src:    ipHdr.SourceAddressSlice(),
+				Dst:    ipHdr.DestinationAddressSlice(),
+			}))
+		}
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
 		c.logger.TraceContext(c.ctx, "write icmpv6 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr())
 		return common.Error(c.conn.Write(ipHdr.Payload()))
