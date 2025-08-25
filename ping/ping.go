@@ -160,6 +160,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
 			if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+				// MacOS have different TotalLen and FragOff in ipv4 header from socket api:
+				// https://stackoverflow.com/questions/13829712/mac-changes-ip-total-length-field/15881825#15881825
+				// but in the tun api still same data format as other system
 				ipHdr.SetTotalLength(ipHdr.TotalLengthDarwinRaw())
 				ipHdr.SetFlagsFragmentOffset(ipHdr.FlagsDarwinRaw(), ipHdr.FragmentOffsetDarwinRaw())
 			}
