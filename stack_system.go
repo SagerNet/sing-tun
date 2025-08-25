@@ -660,7 +660,7 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 	if destinationAddr != s.inet4Address {
 		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 			return s.handler.PrepareConnection(
-				N.NetworkICMPv4,
+				N.NetworkICMP,
 				M.SocksaddrFrom(sourceAddr, 0),
 				M.SocksaddrFrom(destinationAddr, 0),
 				&systemICMPDirectPacketWriter4{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
@@ -732,7 +732,7 @@ func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool
 	if destinationAddr != s.inet6Address {
 		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 			return s.handler.PrepareConnection(
-				N.NetworkICMPv6,
+				N.NetworkICMP,
 				M.SocksaddrFrom(sourceAddr, 0),
 				M.SocksaddrFrom(destinationAddr, 0),
 				&systemICMPDirectPacketWriter6{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},

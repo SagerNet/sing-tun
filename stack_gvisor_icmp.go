@@ -61,7 +61,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		if destinationAddr != f.inet4Address {
 			action, err := f.mapping.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 				return f.handler.PrepareConnection(
-					N.NetworkICMPv4,
+					N.NetworkICMP,
 					M.SocksaddrFrom(sourceAddr, 0),
 					M.SocksaddrFrom(destinationAddr, 0),
 					&ICMPBackWriter{
@@ -120,7 +120,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		if destinationAddr != f.inet6Address {
 			action, err := f.mapping.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 				return f.handler.PrepareConnection(
-					N.NetworkICMPv6,
+					N.NetworkICMP,
 					M.SocksaddrFrom(sourceAddr, 0),
 					M.SocksaddrFrom(destinationAddr, 0),
 					&ICMPBackWriter{
