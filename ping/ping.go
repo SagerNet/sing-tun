@@ -151,7 +151,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			}
 			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
-				Header: icmpHdr[:header.ICMPv6DstUnreachableMinimumSize],
+				Header: icmpHdr,
 				Src:    addr.AsSlice(),
 				Dst:    c.source.Load().AsSlice(),
 			}))
