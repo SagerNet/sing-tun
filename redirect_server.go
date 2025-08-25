@@ -7,9 +7,9 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
-	"github.com/sagernet/sing/common/atomic"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
