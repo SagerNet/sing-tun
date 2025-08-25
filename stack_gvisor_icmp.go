@@ -226,6 +226,7 @@ func (w *ICMPBackWriter) WritePacket(p []byte) error {
 		packet := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(p),
 		})
+		parse.IPv6(packet)
 		defer packet.DecRef()
 		err = route.WritePacketDirect(packet)
 		if err != nil {
