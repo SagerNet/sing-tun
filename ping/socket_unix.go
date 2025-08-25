@@ -12,7 +12,6 @@ import (
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -72,6 +71,17 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		if err != nil {
 			return nil, E.Cause(err, "setsockopt()")
 		}
+	}
+
+	var bindAddress netip.Addr
+	if !destination.Is6() {
+		bindAddress = netip.AddrFrom4([4]byte{0, 0, 0, 0})
+	} else {
+		bindAddress = netip.AddrFrom16([16]byte{})
+	}
+	err = unix.Bind(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(bindAddress, 0)))
+	if err != nil {
+		return nil, err
 	}
 
 	err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
