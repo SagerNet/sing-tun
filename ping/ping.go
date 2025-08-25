@@ -6,12 +6,12 @@ import (
 	"net/netip"
 	"reflect"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/atomic"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -28,7 +28,7 @@ type Conn struct {
 	privileged  bool
 	conn        net.Conn
 	destination netip.Addr
-	source      atomic.TypedValue[netip.Addr]
+	source      common.TypedValue[netip.Addr]
 	closed      atomic.Bool
 }
 
