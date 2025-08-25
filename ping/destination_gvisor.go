@@ -76,7 +76,7 @@ func ConnectGVisor(
 		return nil, gonet.TranslateNetstackError(gErr)
 	}
 	endpoint.SocketOptions().SetHeaderIncluded(true)
-	rewriter := NewRewriter(bindAddress4, bindAddress6)
+	rewriter := NewRewriter(ctx, logger, bindAddress4, bindAddress6)
 	rewriter.CreateSession(tun.DirectRouteSession{Source: sourceAddress, Destination: destinationAddress}, routeContext)
 	destination := &GVisorDestination{
 		ctx:      ctx,
