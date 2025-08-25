@@ -33,29 +33,34 @@ type Conn struct {
 }
 
 func Connect(ctx context.Context, logger logger.ContextLogger, privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
-	conn, err := connect0(ctx, privileged, controlFunc, destination)
-	if err != nil {
-		return nil, err
-	}
-	return &Conn{
+	c := &Conn{
 		ctx:         ctx,
 		logger:      logger,
 		privileged:  privileged,
-		conn:        conn,
 		destination: destination,
-	}, nil
+	}
+	err := c.connect(controlFunc)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
-func connect0(ctx context.Context, privileged bool, controlFunc control.Func, destination netip.Addr) (net.Conn, error) {
-	if (runtime.GOOS == "linux" || runtime.GOOS == "android") && !privileged {
-		return newUnprivilegedConn(ctx, controlFunc, destination)
+func (c *Conn) connect(controlFunc control.Func) (err error) {
+	if c.IsLinuxUnprivileged() {
+		c.conn, err = newUnprivilegedConn(c.ctx, controlFunc, c.destination)
 	} else {
-		return connect(privileged, controlFunc, destination)
+		c.conn, err = connect(c.privileged, controlFunc, c.destination)
 	}
+	return
+}
+
+func (c *Conn) IsLinuxUnprivileged() bool {
+	return (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged
 }
 
 func (c *Conn) ReadIP(buffer *buf.Buffer) error {
-	if c.destination.Is6() || (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged {
+	if c.destination.Is6() || c.IsLinuxUnprivileged() {
 		var readMsg func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
 		switch conn := c.conn.(type) {
 		case *net.IPConn:
@@ -102,7 +107,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				}
 				ttl = controlMessage.TTL
 			}
-			if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+			if !c.IsLinuxUnprivileged() {
 				icmpHdr := header.ICMPv4(buffer.Bytes())
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 				icmpHdr.SetChecksum(0)
@@ -141,7 +146,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				trafficClass = controlMessage.TrafficClass
 			}
 			icmpHdr := header.ICMPv6(buffer.Bytes())
-			if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+			if !c.IsLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -182,7 +187,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
-			if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+			if !c.IsLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -195,7 +200,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
-			if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+			if !c.IsLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -215,7 +220,7 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 	if err != nil {
 		return err
 	}
-	if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+	if !c.IsLinuxUnprivileged() {
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
 			buffer.Advance(int(ipHdr.HeaderLength()))
@@ -242,7 +247,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	defer buffer.Release()
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
-		if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+		if !c.IsLinuxUnprivileged() {
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(0)
@@ -253,7 +258,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 		return common.Error(c.conn.Write(ipHdr.Payload()))
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
-		if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+		if !c.IsLinuxUnprivileged() {
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(0)
@@ -271,7 +276,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 
 func (c *Conn) WriteICMP(buffer *buf.Buffer) error {
 	defer buffer.Release()
-	if !((runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged) {
+	if !c.IsLinuxUnprivileged() {
 		if !c.destination.Is6() {
 			icmpHdr := header.ICMPv4(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
