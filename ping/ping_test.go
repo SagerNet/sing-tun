@@ -84,7 +84,7 @@ func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
 	request.SetIdent(uint16(rand.Uint32()))
 	request.SetChecksum(header.ICMPv4Checksum(request, 0))
 
-	err = conn.WriteICMP(buf.As(request))
+	err = conn.WriteICMP(buf.As(request).ToOwned())
 	require.NoError(t, err)
 
 	conn.SetLocalAddr(netip.MustParseAddr("127.0.0.1"))
@@ -117,7 +117,7 @@ func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
 	request.SetIdent(uint16(rand.Uint32()))
 	request.SetChecksum(header.ICMPv4Checksum(request, 0))
 
-	err = conn.WriteICMP(buf.As(request))
+	err = conn.WriteICMP(buf.As(request).ToOwned())
 	require.NoError(t, err)
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
@@ -148,7 +148,7 @@ func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
 	request.SetType(header.ICMPv6EchoRequest)
 	request.SetIdent(uint16(rand.Uint32()))
 
-	err = conn.WriteICMP(buf.As(request))
+	err = conn.WriteICMP(buf.As(request).ToOwned())
 	require.NoError(t, err)
 
 	conn.SetLocalAddr(netip.MustParseAddr("::1"))
@@ -180,7 +180,7 @@ func testPingIPv6ReadICMP(t *testing.T, privileged bool, addr string) {
 	request.SetType(header.ICMPv6EchoRequest)
 	request.SetIdent(uint16(rand.Uint32()))
 
-	err = conn.WriteICMP(buf.As(request))
+	err = conn.WriteICMP(buf.As(request).ToOwned())
 	require.NoError(t, err)
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(3*time.Second)))
