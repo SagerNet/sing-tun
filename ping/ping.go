@@ -59,28 +59,27 @@ func (c *Conn) isLinuxUnprivileged() bool {
 func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 	if c.destination.Is6() || c.isLinuxUnprivileged() {
 		var readMsg func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
-		switch conn := c.conn.(type) {
-		case *net.IPConn:
+		if ipConn, isIPConn := common.Cast[*net.IPConn](c.conn); isIPConn {
 			readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
 				var ipAddr *net.IPAddr
-				n, oobn, _, ipAddr, err = conn.ReadMsgIP(b, oob)
+				n, oobn, _, ipAddr, err = ipConn.ReadMsgIP(b, oob)
 				if err == nil {
 					addr = M.AddrFromNet(ipAddr)
 				}
 				return
 			}
-		case *net.UDPConn:
+		} else if udpConn, isUDPConn := common.Cast[*net.UDPConn](c.conn); isUDPConn {
 			readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
 				var addrPort netip.AddrPort
-				n, oobn, _, addrPort, err = conn.ReadMsgUDPAddrPort(b, oob)
+				n, oobn, _, addrPort, err = udpConn.ReadMsgUDPAddrPort(b, oob)
 				if err == nil {
 					addr = addrPort.Addr()
 				}
 				return
 			}
-		case *UnprivilegedConn:
-			readMsg = conn.ReadMsg
-		default:
+		} else if unprivilegedConn, isUnprivilegedConn := c.conn.(*UnprivilegedConn); isUnprivilegedConn {
+			readMsg = unprivilegedConn.ReadMsg
+		} else {
 			return E.New("unsupported conn type: ", reflect.TypeOf(c.conn))
 		}
 		if !c.destination.Is6() {

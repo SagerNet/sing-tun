@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -76,23 +77,34 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 
 	var bindAddress netip.Addr
 	if !destination.Is6() {
-		bindAddress = netip.AddrFrom4([4]byte{0, 0, 0, 0})
+		bindAddress = netip.AddrFrom4([4]byte{})
 	} else {
 		bindAddress = netip.AddrFrom16([16]byte{})
 	}
+
 	err = unix.Bind(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(bindAddress, 0)))
 	if err != nil {
 		return nil, err
 	}
 
-	err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
-	if err != nil {
-		return nil, E.Cause(err, "connect()")
+	if runtime.GOOS == "darwin" && !privileged {
+		// When running in NetworkExtension on macOS, write to connected socket results in EPIPE.
+		var packetConn net.PacketConn
+		packetConn, err = net.FilePacketConn(file)
+		if err != nil {
+			return nil, err
+		}
+		return bufio.NewBindPacketConn(packetConn, M.SocksaddrFrom(destination, 0).UDPAddr()), nil
+	} else {
+		err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
+		if err != nil {
+			return nil, err
+		}
+		var conn net.Conn
+		conn, err = net.FileConn(file)
+		if err != nil {
+			return nil, err
+		}
+		return conn, nil
 	}
-
-	conn, err := net.FileConn(file)
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
 }
