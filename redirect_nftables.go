@@ -143,12 +143,26 @@ func (r *autoRedirect) setupNFTables() error {
 			}
 		}
 		chainPreRoutingUDP := nft.AddChain(&nftables.Chain{
-			Name:     "prerouting_udp",
+			Name:     "prerouting_udp_icmp",
 			Table:    table,
 			Hooknum:  nftables.ChainHookPrerouting,
 			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 2),
 			Type:     nftables.ChainTypeFilter,
 		})
+		ipProto := &nftables.Set{
+			Table:     table,
+			Anonymous: true,
+			Constant:  true,
+			KeyType:   nftables.TypeInetProto,
+		}
+		err = nft.AddSet(ipProto, []nftables.SetElement{
+			{Key: []byte{unix.IPPROTO_UDP}},
+			{Key: []byte{unix.IPPROTO_ICMP}},
+			{Key: []byte{unix.IPPROTO_ICMPV6}},
+		})
+		if err != nil {
+			return err
+		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
@@ -157,10 +171,11 @@ func (r *autoRedirect) setupNFTables() error {
 					Key:      expr.MetaKeyL4PROTO,
 					Register: 1,
 				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     []byte{unix.IPPROTO_UDP},
+				&expr.Lookup{
+					SourceRegister: 1,
+					SetID:          ipProto.ID,
+					SetName:        ipProto.Name,
+					Invert:         true,
 				},
 				&expr.Verdict{
 					Kind: expr.VerdictReturn,
