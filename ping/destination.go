@@ -27,7 +27,7 @@ type Destination struct {
 	routeContext  tun.DirectRouteContext
 	timeout       time.Duration
 	requestAccess sync.Mutex
-	requests      map[pingRequest]bool
+	requests      map[pingRequest]time.Time
 }
 
 type pingRequest struct {
@@ -68,7 +68,7 @@ func ConnectDestination(
 		destination:  destination,
 		routeContext: routeContext,
 		timeout:      timeout,
-		requests:     make(map[pingRequest]bool),
+		requests:     make(map[pingRequest]time.Time),
 	}
 	go d.loopRead()
 	return d, nil
@@ -107,7 +107,8 @@ func (d *Destination) loopRead() {
 			var requestExists bool
 			request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
 			d.requestAccess.Lock()
-			if d.requests[request] {
+			_, loaded := d.requests[request]
+			if loaded {
 				requestExists = true
 				delete(d.requests, request)
 			}
@@ -133,7 +134,8 @@ func (d *Destination) loopRead() {
 			var requestExists bool
 			request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
 			d.requestAccess.Lock()
-			if d.requests[request] {
+			_, loaded := d.requests[request]
+			if loaded {
 				requestExists = true
 				delete(d.requests, request)
 			}
@@ -161,9 +163,7 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 			return E.New("invalid ICMPv4 header")
 		}
 		icmpHdr := header.ICMPv4(ipHdr.Payload())
-		d.requestAccess.Lock()
-		d.requests[pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}] = true
-		d.requestAccess.Unlock()
+		d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
 		d.logger.TraceContext(d.ctx, "write ICMPv4 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	} else {
 		ipHdr := header.IPv6(packet.Bytes())
@@ -174,12 +174,22 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 			return E.New("invalid ICMPv6 header")
 		}
 		icmpHdr := header.ICMPv6(ipHdr.Payload())
-		d.requestAccess.Lock()
-		d.requests[pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}] = true
-		d.requestAccess.Unlock()
+		d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
 		d.logger.TraceContext(d.ctx, "write ICMPv6 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	}
 	return d.conn.WriteIP(packet)
+}
+
+func (d *Destination) registerRequest(request pingRequest) {
+	d.requestAccess.Lock()
+	defer d.requestAccess.Unlock()
+	now := time.Now()
+	for oldRequest, createdAt := range d.requests {
+		if now.Sub(createdAt) > d.timeout {
+			delete(d.requests, oldRequest)
+		}
+	}
+	d.requests[request] = time.Now()
 }
 
 func (d *Destination) Close() error {
