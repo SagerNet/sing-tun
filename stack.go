@@ -12,7 +12,10 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-var ErrDrop = E.New("drop connections by rule")
+var (
+	ErrDrop  = E.New("drop by rule")
+	ErrReset = E.New("reset by rule")
+)
 
 type Stack interface {
 	Start() error
