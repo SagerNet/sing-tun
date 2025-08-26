@@ -44,7 +44,7 @@ func Connect(ctx context.Context, privileged bool, controlFunc control.Func, des
 }
 
 func (c *Conn) connect(controlFunc control.Func) (err error) {
-	if c.IsLinuxUnprivileged() {
+	if c.isLinuxUnprivileged() {
 		c.conn, err = newUnprivilegedConn(c.ctx, controlFunc, c.destination)
 	} else {
 		c.conn, err = connect(c.privileged, controlFunc, c.destination)
@@ -52,12 +52,12 @@ func (c *Conn) connect(controlFunc control.Func) (err error) {
 	return
 }
 
-func (c *Conn) IsLinuxUnprivileged() bool {
+func (c *Conn) isLinuxUnprivileged() bool {
 	return (runtime.GOOS == "linux" || runtime.GOOS == "android") && !c.privileged
 }
 
 func (c *Conn) ReadIP(buffer *buf.Buffer) error {
-	if c.destination.Is6() || c.IsLinuxUnprivileged() {
+	if c.destination.Is6() || c.isLinuxUnprivileged() {
 		var readMsg func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
 		switch conn := c.conn.(type) {
 		case *net.IPConn:
@@ -104,7 +104,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				}
 				ttl = controlMessage.TTL
 			}
-			if !c.IsLinuxUnprivileged() {
+			if !c.isLinuxUnprivileged() {
 				icmpHdr := header.ICMPv4(buffer.Bytes())
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 				icmpHdr.SetChecksum(0)
@@ -142,7 +142,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				trafficClass = controlMessage.TrafficClass
 			}
 			icmpHdr := header.ICMPv6(buffer.Bytes())
-			if !c.IsLinuxUnprivileged() {
+			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -182,7 +182,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
-			if !c.IsLinuxUnprivileged() {
+			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -194,7 +194,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
-			if !c.IsLinuxUnprivileged() {
+			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
 			icmpHdr.SetChecksum(0)
@@ -213,7 +213,7 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 	if err != nil {
 		return err
 	}
-	if !c.IsLinuxUnprivileged() {
+	if !c.isLinuxUnprivileged() {
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
 			buffer.Advance(int(ipHdr.HeaderLength()))
@@ -240,7 +240,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	defer buffer.Release()
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
-		if !c.IsLinuxUnprivileged() {
+		if !c.isLinuxUnprivileged() {
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(0)
@@ -250,7 +250,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 		return common.Error(c.conn.Write(ipHdr.Payload()))
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
-		if !c.IsLinuxUnprivileged() {
+		if !c.isLinuxUnprivileged() {
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(0)
@@ -267,7 +267,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 
 func (c *Conn) WriteICMP(buffer *buf.Buffer) error {
 	defer buffer.Release()
-	if !c.IsLinuxUnprivileged() {
+	if !c.isLinuxUnprivileged() {
 		if !c.destination.Is6() {
 			icmpHdr := header.ICMPv4(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())

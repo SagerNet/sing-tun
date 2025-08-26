@@ -101,20 +101,22 @@ func (d *Destination) loopRead() {
 				continue
 			}
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
-			if icmpHdr.Type() != header.ICMPv4EchoReply {
-				continue
-			}
-			var requestExists bool
-			request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
-			d.requestAccess.Lock()
-			_, loaded := d.requests[request]
-			if loaded {
-				requestExists = true
-				delete(d.requests, request)
-			}
-			d.requestAccess.Unlock()
-			if !requestExists {
-				continue
+			if d.needFilter() {
+				if icmpHdr.Type() != header.ICMPv4EchoReply {
+					continue
+				}
+				var requestExists bool
+				request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
+				d.requestAccess.Lock()
+				_, loaded := d.requests[request]
+				if loaded {
+					requestExists = true
+					delete(d.requests, request)
+				}
+				d.requestAccess.Unlock()
+				if !requestExists {
+					continue
+				}
 			}
 			d.logger.TraceContext(d.ctx, "read ICMPv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 		} else {
@@ -128,20 +130,22 @@ func (d *Destination) loopRead() {
 				continue
 			}
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
-			if icmpHdr.Type() != header.ICMPv6EchoReply {
-				continue
-			}
-			var requestExists bool
-			request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
-			d.requestAccess.Lock()
-			_, loaded := d.requests[request]
-			if loaded {
-				requestExists = true
-				delete(d.requests, request)
-			}
-			d.requestAccess.Unlock()
-			if !requestExists {
-				continue
+			if d.needFilter() {
+				if icmpHdr.Type() != header.ICMPv6EchoReply {
+					continue
+				}
+				var requestExists bool
+				request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
+				d.requestAccess.Lock()
+				_, loaded := d.requests[request]
+				if loaded {
+					requestExists = true
+					delete(d.requests, request)
+				}
+				d.requestAccess.Unlock()
+				if !requestExists {
+					continue
+				}
 			}
 			d.logger.TraceContext(d.ctx, "read ICMPv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 		}
@@ -163,7 +167,9 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 			return E.New("invalid ICMPv4 header")
 		}
 		icmpHdr := header.ICMPv4(ipHdr.Payload())
-		d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
+		if d.needFilter() {
+			d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
+		}
 		d.logger.TraceContext(d.ctx, "write ICMPv4 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	} else {
 		ipHdr := header.IPv6(packet.Bytes())
@@ -174,10 +180,16 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 			return E.New("invalid ICMPv6 header")
 		}
 		icmpHdr := header.ICMPv6(ipHdr.Payload())
-		d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
+		if d.needFilter() {
+			d.registerRequest(pingRequest{Source: ipHdr.SourceAddr(), Destination: ipHdr.DestinationAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()})
+		}
 		d.logger.TraceContext(d.ctx, "write ICMPv6 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	}
 	return d.conn.WriteIP(packet)
+}
+
+func (d *Destination) needFilter() bool {
+	return runtime.GOOS != "windows" && !d.conn.isLinuxUnprivileged()
 }
 
 func (d *Destination) registerRequest(request pingRequest) {
