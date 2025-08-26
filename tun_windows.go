@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"net/netip"
@@ -37,18 +38,49 @@ type NativeTun struct {
 	fwpmSession uintptr
 }
 
+var logPrefix = "[tomi][tun]"
+
 func New(options Options) (WinTun, error) {
 	if options.FileDescriptor != 0 {
 		return nil, os.ErrInvalid
 	}
-	adapter, err := wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
+
+	var adapter *wintun.Adapter = nil
+
+	logPrefix = "[tomi][tun:" + options.Name + "]"
+	log.Println(logPrefix, "New() start")
+
+	// check tun device
+	netInterface, err := net.InterfaceByName(options.Name)
 	if err != nil {
-		return nil, err
+		log.Println(logPrefix, "find interface:", options.Name, ", failed:", err.Error())
 	}
+
+	if err == nil {
+		log.Println(logPrefix, "found interface:", netInterface.Name)
+	}
+
+	if err == nil && netInterface.Name == options.Name {
+		log.Println(logPrefix, "tun device found, just opening it")
+		adapter, err = wintun.OpenAdapter(options.Name)
+		if err != nil {
+			log.Println(logPrefix, "open tun adapter failed: "+err.Error())
+			return nil, errors.New("open tun adapter failed: " + err.Error())
+		}
+	} else {
+		log.Println(logPrefix, "tun device not found, create it")
+		adapter, err = wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
+		if err != nil {
+			log.Println(logPrefix, "create tun adapter failed: "+err.Error())
+			return nil, errors.New("create tun adapter failed: " + err.Error())
+		}
+	}
+
 	nativeTun := &NativeTun{
 		adapter: adapter,
 		options: options,
 	}
+
 	session, err := adapter.StartSession(0x800000)
 	if err != nil {
 		return nil, err
@@ -57,10 +89,13 @@ func New(options Options) (WinTun, error) {
 	nativeTun.readWait = session.ReadWaitEvent()
 	err = nativeTun.configure()
 	if err != nil {
+		log.Println(logPrefix, "tun configure failed: "+err.Error())
 		session.End()
-		adapter.Close()
+		//adapter.Close()
 		return nil, err
 	}
+
+	log.Println(logPrefix, "New() done")
 	return nativeTun, nil
 }
 
@@ -517,13 +552,14 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 }
 
 func (t *NativeTun) Close() error {
+	log.Println(logPrefix, "Close() start")
 	var err error
 	t.closeOnce.Do(func() {
 		t.close.Store(1)
 		windows.SetEvent(t.readWait)
 		t.running.Wait()
 		t.session.End()
-		t.adapter.Close()
+		//t.adapter.Close()
 		if t.fwpmSession != 0 {
 			winsys.FwpmEngineClose0(t.fwpmSession)
 		}
@@ -531,6 +567,8 @@ func (t *NativeTun) Close() error {
 			windnsapi.FlushResolverCache()
 		}
 	})
+
+	log.Println(logPrefix, "Close() done")
 	return err
 }
 
