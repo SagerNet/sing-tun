@@ -181,15 +181,26 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 }
 
 func (d *Destination) registerRequest(request pingRequest) {
+	const requestsLimit = 1024
 	d.requestAccess.Lock()
 	defer d.requestAccess.Unlock()
 	now := time.Now()
+	var (
+		oldestRequest  pingRequest
+		oldestCreateAt = now
+	)
 	for oldRequest, createdAt := range d.requests {
 		if now.Sub(createdAt) > d.timeout {
 			delete(d.requests, oldRequest)
+		} else if createdAt.Before(oldestCreateAt) {
+			oldestRequest = oldRequest
+			oldestCreateAt = createdAt
 		}
 	}
-	d.requests[request] = time.Now()
+	if len(d.requests) > requestsLimit {
+		delete(d.requests, oldestRequest)
+	}
+	d.requests[request] = now
 }
 
 func (d *Destination) Close() error {
