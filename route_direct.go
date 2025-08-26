@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"math"
 	"net/netip"
 	"time"
 
@@ -29,7 +30,7 @@ type DirectRouteMapping struct {
 }
 
 func NewDirectRouteMapping(timeout time.Duration) *DirectRouteMapping {
-	mapping := common.Must1(freelru.NewSharded[DirectRouteSession, DirectRouteDestination](1024, maphash.NewHasher[DirectRouteSession]().Hash32))
+	mapping := common.Must1(freelru.NewSharded[DirectRouteSession, DirectRouteDestination](math.MaxUint16, maphash.NewHasher[DirectRouteSession]().Hash32))
 	mapping.SetHealthCheck(func(session DirectRouteSession, action DirectRouteDestination) bool {
 		if action != nil {
 			return !action.IsClosed()
