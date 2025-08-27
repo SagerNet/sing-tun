@@ -114,8 +114,9 @@ func (b UDP) SetLength(length uint16) {
 // checksum of the network-layer pseudo-header and the checksum of the payload.
 func (b UDP) CalculateChecksum(partialChecksum uint16) uint16 {
 	// Calculate the rest of the checksum.\
+	// return checksum.Checksum(b[:UDPMinimumSize], partialChecksum)
 	xsum := checksum.Checksum(b[:udpChecksum], partialChecksum)
-	xsum = checksum.Checksum(b[udpChecksum+2:], xsum)
+	xsum = checksum.Checksum(b[udpChecksum+2:UDPMinimumSize], xsum)
 	return xsum
 }
 
@@ -123,7 +124,7 @@ func (b UDP) CalculateChecksum(partialChecksum uint16) uint16 {
 func (b UDP) IsChecksumValid(src, dst tcpip.Address, payloadChecksum uint16) bool {
 	xsum := PseudoHeaderChecksum(UDPProtocolNumber, dst.AsSlice(), src.AsSlice(), b.Length())
 	xsum = checksum.Combine(xsum, payloadChecksum)
-	return b.CalculateChecksum(xsum) == 0xffff
+	return checksum.Checksum(b[:UDPMinimumSize], xsum) == 0xffff
 }
 
 // Encode encodes all the fields of the UDP header.
