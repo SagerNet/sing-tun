@@ -665,7 +665,7 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 		})
 		if err != nil {
 			if errors.Is(err, ErrReset) {
-				return false, s.rejectIPv4WithICMP(ipHdr, header.ICMPv4PortUnreachable)
+				return false, s.rejectIPv4WithICMP(ipHdr, header.ICMPv4HostUnreachable)
 			} else if errors.Is(err, ErrDrop) {
 				return false, nil
 			}
@@ -712,7 +712,7 @@ func (s *System) rejectIPv4WithICMP(ipHdr header.IPv4, code header.ICMPv4Code) e
 	icmpHdr := header.ICMPv4(newIPHdr.Payload())
 	icmpHdr.SetType(header.ICMPv4DstUnreachable)
 	icmpHdr.SetCode(code)
-	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
+	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(ipHdr.Payload(), 0)))
 	copy(icmpHdr.Payload(), payload)
 	if PacketOffset > 0 {
 		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
@@ -739,7 +739,7 @@ func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool
 			)
 		})
 		if errors.Is(err, ErrReset) {
-			return false, s.rejectIPv6WithICMP(ipHdr, header.ICMPv6PortUnreachable)
+			return false, s.rejectIPv6WithICMP(ipHdr, header.ICMPv6AddressUnreachable)
 		} else if errors.Is(err, ErrDrop) {
 			return false, nil
 		}
