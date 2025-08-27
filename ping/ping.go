@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -106,8 +105,7 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			if !c.isLinuxUnprivileged() {
 				icmpHdr := header.ICMPv4(buffer.Bytes())
 				icmpHdr.SetIdent(^icmpHdr.Ident())
-				icmpHdr.SetChecksum(0)
-				icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+				icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 			}
 			ipHdr := header.IPv4(buffer.ExtendHeader(header.IPv4MinimumSize))
 			ipHdr.Encode(&header.IPv4Fields{
@@ -144,7 +142,6 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
-			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    addr.AsSlice(),
@@ -178,14 +175,12 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				return E.New("invalid IPv4 header received")
 			}
 			ipHdr.SetDestinationAddr(c.source.Load())
-			ipHdr.SetChecksum(0)
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
-			icmpHdr.SetChecksum(0)
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
 			if !ipHdr.IsValid(buffer.Len()) {
@@ -196,7 +191,6 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			if !c.isLinuxUnprivileged() {
 				icmpHdr.SetIdent(^icmpHdr.Ident())
 			}
-			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    ipHdr.SourceAddressSlice(),
@@ -219,12 +213,10 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 
 			icmpHdr := header.ICMPv4(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		} else {
 			icmpHdr := header.ICMPv6(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    c.destination.AsSlice(),
@@ -242,8 +234,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 		if !c.isLinuxUnprivileged() {
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		}
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
 		return common.Error(c.conn.Write(ipHdr.Payload()))
@@ -252,7 +243,6 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 		if !c.isLinuxUnprivileged() {
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    ipHdr.SourceAddressSlice(),
@@ -270,12 +260,10 @@ func (c *Conn) WriteICMP(buffer *buf.Buffer) error {
 		if !c.destination.Is6() {
 			icmpHdr := header.ICMPv4(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		} else {
 			icmpHdr := header.ICMPv6(buffer.Bytes())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(0)
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 				Header: icmpHdr,
 				Src:    c.source.Load().AsSlice(),

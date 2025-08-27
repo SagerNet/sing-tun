@@ -430,14 +430,12 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 		}
 	}
 	if !s.txChecksumOffload {
-		tcpHdr.SetChecksum(0)
 		tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 			header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
 		)))
 	} else {
 		tcpHdr.SetChecksum(0)
 	}
-	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	return true, nil
 }
@@ -478,7 +476,6 @@ func (s *System) resetIPv4TCP(origIPHdr header.IPv4, origTCPHdr header.TCP) erro
 	if !s.txChecksumOffload {
 		tcpHdr.SetChecksum(^tcpHdr.CalculateChecksum(header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), header.TCPMinimumSize)))
 	}
-	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	if PacketOffset > 0 {
 		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)
@@ -528,7 +525,6 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 		}
 	}
 	if !s.txChecksumOffload {
-		tcpHdr.SetChecksum(0)
 		tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 			header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
 		)))
@@ -682,8 +678,7 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 	sourceAddress := ipHdr.SourceAddr()
 	ipHdr.SetSourceAddr(ipHdr.DestinationAddr())
 	ipHdr.SetDestinationAddr(sourceAddress)
-	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
-	ipHdr.SetChecksum(0)
+	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	return true, nil
 }
@@ -717,7 +712,7 @@ func (s *System) rejectIPv4WithICMP(ipHdr header.IPv4, code header.ICMPv4Code) e
 	icmpHdr := header.ICMPv4(newIPHdr.Payload())
 	icmpHdr.SetType(header.ICMPv4DstUnreachable)
 	icmpHdr.SetCode(code)
-	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(payload, 0)))
+	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 	copy(icmpHdr.Payload(), payload)
 	if PacketOffset > 0 {
 		newPacket.ExtendHeader(PacketOffset)[3] = syscall.AF_INET
@@ -831,14 +826,12 @@ func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetSourcePort(destination.Port)
 	udpHdr.SetLength(uint16(buffer.Len() + header.UDPMinimumSize))
 	if !w.txChecksumOffload {
-		udpHdr.SetChecksum(0)
 		udpHdr.SetChecksum(^checksum.Checksum(udpHdr.Payload(), udpHdr.CalculateChecksum(
 			header.PseudoHeaderChecksum(header.UDPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
 		)))
 	} else {
 		udpHdr.SetChecksum(0)
 	}
-	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	if PacketOffset > 0 {
 		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)
@@ -872,7 +865,6 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 	udpHdr.SetSourcePort(destination.Port)
 	udpHdr.SetLength(udpLen)
 	if !w.txChecksumOffload {
-		udpHdr.SetChecksum(0)
 		udpHdr.SetChecksum(^checksum.Checksum(udpHdr.Payload(), udpHdr.CalculateChecksum(
 			header.PseudoHeaderChecksum(header.UDPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
 		)))
@@ -900,7 +892,6 @@ func (w *systemICMPDirectPacketWriter4) WritePacket(p []byte) error {
 	newPacket.Write(p)
 	ipHdr := header.IPv4(newPacket.Bytes())
 	ipHdr.SetDestinationAddr(w.source)
-	ipHdr.SetChecksum(0)
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	if PacketOffset > 0 {
 		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)

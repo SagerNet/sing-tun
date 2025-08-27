@@ -113,8 +113,10 @@ func (b UDP) SetLength(length uint16) {
 // CalculateChecksum calculates the checksum of the UDP packet, given the
 // checksum of the network-layer pseudo-header and the checksum of the payload.
 func (b UDP) CalculateChecksum(partialChecksum uint16) uint16 {
-	// Calculate the rest of the checksum.
-	return checksum.Checksum(b[:UDPMinimumSize], partialChecksum)
+	// Calculate the rest of the checksum.\
+	xsum := checksum.Checksum(b[:udpChecksum], partialChecksum)
+	xsum = checksum.Checksum(b[udpChecksum+2:], xsum)
+	return xsum
 }
 
 // IsChecksumValid returns true iff the UDP header's checksum is valid.

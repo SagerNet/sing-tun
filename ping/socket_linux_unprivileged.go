@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -130,8 +129,7 @@ func (c *UnprivilegedConn) fetchResponse(conn *net.UDPConn, identifier uint16) {
 		if !c.destination.Is6() {
 			icmpHdr := header.ICMPv4(buffer.Bytes())
 			icmpHdr.SetIdent(identifier)
-			icmpHdr.SetChecksum(0)
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr[:header.ICMPv4MinimumSize], checksum.Checksum(icmpHdr.Payload(), 0)))
+			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		} else {
 			icmpHdr := header.ICMPv6(buffer.Bytes())
 			icmpHdr.SetIdent(identifier)

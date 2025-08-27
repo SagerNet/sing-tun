@@ -59,7 +59,6 @@ func (m *Rewriter) RewritePacket(packet []byte) {
 	sourceAddr := ipHdr.SourceAddr()
 	ipHdr.SetSourceAddr(bindAddr)
 	if ipHdr4, isIPv4 := ipHdr.(header.IPv4); isIPv4 {
-		ipHdr4.SetChecksum(0)
 		ipHdr4.SetChecksum(^ipHdr4.CalculateChecksum())
 	}
 	switch ipHdr.TransportProtocol() {
@@ -71,7 +70,6 @@ func (m *Rewriter) RewritePacket(packet []byte) {
 		m.logger.TraceContext(m.ctx, "write ICMPv4 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	case header.ICMPv6ProtocolNumber:
 		icmpHdr := header.ICMPv6(ipHdr.Payload())
-		icmpHdr.SetChecksum(0)
 		icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 			Header: icmpHdr,
 			Src:    ipHdr.SourceAddressSlice(),
@@ -133,7 +131,6 @@ func (m *Rewriter) WriteBack(packet []byte) (bool, error) {
 	}
 	ipHdr.SetDestinationAddr(routeSession.Source)
 	if ipHdr4, isIPv4 := ipHdr.(header.IPv4); isIPv4 {
-		ipHdr4.SetChecksum(0)
 		ipHdr4.SetChecksum(^ipHdr4.CalculateChecksum())
 	}
 	switch ipHdr.TransportProtocol() {
@@ -142,7 +139,6 @@ func (m *Rewriter) WriteBack(packet []byte) (bool, error) {
 		m.logger.TraceContext(m.ctx, "read ICMPv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	case header.ICMPv6ProtocolNumber:
 		icmpHdr := header.ICMPv6(ipHdr.Payload())
-		icmpHdr.SetChecksum(0)
 		icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 			Header: icmpHdr,
 			Src:    ipHdr.SourceAddressSlice(),
