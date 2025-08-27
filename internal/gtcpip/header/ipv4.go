@@ -458,6 +458,7 @@ func (b IPv4) SetDestinationAddress(addr tcpip.Address) {
 
 // CalculateChecksum calculates the checksum of the IPv4 header.
 func (b IPv4) CalculateChecksum() uint16 {
+	// return checksum.Checksum(b[:b.HeaderLength()], 0)
 	xsum0 := checksum.Checksum(b[:xsum], 0)
 	xsum0 = checksum.Checksum(b[xsum+2:b.HeaderLength()], xsum0)
 	return xsum0
@@ -552,7 +553,8 @@ func (b IPv4) IsChecksumValid() bool {
 	//        same set of octets, including the checksum field.  If the result
 	//        is all 1 bits (-0 in 1's complement arithmetic), the check
 	//        succeeds.
-	return b.CalculateChecksum() == 0xffff
+	//return b.CalculateChecksum() == 0xffff
+	return checksum.Checksum(b[:b.HeaderLength()], 0) == 0xffff
 }
 
 // IsV4MulticastAddress determines if the provided address is an IPv4 multicast

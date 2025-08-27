@@ -51,6 +51,7 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 			ipHdr.SetDestinationAddressWithChecksumUpdate(ipHdr.SourceAddress())
 			ipHdr.SetSourceAddressWithChecksumUpdate(inet4LoopbackAddress)
 			tcpHdr := header.TCP(pkt.TransportHeader().Slice())
+			tcpHdr.SetChecksum(0)
 			tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 				header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress(), ipHdr.PayloadLength()),
 			)))
@@ -64,6 +65,7 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 			ipHdr.SetDestinationAddress(ipHdr.SourceAddress())
 			ipHdr.SetSourceAddress(inet6LoopbackAddress)
 			tcpHdr := header.TCP(pkt.TransportHeader().Slice())
+			tcpHdr.SetChecksum(0)
 			tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
 				header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress(), ipHdr.PayloadLength()),
 			)))
