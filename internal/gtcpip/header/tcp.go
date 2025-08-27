@@ -351,7 +351,9 @@ func (b TCP) SetUrgentPointer(urgentPointer uint16) {
 // and the checksum of the segment data.
 func (b TCP) CalculateChecksum(partialChecksum uint16) uint16 {
 	// Calculate the rest of the checksum.
-	return checksum.Checksum(b[:b.DataOffset()], partialChecksum)
+	xsum := checksum.Checksum(b[:TCPChecksumOffset], partialChecksum)
+	xsum = checksum.Checksum(b[TCPChecksumOffset+2:b.DataOffset()], xsum)
+	return xsum
 }
 
 // IsChecksumValid returns true iff the TCP header's checksum is valid.
