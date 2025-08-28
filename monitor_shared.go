@@ -66,7 +66,12 @@ func (m *defaultInterfaceMonitor) Start() error {
 	return nil
 }
 
+var accessDelayCheckUpdate sync.Mutex
+
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
+	accessDelayCheckUpdate.Lock()
+	defer accessDelayCheckUpdate.Unlock()
+
 	if m.checkUpdateTimer == nil {
 		m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
 	} else {
