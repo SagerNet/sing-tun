@@ -27,7 +27,7 @@ type GVisorDestination struct {
 	logger   logger.ContextLogger
 	endpoint tcpip.Endpoint
 	conn     *gonet.TCPConn
-	rewriter *Rewriter
+	rewriter *SourceRewriter
 	timeout  time.Duration
 }
 
@@ -76,7 +76,7 @@ func ConnectGVisor(
 		return nil, gonet.TranslateNetstackError(gErr)
 	}
 	endpoint.SocketOptions().SetHeaderIncluded(true)
-	rewriter := NewRewriter(ctx, logger, bindAddress4, bindAddress6)
+	rewriter := NewSourceRewriter(ctx, logger, bindAddress4, bindAddress6)
 	rewriter.CreateSession(tun.DirectRouteSession{Source: sourceAddress, Destination: destinationAddress}, routeContext)
 	destination := &GVisorDestination{
 		ctx:      ctx,

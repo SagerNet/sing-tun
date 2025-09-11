@@ -10,7 +10,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-type Rewriter struct {
+type SourceRewriter struct {
 	ctx           context.Context
 	logger        logger.ContextLogger
 	access        sync.RWMutex
@@ -20,8 +20,8 @@ type Rewriter struct {
 	inet6Address  netip.Addr
 }
 
-func NewRewriter(ctx context.Context, logger logger.ContextLogger, inet4Address netip.Addr, inet6Address netip.Addr) *Rewriter {
-	return &Rewriter{
+func NewSourceRewriter(ctx context.Context, logger logger.ContextLogger, inet4Address netip.Addr, inet6Address netip.Addr) *SourceRewriter {
+	return &SourceRewriter{
 		ctx:           ctx,
 		logger:        logger,
 		sessions:      make(map[tun.DirectRouteSession]tun.DirectRouteContext),
@@ -31,19 +31,19 @@ func NewRewriter(ctx context.Context, logger logger.ContextLogger, inet4Address 
 	}
 }
 
-func (m *Rewriter) CreateSession(session tun.DirectRouteSession, context tun.DirectRouteContext) {
+func (m *SourceRewriter) CreateSession(session tun.DirectRouteSession, context tun.DirectRouteContext) {
 	m.access.Lock()
 	m.sessions[session] = context
 	m.access.Unlock()
 }
 
-func (m *Rewriter) DeleteSession(session tun.DirectRouteSession) {
+func (m *SourceRewriter) DeleteSession(session tun.DirectRouteSession) {
 	m.access.Lock()
 	delete(m.sessions, session)
 	m.access.Unlock()
 }
 
-func (m *Rewriter) RewritePacket(packet []byte) {
+func (m *SourceRewriter) RewritePacket(packet []byte) {
 	var ipHdr header.Network
 	var bindAddr netip.Addr
 	switch header.IPVersion(packet) {
@@ -82,7 +82,7 @@ func (m *Rewriter) RewritePacket(packet []byte) {
 	}
 }
 
-func (m *Rewriter) WriteBack(packet []byte) (bool, error) {
+func (m *SourceRewriter) WriteBack(packet []byte) (bool, error) {
 	var ipHdr header.Network
 	var routeSession tun.DirectRouteSession
 	switch header.IPVersion(packet) {
