@@ -1,3 +1,5 @@
 /.idea/
 /vendor/
 .DS_Store
+!/README.md
+/*.md

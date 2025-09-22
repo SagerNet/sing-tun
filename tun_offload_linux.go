@@ -149,12 +149,12 @@ func (t *tcpGROTable) insert(pkt []byte, srcAddrOffset, dstAddrOffset, tcphOffse
 }
 
 func (t *tcpGROTable) updateAt(item tcpGROItem, i int) {
-	items, _ := t.itemsByFlow[item.key]
+	items := t.itemsByFlow[item.key]
 	items[i] = item
 }
 
 func (t *tcpGROTable) deleteAt(key tcpFlowKey, i int) {
-	items, _ := t.itemsByFlow[key]
+	items := t.itemsByFlow[key]
 	items = append(items[:i], items[i+1:]...)
 	t.itemsByFlow[key] = items
 }
@@ -254,7 +254,7 @@ func (u *udpGROTable) insert(pkt []byte, srcAddrOffset, dstAddrOffset, udphOffse
 }
 
 func (u *udpGROTable) updateAt(item udpGROItem, i int) {
-	items, _ := u.itemsByFlow[item.key]
+	items := u.itemsByFlow[item.key]
 	items[i] = item
 }
 
