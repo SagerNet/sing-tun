@@ -534,6 +534,43 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 4, "inet6_route_exclude_address_set", nftables.TableFamilyIPv6, false)
 	}
 
+	mptcpVerdict := expr.VerdictDrop
+	if r.tunOptions.ExcludeMPTCP {
+		mptcpVerdict = expr.VerdictReturn
+	}
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{
+				Key:      expr.MetaKeyL4PROTO,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{unix.IPPROTO_TCP},
+			},
+			&expr.Exthdr{
+				DestRegister: 1,
+				Type:         30,
+				Offset:       0,
+				Len:          1,
+				Flags:        unix.NFT_EXTHDR_F_PRESENT,
+				Op:           expr.ExthdrOpTcpopt,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{1},
+			},
+			&expr.Counter{},
+			&expr.Verdict{
+				Kind: mptcpVerdict,
+			},
+		},
+	})
+
 	return nil
 }
 
