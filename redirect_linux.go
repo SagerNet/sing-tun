@@ -69,6 +69,7 @@ func (r *autoRedirect) Start() error {
 			r.androidSu = true
 			for _, suPath := range []string{
 				"su",
+				"/product/bin/su",
 				"/system/bin/su",
 			} {
 				r.suPath, err = exec.LookPath(suPath)
