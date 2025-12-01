@@ -189,7 +189,7 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 }
 
 func (d *Destination) needFilter() bool {
-	return runtime.GOOS != "windows" && !d.conn.isLinuxUnprivileged()
+	return !d.conn.isLinuxUnprivileged()
 }
 
 func (d *Destination) registerRequest(request pingRequest) {
