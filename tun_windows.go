@@ -395,15 +395,16 @@ retry:
 
 func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
 	t.running.Add(1)
-	defer t.running.Done()
 retry:
 	if t.close.Load() == 1 {
+		t.running.Done()
 		return nil, nil, os.ErrClosed
 	}
 	start := nanotime()
 	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
 	for {
 		if t.close.Load() == 1 {
+			t.running.Done()
 			return nil, nil, os.ErrClosed
 		}
 		packet, err := t.session.ReceivePacket()
@@ -411,7 +412,10 @@ retry:
 		case nil:
 			packetSize := len(packet)
 			t.rate.update(uint64(packetSize))
-			return packet, func() { t.session.ReleaseReceivePacket(packet) }, nil
+			return packet, func() {
+				t.session.ReleaseReceivePacket(packet)
+				t.running.Done()
+			}, nil
 		case windows.ERROR_NO_MORE_ITEMS:
 			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
 				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
@@ -420,10 +424,13 @@ retry:
 			procyield(1)
 			continue
 		case windows.ERROR_HANDLE_EOF:
+			t.running.Done()
 			return nil, nil, os.ErrClosed
 		case windows.ERROR_INVALID_DATA:
+			t.running.Done()
 			return nil, nil, errors.New("send ring corrupt")
 		}
+		t.running.Done()
 		return nil, nil, fmt.Errorf("read failed: %w", err)
 	}
 }
