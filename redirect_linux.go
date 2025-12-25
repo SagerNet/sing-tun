@@ -13,7 +13,6 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
 
 	"go4.org/netipx"
@@ -22,7 +21,7 @@ import (
 type autoRedirect struct {
 	tunOptions             *Options
 	ctx                    context.Context
-	handler                N.TCPConnectionHandlerEx
+	handler                Handler
 	logger                 logger.Logger
 	tableName              string
 	networkMonitor         NetworkUpdateMonitor
@@ -41,6 +40,8 @@ type autoRedirect struct {
 	suPath                 string
 	routeAddressSet        *[]*netipx.IPSet
 	routeExcludeAddressSet *[]*netipx.IPSet
+	nfqueueHandler         *nfqueueHandler
+	nfqueueEnabled         bool
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -125,13 +126,30 @@ func (r *autoRedirect) Start() error {
 			listenAddr = netip.IPv4Unspecified()
 		}
 		server := newRedirectServer(r.ctx, r.handler, r.logger, listenAddr)
-		err := server.Start()
+		err = server.Start()
 		if err != nil {
 			return E.Cause(err, "start redirect server")
 		}
 		r.redirectServer = server
 	}
 	if r.useNFTables {
+		var handler *nfqueueHandler
+		handler, err = newNFQueueHandler(nfqueueOptions{
+			Context:    r.ctx,
+			Handler:    r.handler,
+			Logger:     r.logger,
+			Queue:      r.effectiveNFQueue(),
+			OutputMark: r.effectiveOutputMark(),
+			ResetMark:  r.effectiveResetMark(),
+		})
+		if err != nil {
+			r.logger.Warn("nfqueue not available, pre-match disabled: ", err)
+		} else if err = handler.Start(); err != nil {
+			r.logger.Warn("nfqueue start failed, pre-match disabled: ", err)
+		} else {
+			r.nfqueueHandler = handler
+			r.nfqueueEnabled = true
+		}
 		r.cleanupNFTables()
 		err = r.setupNFTables()
 	} else {
@@ -142,6 +160,9 @@ func (r *autoRedirect) Start() error {
 }
 
 func (r *autoRedirect) Close() error {
+	if r.nfqueueHandler != nil {
+		r.nfqueueHandler.Close()
+	}
 	if r.useNFTables {
 		r.cleanupNFTables()
 	} else {
@@ -180,4 +201,29 @@ func (r *autoRedirect) redirectPort() uint16 {
 		return uint16(r.customRedirectPort)
 	}
 	return M.AddrPortFromNet(r.redirectServer.listener.Addr()).Port()
+}
+
+func (r *autoRedirect) effectiveOutputMark() uint32 {
+	if r.tunOptions.AutoRedirectOutputMark != 0 {
+		return r.tunOptions.AutoRedirectOutputMark
+	}
+	return DefaultAutoRedirectOutputMark
+}
+
+func (r *autoRedirect) effectiveResetMark() uint32 {
+	if r.tunOptions.AutoRedirectResetMark != 0 {
+		return r.tunOptions.AutoRedirectResetMark
+	}
+	return DefaultAutoRedirectResetMark
+}
+
+func (r *autoRedirect) effectiveNFQueue() uint16 {
+	if r.tunOptions.AutoRedirectNFQueue != 0 {
+		return r.tunOptions.AutoRedirectNFQueue
+	}
+	return DefaultAutoRedirectNFQueue
+}
+
+func (r *autoRedirect) shouldSkipOutputChain() bool {
+	return len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
 }

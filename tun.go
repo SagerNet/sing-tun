@@ -83,6 +83,8 @@ type Options struct {
 	AutoRedirectMarkMode     bool
 	AutoRedirectInputMark    uint32
 	AutoRedirectOutputMark   uint32
+	AutoRedirectResetMark    uint32
+	AutoRedirectNFQueue      uint16
 	ExcludeMPTCP             bool
 	Inet4LoopbackAddress     []netip.Addr
 	Inet6LoopbackAddress     []netip.Addr

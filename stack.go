@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrDrop  = E.New("drop by rule")
-	ErrReset = E.New("reset by rule")
+	ErrDrop   = E.New("drop by rule")
+	ErrReset  = E.New("reset by rule")
+	ErrBypass = E.New("bypass by rule")
 )
 
 type Stack interface {
