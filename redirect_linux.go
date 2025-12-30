@@ -143,9 +143,9 @@ func (r *autoRedirect) Start() error {
 			ResetMark:  r.effectiveResetMark(),
 		})
 		if err != nil {
-			r.logger.Warn("nfqueue not available, pre-match disabled: ", err)
+			r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
 		} else if err = handler.Start(); err != nil {
-			r.logger.Warn("nfqueue start failed, pre-match disabled: ", err)
+			r.logger.Warn("nfqueue start failed, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
 		} else {
 			r.nfqueueHandler = handler
 			r.nfqueueEnabled = true

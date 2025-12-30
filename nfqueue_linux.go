@@ -5,7 +5,6 @@ package tun
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
@@ -30,7 +29,6 @@ type nfqueueHandler struct {
 	queue      uint16
 	outputMark uint32
 	resetMark  uint32
-	wg         sync.WaitGroup
 	closed     atomic.Bool
 }
 
@@ -82,28 +80,25 @@ func (h *nfqueueHandler) Start() error {
 	if err != nil {
 		return E.Cause(err, "open nfqueue")
 	}
-	h.nfq = nfq
 
 	if err = nfq.SetOption(netlink.NoENOBUFS, true); err != nil {
-		h.nfq.Close()
+		nfq.Close()
 		return E.Cause(err, "set nfqueue option")
 	}
 
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
-		err := nfq.RegisterWithErrorFunc(h.ctx, h.handlePacket, func(e error) int {
-			if h.ctx.Err() != nil {
-				return 1
-			}
-			h.logger.Error("nfqueue error: ", e)
-			return 0
-		})
-		if err != nil && h.ctx.Err() == nil {
-			h.logger.Error("nfqueue register error: ", err)
+	err = nfq.RegisterWithErrorFunc(h.ctx, h.handlePacket, func(e error) int {
+		if h.ctx.Err() != nil {
+			return 1
 		}
-	}()
+		h.logger.Error("nfqueue error: ", e)
+		return 0
+	})
+	if err != nil {
+		nfq.Close()
+		return E.Cause(err, "register nfqueue")
+	}
 
+	h.nfq = nfq
 	return nil
 }
 
@@ -239,6 +234,5 @@ func (h *nfqueueHandler) Close() error {
 	if h.nfq != nil {
 		h.nfq.Close()
 	}
-	h.wg.Wait()
 	return nil
 }
