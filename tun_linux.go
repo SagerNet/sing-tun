@@ -130,7 +130,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 			for _, address := range t.options.Inet4Address {
 				addr4, _ := netlink.ParseAddr(address.String())
 				err = netlink.AddrAdd(tunLink, addr4)
-				if err != nil {
+				if err != nil && !errors.Is(err, unix.EEXIST) {
 					return err
 				}
 			}
@@ -139,7 +139,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 			for _, address := range t.options.Inet6Address {
 				addr6, _ := netlink.ParseAddr(address.String())
 				err = netlink.AddrAdd(tunLink, addr6)
-				if err != nil {
+				if err != nil && !errors.Is(err, unix.EEXIST) {
 					return err
 				}
 			}
@@ -325,6 +325,7 @@ func (t *NativeTun) Close() error {
 	if t.options.EXP_ExternalConfiguration {
 		return common.Close(common.PtrOrNil(t.tunFile))
 	}
+	t.unsetAddresses()
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
 
@@ -1014,6 +1015,24 @@ func (t *NativeTun) unsetRules() error {
 		}
 	}
 	return nil
+}
+
+func (t *NativeTun) unsetAddresses() {
+	if t.options.FileDescriptor > 0 {
+		return
+	}
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return
+	}
+	for _, address := range t.options.Inet4Address {
+		addr, _ := netlink.ParseAddr(address.String())
+		_ = netlink.AddrDel(tunLink, addr)
+	}
+	for _, address := range t.options.Inet6Address {
+		addr, _ := netlink.ParseAddr(address.String())
+		_ = netlink.AddrDel(tunLink, addr)
+	}
 }
 
 func (t *NativeTun) resetRules() error {
