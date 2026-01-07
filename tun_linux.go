@@ -125,22 +125,23 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	} else if err != nil {
 		return err
 	}
-
-	if len(t.options.Inet4Address) > 0 {
-		for _, address := range t.options.Inet4Address {
-			addr4, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr4)
-			if err != nil {
-				return err
+	if !t.options.EXP_ExternalConfiguration {
+		if len(t.options.Inet4Address) > 0 {
+			for _, address := range t.options.Inet4Address {
+				addr4, _ := netlink.ParseAddr(address.String())
+				err = netlink.AddrAdd(tunLink, addr4)
+				if err != nil {
+					return err
+				}
 			}
 		}
-	}
-	if len(t.options.Inet6Address) > 0 {
-		for _, address := range t.options.Inet6Address {
-			addr6, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr6)
-			if err != nil {
-				return err
+		if len(t.options.Inet6Address) > 0 {
+			for _, address := range t.options.Inet6Address {
+				addr6, _ := netlink.ParseAddr(address.String())
+				err = netlink.AddrAdd(tunLink, addr6)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -257,7 +258,9 @@ func (t *NativeTun) Start() error {
 	if t.options.FileDescriptor != 0 {
 		return nil
 	}
-	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+	if !t.options.EXP_ExternalConfiguration {
+		t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+	}
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return err
@@ -275,6 +278,10 @@ func (t *NativeTun) Start() error {
 			t.gro.disableUDPGRO()
 			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
 		}
+	}
+
+	if t.options.EXP_ExternalConfiguration {
+		return nil
 	}
 
 	if t.options.IPRoute2TableIndex == 0 {
@@ -314,6 +321,9 @@ func (t *NativeTun) Start() error {
 func (t *NativeTun) Close() error {
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
+	}
+	if t.options.EXP_ExternalConfiguration {
+		return common.Close(common.PtrOrNil(t.tunFile))
 	}
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
@@ -475,6 +485,9 @@ func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
 
 func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
 	if t.options.FileDescriptor > 0 {
+		return nil
+	} else if t.options.EXP_ExternalConfiguration {
+		t.options = tunOptions
 		return nil
 	} else if !t.options.AutoRoute {
 		t.options = tunOptions

@@ -146,11 +146,17 @@ func New(options Options) (Tun, error) {
 }
 
 func (t *NativeTun) Start() error {
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
 	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
 	return t.setRoutes()
 }
 
 func (t *NativeTun) Close() error {
+	if t.options.EXP_ExternalConfiguration {
+		return t.tunFile.Close()
+	}
 	defer flushDNSCache()
 	return E.Errors(t.unsetRoutes(), t.tunFile.Close())
 }
@@ -231,6 +237,9 @@ func create(tunFd int, ifIndex int, name string, options Options) error {
 	})
 	if err != nil {
 		return os.NewSyscallError("IoctlSetIfreqMTU", err)
+	}
+	if options.EXP_ExternalConfiguration {
+		return nil
 	}
 	if len(options.Inet4Address) > 0 {
 		for _, address := range options.Inet4Address {
@@ -396,11 +405,14 @@ func (t *NativeTun) TXChecksumOffload() bool {
 }
 
 func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	t.options = tunOptions
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
 	err := t.unsetRoutes()
 	if err != nil {
 		return err
 	}
-	t.options = tunOptions
 	return t.setRoutes()
 }
 

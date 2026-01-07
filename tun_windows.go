@@ -65,6 +65,9 @@ func New(options Options) (WinTun, error) {
 }
 
 func (t *NativeTun) configure() error {
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
 	luid := winipcfg.LUID(t.adapter.LUID())
 	if len(t.options.Inet4Address) > 0 {
 		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), t.options.Inet4Address)
@@ -162,10 +165,10 @@ func (t *NativeTun) Name() (string, error) {
 }
 
 func (t *NativeTun) Start() error {
-	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
-	if !t.options.AutoRoute {
+	if t.options.EXP_ExternalConfiguration || !t.options.AutoRoute {
 		return nil
 	}
+	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
 	luid := winipcfg.LUID(t.adapter.LUID())
 	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 	routeRanges, err := t.options.BuildAutoRouteRanges(false)
@@ -393,6 +396,21 @@ retry:
 	}
 }
 
+func (t *NativeTun) MTU() (int, error) {
+	return int(t.options.MTU), nil
+}
+
+func (t *NativeTun) ForceMTU(mtu int) {
+	if mtu <= 0 {
+		return
+	}
+	t.options.MTU = uint32(mtu)
+}
+
+func (t *NativeTun) LUID() uint64 {
+	return t.adapter.LUID()
+}
+
 func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
 	t.running.Add(1)
 retry:
@@ -543,6 +561,9 @@ func (t *NativeTun) Close() error {
 
 func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
 	t.options = tunOptions
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
 	if !t.options.AutoRoute {
 		return nil
 	}
