@@ -158,7 +158,10 @@ func (t *NativeTun) Close() error {
 		return t.tunFile.Close()
 	}
 	defer flushDNSCache()
-	return E.Errors(t.unsetRoutes(), t.tunFile.Close())
+	t.stopFd.Stop()
+	err := E.Errors(t.unsetRoutes(), t.tunFile.Close())
+	t.stopFd.Close()
+	return err
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
@@ -355,6 +358,9 @@ func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 		}
 		t.buffers = t.buffers[:0]
 		return nil, errno
+	}
+	if n < 0 {
+		return nil, os.ErrClosed
 	}
 	if n < 1 {
 		return nil, nil
