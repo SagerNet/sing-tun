@@ -184,6 +184,13 @@ func (t *NativeTun) Start() error {
 		return err
 	}
 	if t.options.StrictRoute {
+		major, _, _ := windows.RtlGetNtVersionNumbers()
+		if major < 10 {
+			if t.options.Logger != nil {
+				t.options.Logger.Warn("strict routing is not supported on Windows versions below 10")
+			}
+			return nil
+		}
 		var engine uintptr
 		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
 		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
