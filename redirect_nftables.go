@@ -191,6 +191,25 @@ func (r *autoRedirect) setupNFTables() error {
 					Register: 1,
 				},
 				&expr.Cmp{
+					Op:       expr.CmpOpEq,
+					Register: 1,
+					Data:     nftablesIfname(r.tunOptions.Name),
+				},
+				&expr.Counter{},
+				&expr.Verdict{
+					Kind: expr.VerdictReturn,
+				},
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chainPreRoutingUDP,
+			Exprs: []expr.Any{
+				&expr.Meta{
+					Key:      expr.MetaKeyIIFNAME,
+					Register: 1,
+				},
+				&expr.Cmp{
 					Op:       expr.CmpOpNeq,
 					Register: 1,
 					Data:     nftablesIfname(r.tunOptions.Name),
