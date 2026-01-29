@@ -52,44 +52,46 @@ type DarwinTUN interface {
 }
 
 const (
-	DefaultIPRoute2TableIndex = 2022
-	DefaultIPRoute2RuleIndex  = 9000
+	DefaultIPRoute2TableIndex                    = 2022
+	DefaultIPRoute2RuleIndex                     = 9000
+	DefaultIPRoute2AutoRedirectFallbackRuleIndex = 32768
 )
 
 type Options struct {
-	Name                     string
-	Inet4Address             []netip.Prefix
-	Inet6Address             []netip.Prefix
-	MTU                      uint32
-	GSO                      bool
-	AutoRoute                bool
-	InterfaceScope           bool
-	Inet4Gateway             netip.Addr
-	Inet6Gateway             netip.Addr
-	DNSServers               []netip.Addr
-	IPRoute2TableIndex       int
-	IPRoute2RuleIndex        int
-	AutoRedirectMarkMode     bool
-	AutoRedirectInputMark    uint32
-	AutoRedirectOutputMark   uint32
-	Inet4LoopbackAddress     []netip.Addr
-	Inet6LoopbackAddress     []netip.Addr
-	StrictRoute              bool
-	Inet4RouteAddress        []netip.Prefix
-	Inet6RouteAddress        []netip.Prefix
-	Inet4RouteExcludeAddress []netip.Prefix
-	Inet6RouteExcludeAddress []netip.Prefix
-	IncludeInterface         []string
-	ExcludeInterface         []string
-	IncludeUID               []ranges.Range[uint32]
-	ExcludeUID               []ranges.Range[uint32]
-	IncludeAndroidUser       []int
-	IncludePackage           []string
-	ExcludePackage           []string
-	InterfaceFinder          control.InterfaceFinder
-	InterfaceMonitor         DefaultInterfaceMonitor
-	FileDescriptor           int
-	Logger                   logger.Logger
+	Name                                  string
+	Inet4Address                          []netip.Prefix
+	Inet6Address                          []netip.Prefix
+	MTU                                   uint32
+	GSO                                   bool
+	AutoRoute                             bool
+	InterfaceScope                        bool
+	Inet4Gateway                          netip.Addr
+	Inet6Gateway                          netip.Addr
+	DNSServers                            []netip.Addr
+	IPRoute2TableIndex                    int
+	IPRoute2RuleIndex                     int
+	IPRoute2AutoRedirectFallbackRuleIndex int
+	AutoRedirectMarkMode                  bool
+	AutoRedirectInputMark                 uint32
+	AutoRedirectOutputMark                uint32
+	Inet4LoopbackAddress                  []netip.Addr
+	Inet6LoopbackAddress                  []netip.Addr
+	StrictRoute                           bool
+	Inet4RouteAddress                     []netip.Prefix
+	Inet6RouteAddress                     []netip.Prefix
+	Inet4RouteExcludeAddress              []netip.Prefix
+	Inet6RouteExcludeAddress              []netip.Prefix
+	IncludeInterface                      []string
+	ExcludeInterface                      []string
+	IncludeUID                            []ranges.Range[uint32]
+	ExcludeUID                            []ranges.Range[uint32]
+	IncludeAndroidUser                    []int
+	IncludePackage                        []string
+	ExcludePackage                        []string
+	InterfaceFinder                       control.InterfaceFinder
+	InterfaceMonitor                      DefaultInterfaceMonitor
+	FileDescriptor                        int
+	Logger                                logger.Logger
 
 	// No work for TCP, do not use.
 	_TXChecksumOffload bool
