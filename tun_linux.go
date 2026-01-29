@@ -3,7 +3,6 @@ package tun
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/netip"
 	"os"
@@ -282,16 +281,6 @@ func (t *NativeTun) Start() error {
 
 	if t.options.EXP_ExternalConfiguration {
 		return nil
-	}
-
-	if t.options.IPRoute2TableIndex == 0 {
-		for {
-			t.options.IPRoute2TableIndex = int(rand.Uint32())
-			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
-			if len(routeList) == 0 || fErr != nil {
-				break
-			}
-		}
 	}
 
 	err = t.setRoute(tunLink)
@@ -632,17 +621,16 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 		// Fallback rules after system default rules (32766: main, 32767: default)
 		// Only reached when main and default tables have no route
-		const fallbackPriority = 32768
 		if p4 {
 			it = netlink.NewRule()
-			it.Priority = fallbackPriority
+			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 		}
 		if p6 {
 			it = netlink.NewRule()
-			it.Priority = fallbackPriority
+			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
@@ -1020,7 +1008,7 @@ func (t *NativeTun) unsetRules() error {
 		for _, rule := range ruleList {
 			ruleStart := t.options.IPRoute2RuleIndex
 			ruleEnd := ruleStart + 10
-			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd || (t.options.AutoRedirectMarkMode && rule.Priority == t.options.IPRoute2AutoRedirectFallbackRuleIndex) {
 				ruleToDel := netlink.NewRule()
 				ruleToDel.Family = rule.Family
 				ruleToDel.Priority = rule.Priority
