@@ -3,6 +3,7 @@ package tun
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/netip"
 	"os"
@@ -273,6 +274,16 @@ func (t *NativeTun) Start() error {
 			t.gro.disableTCPGRO()
 			t.gro.disableUDPGRO()
 			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+		}
+	}
+
+	if t.options.IPRoute2TableIndex == 0 {
+		for {
+			t.options.IPRoute2TableIndex = int(rand.Uint32())
+			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
+			if len(routeList) == 0 || fErr != nil {
+				break
+			}
 		}
 	}
 
