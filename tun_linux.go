@@ -254,10 +254,6 @@ func (t *NativeTun) Name() (string, error) {
 }
 
 func (t *NativeTun) Start() error {
-	err := t.disableReversePathFilter()
-	if err != nil && t.options.Logger != nil && t.options.FileDescriptor == 0 {
-		t.options.Logger.Warn(E.Cause(err, "disable reverse path filter"))
-	}
 	if t.options.FileDescriptor != 0 {
 		return nil
 	}
@@ -1086,16 +1082,4 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() {
 		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
 		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
 	}()
-}
-
-func (t *NativeTun) disableReversePathFilter() error {
-	err := os.WriteFile("/proc/sys/net/ipv4/conf/all/rp_filter", []byte{'0'}, 0o644)
-	if err != nil {
-		return err
-	}
-	err = os.WriteFile("/proc/sys/net/ipv4/conf/"+t.options.Name+"/rp_filter", []byte{'0'}, 0o644)
-	if err != nil {
-		return err
-	}
-	return nil
 }
