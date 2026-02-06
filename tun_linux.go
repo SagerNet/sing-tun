@@ -520,12 +520,16 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 		} else if it.Addr().Is6() && !gateway6.IsUnspecified() {
 			gateway = gateway6.AsSlice()
 		}
-		return netlink.Route{
+		route := netlink.Route{
 			Dst:       prefixToIPNet(it),
 			Gw:        gateway,
 			LinkIndex: tunLink.Attrs().Index,
 			Table:     t.options.IPRoute2TableIndex,
 		}
+		if t.options.RouteMetric > 0 {
+			route.Priority = int(t.options.RouteMetric)
+		}
+		return route
 	}), nil
 }
 

@@ -74,6 +74,8 @@ type Options struct {
 	Inet6Address                          []netip.Prefix
 	MTU                                   uint32
 	GSO                                   bool
+	InterfaceMetric                       uint32
+	RouteMetric                           uint32
 	AutoRoute                             bool
 	InterfaceScope                        bool
 	Inet4Gateway                          netip.Addr
