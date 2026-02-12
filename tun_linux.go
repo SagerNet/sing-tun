@@ -148,7 +148,9 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	if t.options.GSO {
 		err = t.enableGSO()
 		if err != nil {
-			t.options.Logger.Warn(err)
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(err)
+			}
 		}
 	}
 
@@ -275,7 +277,9 @@ func (t *NativeTun) Start() error {
 		if err != nil {
 			t.gro.disableTCPGRO()
 			t.gro.disableUDPGRO()
-			t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+			}
 		}
 	}
 
