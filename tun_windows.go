@@ -129,7 +129,10 @@ func (t *NativeTun) configure() error {
 		inetIf.ManagedAddressConfigurationSupported = false
 		inetIf.OtherStatefulConfigurationSupported = false
 		inetIf.NLMTU = t.options.MTU
-		if t.options.AutoRoute {
+		if t.options.InterfaceMetric > 0 {
+			inetIf.UseAutomaticMetric = false
+			inetIf.Metric = t.options.InterfaceMetric
+		} else if t.options.AutoRoute {
 			inetIf.UseAutomaticMetric = false
 			inetIf.Metric = 0
 		}
@@ -148,7 +151,10 @@ func (t *NativeTun) configure() error {
 		inet6If.ManagedAddressConfigurationSupported = false
 		inet6If.OtherStatefulConfigurationSupported = false
 		inet6If.NLMTU = t.options.MTU
-		if t.options.AutoRoute {
+		if t.options.InterfaceMetric > 0 {
+			inet6If.UseAutomaticMetric = false
+			inet6If.Metric = t.options.InterfaceMetric
+		} else if t.options.AutoRoute {
 			inet6If.UseAutomaticMetric = false
 			inet6If.Metric = 0
 		}
@@ -175,7 +181,7 @@ func (t *NativeTun) Start() error {
 	if err != nil {
 		return err
 	}
-	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
+	err = t.addRouteList(luid, routeRanges, gateway4, gateway6)
 	if err != nil {
 		return err
 	}
@@ -584,7 +590,7 @@ func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
 	if err != nil {
 		return err
 	}
-	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
+	err = t.addRouteList(luid, routeRanges, gateway4, gateway6)
 	if err != nil {
 		return err
 	}
@@ -595,11 +601,11 @@ func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
 	return nil
 }
 
-func addRouteList(luid winipcfg.LUID, destinations []netip.Prefix, gateway4 netip.Addr, gateway6 netip.Addr, metric uint32) error {
+func (t *NativeTun) addRouteList(luid winipcfg.LUID, destinations []netip.Prefix, gateway4 netip.Addr, gateway6 netip.Addr) error {
 	row := winipcfg.MibIPforwardRow2{}
 	row.Init()
 	row.InterfaceLUID = luid
-	row.Metric = metric
+	row.Metric = t.options.RouteMetric
 	nextHop4 := row.NextHop
 	nextHop6 := row.NextHop
 	if gateway4.IsValid() {
