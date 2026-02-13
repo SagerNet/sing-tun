@@ -318,6 +318,7 @@ func (t *NativeTun) Close() error {
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
+	t.unsetSearchDomainForSystemdResolved()
 	t.unsetAddresses()
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
 }
@@ -1080,4 +1081,15 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() {
 		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
 		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
 	}()
+}
+
+func (t *NativeTun) unsetSearchDomainForSystemdResolved() {
+	if t.options.EXP_DisableDNSHijack {
+		return
+	}
+	ctlPath, err := exec.LookPath("resolvectl")
+	if err != nil {
+		return
+	}
+	_ = shell.Exec(ctlPath, "revert", t.options.Name).Run()
 }
