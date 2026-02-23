@@ -74,12 +74,11 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 		localAddresses4 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is4()
 		})
-		updateAddresses4 := common.Filter(localAddresses, func(it netip.Prefix) bool {
-			return it.Addr().Is4()
-		})
 		var update bool
 		if len(lastAddresses) != 0 {
-			if !slices.Equal(localAddresses4, updateAddresses4) {
+			if !slices.Equal(localAddresses4, common.Filter(lastAddresses, func(it netip.Prefix) bool {
+				return it.Addr().Is4()
+			})) {
 				update = true
 			}
 		}
@@ -94,12 +93,11 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 		localAddresses6 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is6()
 		})
-		updateAddresses6 := common.Filter(localAddresses, func(it netip.Prefix) bool {
-			return it.Addr().Is6()
-		})
 		var update bool
 		if len(lastAddresses) != 0 {
-			if !slices.Equal(localAddresses6, updateAddresses6) {
+			if !slices.Equal(localAddresses6, common.Filter(lastAddresses, func(it netip.Prefix) bool {
+				return it.Addr().Is6()
+			})) {
 				update = true
 			}
 		}

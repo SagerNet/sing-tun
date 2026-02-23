@@ -4,6 +4,7 @@ package tun
 
 import (
 	"net/netip"
+	"strings"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/binaryutil"
@@ -288,6 +289,10 @@ func (r *autoRedirect) setupNFTables() error {
 
 // TODO; test is this works
 func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
+	err := r.interfaceFinder.Update()
+	if err != nil {
+		return err
+	}
 	newLocalAddresses := common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
 			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast()
@@ -295,6 +300,11 @@ func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
 	})
 	if slices.Equal(newLocalAddresses, r.localAddresses) {
 		return nil
+	}
+	if r.logger != nil {
+		r.logger.Debug("updating local address set to [", strings.Join(common.Map(newLocalAddresses, func(it netip.Prefix) string {
+			return it.String()
+		}), ", ")+"]")
 	}
 	nft, err := nftables.New()
 	if err != nil {
