@@ -3,6 +3,7 @@
 package tun
 
 import (
+	"net"
 	"net/netip"
 	_ "unsafe"
 
@@ -366,6 +367,149 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 							Op:       expr.CmpOpEq,
 							Register: 1,
 							Data:     nftablesIfname(r.tunOptions.ExcludeInterface[0]),
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
+			}
+		}
+		if len(r.tunOptions.IncludeMACAddress) > 0 {
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyIIFTYPE, Register: 1},
+					&expr.Cmp{
+						Op:       expr.CmpOpNeq,
+						Register: 1,
+						Data:     binaryutil.NativeEndian.PutUint16(unix.ARPHRD_ETHER),
+					},
+					&expr.Counter{},
+					&expr.Verdict{
+						Kind: expr.VerdictReturn,
+					},
+				},
+			})
+			if len(r.tunOptions.IncludeMACAddress) > 1 {
+				includeMACSet := &nftables.Set{
+					Table:     table,
+					Anonymous: true,
+					Constant:  true,
+					KeyType:   nftables.TypeEtherAddr,
+				}
+				err := nft.AddSet(includeMACSet, common.Map(r.tunOptions.IncludeMACAddress, func(it net.HardwareAddr) nftables.SetElement {
+					return nftables.SetElement{
+						Key: []byte(it),
+					}
+				}))
+				if err != nil {
+					return err
+				}
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Payload{
+							OperationType: expr.PayloadLoad,
+							DestRegister:  1,
+							Base:          expr.PayloadBaseLLHeader,
+							Offset:        6,
+							Len:           6,
+						},
+						&expr.Lookup{
+							SourceRegister: 1,
+							SetID:          includeMACSet.ID,
+							SetName:        includeMACSet.Name,
+							Invert:         true,
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
+			} else {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Payload{
+							OperationType: expr.PayloadLoad,
+							DestRegister:  1,
+							Base:          expr.PayloadBaseLLHeader,
+							Offset:        6,
+							Len:           6,
+						},
+						&expr.Cmp{
+							Op:       expr.CmpOpNeq,
+							Register: 1,
+							Data:     []byte(r.tunOptions.IncludeMACAddress[0]),
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
+			}
+		}
+		if len(r.tunOptions.ExcludeMACAddress) > 0 {
+			if len(r.tunOptions.ExcludeMACAddress) > 1 {
+				excludeMACSet := &nftables.Set{
+					Table:     table,
+					Anonymous: true,
+					Constant:  true,
+					KeyType:   nftables.TypeEtherAddr,
+				}
+				err := nft.AddSet(excludeMACSet, common.Map(r.tunOptions.ExcludeMACAddress, func(it net.HardwareAddr) nftables.SetElement {
+					return nftables.SetElement{
+						Key: []byte(it),
+					}
+				}))
+				if err != nil {
+					return err
+				}
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Payload{
+							OperationType: expr.PayloadLoad,
+							DestRegister:  1,
+							Base:          expr.PayloadBaseLLHeader,
+							Offset:        6,
+							Len:           6,
+						},
+						&expr.Lookup{
+							SourceRegister: 1,
+							SetID:          excludeMACSet.ID,
+							SetName:        excludeMACSet.Name,
+						},
+						&expr.Counter{},
+						&expr.Verdict{
+							Kind: expr.VerdictReturn,
+						},
+					},
+				})
+			} else {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: []expr.Any{
+						&expr.Payload{
+							OperationType: expr.PayloadLoad,
+							DestRegister:  1,
+							Base:          expr.PayloadBaseLLHeader,
+							Offset:        6,
+							Len:           6,
+						},
+						&expr.Cmp{
+							Op:       expr.CmpOpEq,
+							Register: 1,
+							Data:     []byte(r.tunOptions.ExcludeMACAddress[0]),
 						},
 						&expr.Counter{},
 						&expr.Verdict{
