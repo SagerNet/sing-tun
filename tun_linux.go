@@ -39,6 +39,7 @@ type NativeTun struct {
 	writeAccess         sync.Mutex
 	vnetHdr             bool
 	writeBuffer         []byte
+	vnetHdrWriteBuf     []byte
 	gsoToWrite          []int
 	tcpGROTable         *tcpGROTable
 	udpGroAccess        sync.Mutex
