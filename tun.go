@@ -102,6 +102,8 @@ type Options struct {
 	IncludeAndroidUser                    []int
 	IncludePackage                        []string
 	ExcludePackage                        []string
+	IncludeMACAddress                     []net.HardwareAddr
+	ExcludeMACAddress                     []net.HardwareAddr
 	InterfaceFinder                       control.InterfaceFinder
 	InterfaceMonitor                      DefaultInterfaceMonitor
 	FileDescriptor                        int
