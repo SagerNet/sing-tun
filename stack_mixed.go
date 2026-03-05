@@ -3,6 +3,9 @@
 package tun
 
 import (
+	"errors"
+	"syscall"
+
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	gHdr "github.com/sagernet/gvisor/pkg/tcpip/header"
@@ -169,7 +172,7 @@ func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
 	for {
 		buffers, err := darwinTUN.BatchRead()
 		if err != nil {
-			if E.IsClosed(err) {
+			if E.IsClosed(err) || errors.Is(err, syscall.EBADF) {
 				return
 			}
 			m.logger.Error(E.Cause(err, "batch read packet"))
