@@ -269,7 +269,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 	for {
 		buffers, err := darwinTUN.BatchRead()
 		if err != nil {
-			if E.IsClosed(err) {
+			if E.IsClosed(err) || errors.Is(err, syscall.EBADF) {
 				return
 			}
 			s.logger.Error(E.Cause(err, "batch read packet"))
