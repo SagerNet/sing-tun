@@ -19,29 +19,31 @@ import (
 )
 
 type autoRedirect struct {
-	tunOptions             *Options
-	ctx                    context.Context
-	handler                Handler
-	logger                 logger.Logger
-	tableName              string
-	networkMonitor         NetworkUpdateMonitor
-	networkListener        *list.Element[NetworkUpdateCallback]
-	interfaceFinder        control.InterfaceFinder
-	localAddresses         []netip.Prefix
-	customRedirectPortFunc func() int
-	customRedirectPort     int
-	redirectServer         *redirectServer
-	enableIPv4             bool
-	enableIPv6             bool
-	iptablesPath           string
-	ip6tablesPath          string
-	useNFTables            bool
-	androidSu              bool
-	suPath                 string
-	routeAddressSet        *[]*netipx.IPSet
-	routeExcludeAddressSet *[]*netipx.IPSet
-	nfqueueHandler         *nfqueueHandler
-	nfqueueEnabled         bool
+	tunOptions              *Options
+	ctx                     context.Context
+	handler                 Handler
+	logger                  logger.Logger
+	tableName               string
+	networkMonitor          NetworkUpdateMonitor
+	networkListener         *list.Element[NetworkUpdateCallback]
+	interfaceFinder         control.InterfaceFinder
+	localAddresses          []netip.Prefix
+	customRedirectPortFunc  func() int
+	customRedirectPort      int
+	redirectServer          *redirectServer
+	enableIPv4              bool
+	enableIPv6              bool
+	iptablesPath            string
+	ip6tablesPath           string
+	useNFTables             bool
+	androidSu               bool
+	suPath                  string
+	routeAddressSet         *[]*netipx.IPSet
+	routeExcludeAddressSet  *[]*netipx.IPSet
+	nfqueueHandler          *nfqueueHandler
+	nfqueueEnabled          bool
+	redirectRouteTableIndex int
+	redirectInterfaces      []control.Interface
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -152,6 +154,12 @@ func (r *autoRedirect) Start() error {
 		}
 		r.cleanupNFTables()
 		err = r.setupNFTables()
+		if err == nil && r.tunOptions.AutoRedirectMarkMode {
+			err = r.setupRedirectRoutes()
+			if err != nil {
+				r.cleanupNFTables()
+			}
+		}
 	} else {
 		r.cleanupIPTables()
 		err = r.setupIPTables()
@@ -164,6 +172,7 @@ func (r *autoRedirect) Close() error {
 		r.nfqueueHandler.Close()
 	}
 	if r.useNFTables {
+		r.cleanupRedirectRoutes()
 		r.cleanupNFTables()
 	} else {
 		r.cleanupIPTables()

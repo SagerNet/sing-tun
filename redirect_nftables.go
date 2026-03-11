@@ -293,6 +293,12 @@ func (r *autoRedirect) setupNFTables() error {
 		if err != nil {
 			r.logger.Error("update local address set: ", err)
 		}
+		if r.tunOptions.AutoRedirectMarkMode {
+			err = r.updateRedirectRoutes()
+			if err != nil {
+				r.logger.Error("update redirect routes: ", err)
+			}
+		}
 	})
 	return nil
 }
