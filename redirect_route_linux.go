@@ -5,6 +5,7 @@ package tun
 import (
 	"math/rand"
 	"net"
+	"net/netip"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
@@ -38,7 +39,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	})
 	r.cleanupRedirectRoutes()
 	for _, iface := range r.redirectInterfaces {
-		err = r.addRedirectRoutes(iface.Index)
+		err = r.addRedirectRoutes(iface)
 		if err != nil {
 			return err
 		}
@@ -66,10 +67,12 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	return nil
 }
 
-func (r *autoRedirect) addRedirectRoutes(linkIndex int) error {
-	if r.enableIPv4 {
+func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
+	if r.enableIPv4 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
+		return it.Addr().Is4()
+	}) {
 		err := netlink.RouteAppend(&netlink.Route{
-			LinkIndex: linkIndex,
+			LinkIndex: iface.Index,
 			Dst:       &net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(32, 32)},
 			Table:     r.redirectRouteTableIndex,
 			Type:      unix.RTN_LOCAL,
@@ -79,9 +82,11 @@ func (r *autoRedirect) addRedirectRoutes(linkIndex int) error {
 			return err
 		}
 	}
-	if r.enableIPv6 {
+	if r.enableIPv6 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
+		return it.Addr().Is6() && !it.Addr().Is4In6()
+	}) {
 		err := netlink.RouteAppend(&netlink.Route{
-			LinkIndex: linkIndex,
+			LinkIndex: iface.Index,
 			Dst:       &net.IPNet{IP: net.IPv6loopback, Mask: net.CIDRMask(128, 128)},
 			Table:     r.redirectRouteTableIndex,
 			Type:      unix.RTN_LOCAL,
@@ -132,7 +137,7 @@ func (r *autoRedirect) updateRedirectRoutes() error {
 	}
 	for _, iface := range newInterfaces {
 		if !oldMap[iface.Index] {
-			err = r.addRedirectRoutes(iface.Index)
+			err = r.addRedirectRoutes(iface)
 			if err != nil {
 				return err
 			}
