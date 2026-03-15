@@ -154,17 +154,24 @@ func (r *autoRedirect) Start() error {
 		}
 		r.cleanupNFTables()
 		err = r.setupNFTables()
-		if err == nil && r.tunOptions.AutoRedirectMarkMode {
+		if err != nil {
+			return E.Cause(err, "setup nftables")
+		}
+		if r.tunOptions.AutoRedirectMarkMode {
 			err = r.setupRedirectRoutes()
 			if err != nil {
 				r.cleanupNFTables()
+				return E.Cause(err, "setup redirect routes")
 			}
 		}
 	} else {
 		r.cleanupIPTables()
 		err = r.setupIPTables()
+		if err != nil {
+			return E.Cause(err, "setup iptables")
+		}
 	}
-	return err
+	return nil
 }
 
 func (r *autoRedirect) Close() error {

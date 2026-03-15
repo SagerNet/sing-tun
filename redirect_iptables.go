@@ -14,13 +14,13 @@ func (r *autoRedirect) setupIPTables() error {
 	if r.enableIPv4 {
 		err := r.setupIPTablesForFamily(r.iptablesPath)
 		if err != nil {
-			return err
+			return E.Cause(err, "setup iptables")
 		}
 	}
 	if r.enableIPv6 {
 		err := r.setupIPTablesForFamily(r.ip6tablesPath)
 		if err != nil {
-			return err
+			return E.Cause(err, "setup ip6tables")
 		}
 	}
 	return nil

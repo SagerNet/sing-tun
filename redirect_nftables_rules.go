@@ -13,6 +13,8 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/ranges"
 
+	E "github.com/sagernet/sing/common/exceptions"
+
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
 )
@@ -38,13 +40,13 @@ func (r *autoRedirect) nftablesCreateAddressSets(
 		if r.enableIPv4 {
 			_, err := nftablesCreateIPSet(nft, table, 1, "inet4_route_address_set", nftables.TableFamilyIPv4, routeAddressSet, nil, true, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv4 route address set")
 			}
 		}
 		if r.enableIPv6 {
 			_, err := nftablesCreateIPSet(nft, table, 2, "inet6_route_address_set", nftables.TableFamilyIPv6, routeAddressSet, nil, true, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv6 route address set")
 			}
 		}
 	}
@@ -53,13 +55,13 @@ func (r *autoRedirect) nftablesCreateAddressSets(
 		if r.enableIPv4 {
 			_, err := nftablesCreateIPSet(nft, table, 3, "inet4_route_exclude_address_set", nftables.TableFamilyIPv4, routeExcludeAddressSet, nil, false, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv4 route exclude address set")
 			}
 		}
 		if r.enableIPv6 {
 			_, err := nftablesCreateIPSet(nft, table, 4, "inet6_route_exclude_address_set", nftables.TableFamilyIPv6, routeExcludeAddressSet, nil, false, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv6 route exclude address set")
 			}
 		}
 	}
@@ -85,7 +87,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 		if len(lastAddresses) == 0 || update {
 			_, err := nftablesCreateIPSet(nft, table, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, nil, localAddresses4, false, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv4 local address set")
 			}
 		}
 	}
@@ -104,7 +106,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 		if len(lastAddresses) == 0 || update {
 			_, err := nftablesCreateIPSet(nft, table, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, nil, localAddresses6, false, update)
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv6 local address set")
 			}
 		}
 	}
@@ -117,13 +119,13 @@ func (r *autoRedirect) nftablesCreateLoopbackAddressSets(
 	if r.enableIPv4 && len(r.tunOptions.Inet4LoopbackAddress) > 0 {
 		_, err := nftablesCreateIPConst(nft, table, 7, "inet4_local_redirect_address_set", nftables.TableFamilyIPv4, r.tunOptions.Inet4LoopbackAddress)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv4 loopback address set")
 		}
 	}
 	if r.enableIPv6 && len(r.tunOptions.Inet6LoopbackAddress) > 0 {
 		_, err := nftablesCreateIPConst(nft, table, 8, "inet6_local_redirect_address_set", nftables.TableFamilyIPv6, r.tunOptions.Inet6LoopbackAddress)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv6 loopback address set")
 		}
 	}
 	return nil
@@ -144,7 +146,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 				{Key: []byte{unix.IPPROTO_ICMPV6}},
 			})
 			if err != nil {
-				return err
+				return E.Cause(err, "add ip protocol set")
 			}
 			nft.AddRule(&nftables.Rule{
 				Table: table,
@@ -283,7 +285,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					}
 				}))
 				if err != nil {
-					return err
+					return E.Cause(err, "add include interface set")
 				}
 				nft.AddRule(&nftables.Rule{
 					Table: table,
@@ -336,7 +338,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					}
 				}))
 				if err != nil {
-					return err
+					return E.Cause(err, "add exclude interface set")
 				}
 				nft.AddRule(&nftables.Rule{
 					Table: table,
@@ -395,7 +397,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					}
 				}))
 				if err != nil {
-					return err
+					return E.Cause(err, "add include uid set")
 				}
 				nft.AddRule(&nftables.Rule{
 					Table: table,
@@ -456,7 +458,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					}
 				}))
 				if err != nil {
-					return err
+					return E.Cause(err, "add exclude uid set")
 				}
 				nft.AddRule(&nftables.Rule{
 					Table: table,
@@ -499,7 +501,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if len(r.tunOptions.Inet4RouteAddress) > 0 {
 		inet4RouteAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv4, nil, r.tunOptions.Inet4RouteAddress, false, false)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv4 route address set")
 		}
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet4RouteAddress.ID, inet4RouteAddress.Name, nftables.TableFamilyIPv4, true)
 	}
@@ -507,7 +509,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if len(r.tunOptions.Inet6RouteAddress) > 0 {
 		inet6RouteAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv6, nil, r.tunOptions.Inet6RouteAddress, false, false)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv6 route address set")
 		}
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6RouteAddress.ID, inet6RouteAddress.Name, nftables.TableFamilyIPv6, true)
 	}
@@ -515,7 +517,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if len(r.tunOptions.Inet4RouteExcludeAddress) > 0 {
 		inet4RouteExcludeAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv4, nil, r.tunOptions.Inet4RouteExcludeAddress, false, false)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv4 route exclude address set")
 		}
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet4RouteExcludeAddress.ID, inet4RouteExcludeAddress.Name, nftables.TableFamilyIPv4, false)
 	}
@@ -523,7 +525,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if len(r.tunOptions.Inet6RouteExcludeAddress) > 0 {
 		inet6RouteExcludeAddress, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv6, nil, r.tunOptions.Inet6RouteExcludeAddress, false, false)
 		if err != nil {
-			return err
+			return E.Cause(err, "create ipv6 route exclude address set")
 		}
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6RouteExcludeAddress.ID, inet6RouteExcludeAddress.Name, nftables.TableFamilyIPv6, false)
 	}
@@ -533,13 +535,13 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		if r.enableIPv4 {
 			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv4, 5, "inet4_local_address_set")
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv4 dns hijack rules")
 			}
 		}
 		if r.enableIPv6 {
 			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv6, 6, "inet6_local_address_set")
 			if err != nil {
-				return err
+				return E.Cause(err, "create ipv6 dns hijack rules")
 			}
 		}
 	}
@@ -848,7 +850,7 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 		{Key: []byte{unix.IPPROTO_UDP}},
 	})
 	if err != nil {
-		return err
+		return E.Cause(err, "add dns protocol set")
 	}
 	dnsServer := common.Find(r.tunOptions.DNSServers, func(it netip.Addr) bool {
 		return it.Is4() == (family == nftables.TableFamilyIPv4)

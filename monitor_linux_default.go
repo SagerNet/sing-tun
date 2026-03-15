@@ -12,7 +12,7 @@ import (
 func (m *defaultInterfaceMonitor) checkUpdate() error {
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return err
+		return E.Cause(err, "list routes")
 	}
 	for _, route := range routes {
 		if route.Dst != nil {
@@ -22,7 +22,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		var link netlink.Link
 		link, err = netlink.LinkByIndex(route.LinkIndex)
 		if err != nil {
-			return err
+			return E.Cause(err, "find link by index")
 		}
 
 		newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)

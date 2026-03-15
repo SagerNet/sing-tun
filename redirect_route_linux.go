@@ -8,6 +8,7 @@ import (
 	"net/netip"
 
 	"github.com/sagernet/netlink"
+	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 
@@ -31,7 +32,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	}
 	err := r.interfaceFinder.Update()
 	if err != nil {
-		return err
+		return E.Cause(err, "update interfaces")
 	}
 	tunName := r.tunOptions.Name
 	r.redirectInterfaces = common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
@@ -41,7 +42,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	for _, iface := range r.redirectInterfaces {
 		err = r.addRedirectRoutes(iface)
 		if err != nil {
-			return err
+			return E.Cause(err, "add redirect routes for ", iface.Name)
 		}
 	}
 	if r.enableIPv4 {
@@ -51,7 +52,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 		rule.Family = unix.AF_INET
 		err = netlink.RuleAdd(rule)
 		if err != nil {
-			return err
+			return E.Cause(err, "add ipv4 redirect rule")
 		}
 	}
 	if r.enableIPv6 {
@@ -61,7 +62,7 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 		rule.Family = unix.AF_INET6
 		err = netlink.RuleAdd(rule)
 		if err != nil {
-			return err
+			return E.Cause(err, "add ipv6 redirect rule")
 		}
 	}
 	return nil
@@ -79,7 +80,7 @@ func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
 			Scope:     netlink.SCOPE_HOST,
 		})
 		if err != nil {
-			return err
+			return E.Cause(err, "append ipv4 loopback route")
 		}
 	}
 	if r.enableIPv6 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
@@ -93,7 +94,7 @@ func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
 			Scope:     netlink.SCOPE_HOST,
 		})
 		if err != nil {
-			return err
+			return E.Cause(err, "append ipv6 loopback route")
 		}
 	}
 	return nil
@@ -121,7 +122,7 @@ func (r *autoRedirect) removeRedirectRoutes(linkIndex int) {
 func (r *autoRedirect) updateRedirectRoutes() error {
 	err := r.interfaceFinder.Update()
 	if err != nil {
-		return err
+		return E.Cause(err, "update interfaces")
 	}
 	tunName := r.tunOptions.Name
 	newInterfaces := common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
@@ -139,7 +140,7 @@ func (r *autoRedirect) updateRedirectRoutes() error {
 		if !oldMap[iface.Index] {
 			err = r.addRedirectRoutes(iface)
 			if err != nil {
-				return err
+				return E.Cause(err, "add redirect routes for ", iface.Name)
 			}
 		}
 	}

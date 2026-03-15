@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
@@ -19,7 +20,7 @@ import (
 func (r *autoRedirect) setupNFTables() error {
 	nft, err := nftables.New()
 	if err != nil {
-		return err
+		return E.Cause(err, "create nftables connection")
 	}
 	defer nft.CloseLasting()
 
@@ -30,12 +31,12 @@ func (r *autoRedirect) setupNFTables() error {
 
 	err = r.nftablesCreateAddressSets(nft, table, false)
 	if err != nil {
-		return err
+		return E.Cause(err, "create address sets")
 	}
 
 	err = r.interfaceFinder.Update()
 	if err != nil {
-		return err
+		return E.Cause(err, "update interfaces")
 	}
 	r.localAddresses = common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
@@ -44,18 +45,18 @@ func (r *autoRedirect) setupNFTables() error {
 	})
 	err = r.nftablesCreateLocalAddressSets(nft, table, r.localAddresses, nil)
 	if err != nil {
-		return err
+		return E.Cause(err, "create local address sets")
 	}
 
 	err = r.nftablesCreateLoopbackAddressSets(nft, table)
 	if err != nil {
-		return err
+		return E.Cause(err, "create loopback address sets")
 	}
 
 	if r.nfqueueEnabled {
 		err = r.nftablesCreatePreMatchChains(nft, table)
 		if err != nil {
-			return err
+			return E.Cause(err, "create pre-match chains")
 		}
 	}
 
@@ -74,12 +75,12 @@ func (r *autoRedirect) setupNFTables() error {
 		if r.tunOptions.AutoRedirectMarkMode {
 			err = r.nftablesCreateExcludeRules(nft, table, chainOutput)
 			if err != nil {
-				return err
+				return E.Cause(err, "create output exclude rules")
 			}
 			r.nftablesCreateUnreachable(nft, table, chainOutput)
 			err = r.nftablesCreateRedirect(nft, table, chainOutput)
 			if err != nil {
-				return err
+				return E.Cause(err, "create output redirect")
 			}
 			if len(r.tunOptions.Inet4LoopbackAddress) > 0 || len(r.tunOptions.Inet6LoopbackAddress) > 0 {
 				chainOutputRoute := nft.AddChain(&nftables.Chain{
@@ -91,7 +92,7 @@ func (r *autoRedirect) setupNFTables() error {
 				})
 				err = r.nftablesCreateLoopbackReroute(nft, table, chainOutputRoute)
 				if err != nil {
-					return err
+					return E.Cause(err, "create output loopback reroute")
 				}
 			}
 			chainOutputUDP := nft.AddChain(&nftables.Chain{
@@ -103,7 +104,7 @@ func (r *autoRedirect) setupNFTables() error {
 			})
 			err = r.nftablesCreateExcludeRules(nft, table, chainOutputUDP)
 			if err != nil {
-				return err
+				return E.Cause(err, "create output udp exclude rules")
 			}
 			r.nftablesCreateUnreachable(nft, table, chainOutputUDP)
 			r.nftablesCreateMark(nft, table, chainOutputUDP)
@@ -117,7 +118,7 @@ func (r *autoRedirect) setupNFTables() error {
 				Data:     nftablesIfname(r.tunOptions.Name),
 			})
 			if err != nil {
-				return err
+				return E.Cause(err, "create output redirect")
 			}
 		}
 	}
@@ -131,12 +132,12 @@ func (r *autoRedirect) setupNFTables() error {
 	})
 	err = r.nftablesCreateExcludeRules(nft, table, chainPreRouting)
 	if err != nil {
-		return err
+		return E.Cause(err, "create prerouting exclude rules")
 	}
 	r.nftablesCreateUnreachable(nft, table, chainPreRouting)
 	err = r.nftablesCreateRedirect(nft, table, chainPreRouting)
 	if err != nil {
-		return err
+		return E.Cause(err, "create prerouting redirect")
 	}
 	if r.tunOptions.AutoRedirectMarkMode {
 		r.nftablesCreateMark(nft, table, chainPreRouting)
@@ -150,7 +151,7 @@ func (r *autoRedirect) setupNFTables() error {
 			})
 			err = r.nftablesCreateLoopbackReroute(nft, table, chainPreRoutingFilter)
 			if err != nil {
-				return err
+				return E.Cause(err, "create prerouting loopback reroute")
 			}
 		}
 		chainPreRoutingUDP := nft.AddChain(&nftables.Chain{
@@ -172,7 +173,7 @@ func (r *autoRedirect) setupNFTables() error {
 			{Key: []byte{unix.IPPROTO_ICMPV6}},
 		})
 		if err != nil {
-			return err
+			return E.Cause(err, "add ip protocol set")
 		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
@@ -280,12 +281,12 @@ func (r *autoRedirect) setupNFTables() error {
 
 	err = r.configureOpenWRTFirewall4(nft, false)
 	if err != nil {
-		return err
+		return E.Cause(err, "configure openwrt firewall4")
 	}
 
 	err = nft.Flush()
 	if err != nil {
-		return err
+		return E.Cause(err, "flush nftables")
 	}
 
 	r.networkListener = r.networkMonitor.RegisterCallback(func() {
@@ -307,7 +308,7 @@ func (r *autoRedirect) setupNFTables() error {
 func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
 	err := r.interfaceFinder.Update()
 	if err != nil {
-		return err
+		return E.Cause(err, "update interfaces")
 	}
 	newLocalAddresses := common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
@@ -324,16 +325,16 @@ func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
 	}
 	nft, err := nftables.New()
 	if err != nil {
-		return err
+		return E.Cause(err, "create nftables connection")
 	}
 	defer nft.CloseLasting()
 	table, err := nft.ListTableOfFamily(r.tableName, nftables.TableFamilyINet)
 	if err != nil {
-		return err
+		return E.Cause(err, "list nftables table")
 	}
 	err = r.nftablesCreateLocalAddressSets(nft, table, newLocalAddresses, r.localAddresses)
 	if err != nil {
-		return err
+		return E.Cause(err, "create local address sets")
 	}
 	r.localAddresses = newLocalAddresses
 	return nft.Flush()
@@ -342,16 +343,16 @@ func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
 func (r *autoRedirect) nftablesUpdateRouteAddressSet() error {
 	nft, err := nftables.New()
 	if err != nil {
-		return err
+		return E.Cause(err, "create nftables connection")
 	}
 	defer nft.CloseLasting()
 	table, err := nft.ListTableOfFamily(r.tableName, nftables.TableFamilyINet)
 	if err != nil {
-		return err
+		return E.Cause(err, "list nftables table")
 	}
 	err = r.nftablesCreateAddressSets(nft, table, true)
 	if err != nil {
-		return err
+		return E.Cause(err, "create address sets")
 	}
 	return nft.Flush()
 }

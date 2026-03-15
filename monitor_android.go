@@ -8,7 +8,7 @@ import (
 func (m *defaultInterfaceMonitor) checkUpdate() error {
 	ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
 	if err != nil {
-		return err
+		return E.Cause(err, "list rules")
 	}
 
 	oldVPNEnabled := m.androidVPNEnabled
@@ -38,7 +38,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: defaultTableIndex}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return err
+		return E.Cause(err, "list routes")
 	}
 
 	if len(routes) == 0 {
@@ -48,7 +48,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	var link netlink.Link
 	link, err = netlink.LinkByIndex(routes[0].LinkIndex)
 	if err != nil {
-		return err
+		return E.Cause(err, "find link by index")
 	}
 
 	newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)

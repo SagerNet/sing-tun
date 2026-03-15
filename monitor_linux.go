@@ -57,11 +57,11 @@ func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error)
 func (m *networkUpdateMonitor) Start() error {
 	err := netlink.RouteSubscribe(m.routeUpdate, m.close)
 	if err != nil {
-		return err
+		return E.Cause(err, "subscribe route updates")
 	}
 	err = netlink.LinkSubscribe(m.linkUpdate, m.close)
 	if err != nil {
-		return err
+		return E.Cause(err, "subscribe link updates")
 	}
 	go m.loopUpdate()
 	return nil
