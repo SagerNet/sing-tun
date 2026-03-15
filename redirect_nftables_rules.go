@@ -382,7 +382,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 						&expr.Cmp{
 							Op:       expr.CmpOpNeq,
 							Register: 1,
-							Data:     binaryutil.BigEndian.PutUint32(r.tunOptions.IncludeUID[0].Start),
+							Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.IncludeUID[0].Start),
 						},
 						&expr.Counter{},
 						&expr.Verdict{
