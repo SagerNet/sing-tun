@@ -423,16 +423,39 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		},
 	})
 
+	// Bypass mark: save to conntrack and return.
+	// When the NFQUEUE handler returns NF_REPEAT with the output mark,
+	// the packet re-enters this chain from the beginning. This rule
+	// catches it, saves the mark to conntrack (so subsequent packets
+	// of the same connection are bypassed via ct mark check below),
+	// and returns.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())},
+			&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
+			&expr.Counter{},
 			&expr.Verdict{Kind: expr.VerdictReturn},
 		},
 	})
 
+	// Reset mark: reject with TCP RST.
+	// When the NFQUEUE handler returns NF_REPEAT with the reset mark,
+	// the packet re-enters this chain and is rejected here.
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveResetMark())},
+			&expr.Counter{},
+			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
+		},
+	})
+
+	// Already-tracked bypass connections: return immediately.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
@@ -443,6 +466,7 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		},
 	})
 
+	// TCP SYN: send to NFQUEUE for pre-match evaluation.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
@@ -467,28 +491,6 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 				Num:  r.effectiveNFQueue(),
 				Flag: expr.QueueFlagBypass,
 			},
-		},
-	})
-
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveResetMark())},
-			&expr.Counter{},
-			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
-		},
-	})
-
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())},
-			&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
-			&expr.Counter{},
 		},
 	})
 }

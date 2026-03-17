@@ -214,11 +214,15 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 
 	_, pErr := h.handler.PrepareConnection(N.NetworkTCP, srcAddr, dstAddr, nil, 0)
 
+	// Use NfRepeat for bypass/reset so the packet re-enters the chain
+	// from the beginning, allowing mark-checking rules to save the mark
+	// to conntrack. NfAccept is a terminal verdict in nftables — it exits
+	// the chain immediately, skipping any rules after the queue statement.
 	switch {
 	case errors.Is(pErr, ErrBypass):
-		h.setVerdict(packetID, nfqueue.NfAccept, h.outputMark)
+		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
 	case errors.Is(pErr, ErrReset):
-		h.setVerdict(packetID, nfqueue.NfAccept, h.resetMark)
+		h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
 	case errors.Is(pErr, ErrDrop):
 		h.setVerdict(packetID, nfqueue.NfDrop, 0)
 	default:
