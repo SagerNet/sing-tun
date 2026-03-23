@@ -91,6 +91,12 @@ func (t *NativeTun) configure() error {
 				return E.Cause(err, "set ipv4 dns")
 			}
 		}
+	} else {
+		// If no IPv4 address is set, remove any existing IPv4 DNS servers
+		err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), nil, nil)
+		if err != nil {
+			return E.Cause(err, "remove ipv4 dns")
+		}
 	}
 	if len(t.options.Inet6Address) > 0 {
 		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET6), t.options.Inet6Address)
@@ -113,6 +119,12 @@ func (t *NativeTun) configure() error {
 			if err != nil {
 				return E.Cause(err, "set ipv6 dns")
 			}
+		}
+	} else {
+		// If no IPv6 address is set, remove any existing IPv6 DNS servers
+		err := luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), nil, nil)
+		if err != nil {
+			return E.Cause(err, "remove ipv6 dns")
 		}
 	}
 	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
