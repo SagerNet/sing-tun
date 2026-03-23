@@ -8,6 +8,7 @@ type PackageManager interface {
 	IDByPackage(packageName string) (uint32, bool)
 	IDBySharedPackage(sharedPackage string) (uint32, bool)
 	PackageByID(id uint32) (string, bool)
+	PackagesByID(id uint32) ([]string, bool)
 	SharedPackageByID(id uint32) (string, bool)
 }
 

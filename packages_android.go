@@ -20,7 +20,7 @@ type packageManager struct {
 	watcher         *fswatch.Watcher
 	idByPackage     map[string]uint32
 	sharedByPackage map[string]uint32
-	packageById     map[uint32]string
+	packageById     map[uint32][]string
 	sharedById      map[uint32]string
 }
 
@@ -83,8 +83,16 @@ func (m *packageManager) IDBySharedPackage(sharedPackage string) (uint32, bool) 
 }
 
 func (m *packageManager) PackageByID(id uint32) (string, bool) {
-	packageName, loaded := m.packageById[id]
-	return packageName, loaded
+	packageNames, loaded := m.packageById[id]
+	if !loaded || len(packageNames) == 0 {
+		return "", false
+	}
+	return packageNames[0], true
+}
+
+func (m *packageManager) PackagesByID(id uint32) ([]string, bool) {
+	packageNames, loaded := m.packageById[id]
+	return packageNames, loaded
 }
 
 func (m *packageManager) SharedPackageByID(id uint32) (string, bool) {
@@ -110,7 +118,7 @@ func (m *packageManager) updatePackages() error {
 func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 	idByPackage := make(map[string]uint32)
 	sharedByPackage := make(map[string]uint32)
-	packageById := make(map[uint32]string)
+	packageById := make(map[uint32][]string)
 	sharedById := make(map[uint32]string)
 	for {
 		token, err := decoder.Token()
@@ -144,7 +152,7 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 				continue
 			}
 			idByPackage[name] = uint32(userID)
-			packageById[uint32(userID)] = name
+			packageById[uint32(userID)] = append(packageById[uint32(userID)], name)
 		case "shared-user":
 			var name string
 			var userID uint64
@@ -157,7 +165,6 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 					if err != nil {
 						return err
 					}
-					packageById[uint32(userID)] = name
 				}
 			}
 			if userID == 0 && name == "" {
