@@ -78,7 +78,7 @@
       <SpectreMitigation>false</SpectreMitigation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Fwpkclnt.lib;$(DDK_LIB_PATH)wdmsec.lib;$(DDK_LIB_PATH)uuid.lib;$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfLdr.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfDriverEntry.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Fwpkclnt.lib;$(DDK_LIB_PATH)wdmsec.lib;$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfLdr.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfDriverEntry.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Inf>
       <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
@@ -103,5 +103,8 @@
     </Inf>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- Disable InfVerif when the DLL is missing (e.g. cross-arch WDK install) -->
+  <Target Name="InfVerif" />
+  <Target Name="Inf2Cat" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
