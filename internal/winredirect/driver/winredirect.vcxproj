@@ -78,7 +78,7 @@
       <SpectreMitigation>false</SpectreMitigation>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Fwpkclnt.lib;$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfLdr.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfDriverEntry.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Fwpkclnt.lib;$(DDK_LIB_PATH)wdmsec.lib;$(DDK_LIB_PATH)uuid.lib;$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfLdr.lib;$(KMDF_LIB_PATH)$(KMDF_VER_PATH)\WdfDriverEntry.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Inf>
       <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
@@ -86,6 +86,9 @@
     <InfVerif>
       <TreatWarningAsError>false</TreatWarningAsError>
     </InfVerif>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
   </ItemDefinitionGroup>
   <!-- Source files -->
   <ItemGroup>
@@ -95,7 +98,9 @@
     <ClInclude Include="winredirect.h" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="winredirect.inf" />
+    <Inf Include="winredirect.inf">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </Inf>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

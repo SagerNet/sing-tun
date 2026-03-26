@@ -1,6 +1,8 @@
 #pragma once
 
+#include <initguid.h>
 #include <ntddk.h>
+#include <wdmsec.h>
 #include <wdf.h>
 #include <fwpsk.h>
 #include <fwpmk.h>
