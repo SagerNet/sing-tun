@@ -83,6 +83,9 @@
     <Inf>
       <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
     </Inf>
+    <InfVerif>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </InfVerif>
   </ItemDefinitionGroup>
   <!-- Source files -->
   <ItemGroup>

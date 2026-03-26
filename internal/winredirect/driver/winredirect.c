@@ -1,3 +1,5 @@
+#pragma warning(disable: 4996) // ExAllocatePoolWithTag deprecation
+
 #include "winredirect.h"
 
 // {E513903C-D2F3-4D8C-9458-0483E7D7A01F}
@@ -419,9 +421,7 @@ static void ClassifyFnCommon(
 
     entry->ClassifyHandle = classifyHandle;
 
-    status = FwpsPendClassify0(
-        inFixedValues, inMetaValues, layerData,
-        classifyContext, filter, flowContext, classifyOut);
+    status = FwpsPendClassify0(classifyHandle, filter->filterId, 0, classifyOut);
     if (!NT_SUCCESS(status)) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
