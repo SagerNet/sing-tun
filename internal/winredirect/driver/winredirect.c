@@ -251,20 +251,20 @@ NTSTATUS WfpSetup(_In_ PDRIVER_CONTEXT Ctx)
     if (!NT_SUCCESS(status)) goto cleanup;
 
     // Register callouts
-    FWPS_CALLOUT3 sCalloutV4 = {
+    FWPS_CALLOUT1 sCalloutV4 = {
         .calloutKey = WINREDIRECT_CALLOUT_V4_KEY,
         .classifyFn = ClassifyFnV4,
         .notifyFn = NotifyFn,
     };
-    status = FwpsCalloutRegister3(WdfDeviceWdmGetDeviceObject(Ctx->Device), &sCalloutV4, &Ctx->CalloutIdV4);
+    status = FwpsCalloutRegister1(WdfDeviceWdmGetDeviceObject(Ctx->Device), &sCalloutV4, &Ctx->CalloutIdV4);
     if (!NT_SUCCESS(status)) goto cleanup;
 
-    FWPS_CALLOUT3 sCalloutV6 = {
+    FWPS_CALLOUT1 sCalloutV6 = {
         .calloutKey = WINREDIRECT_CALLOUT_V6_KEY,
         .classifyFn = ClassifyFnV6,
         .notifyFn = NotifyFn,
     };
-    status = FwpsCalloutRegister3(WdfDeviceWdmGetDeviceObject(Ctx->Device), &sCalloutV6, &Ctx->CalloutIdV6);
+    status = FwpsCalloutRegister1(WdfDeviceWdmGetDeviceObject(Ctx->Device), &sCalloutV6, &Ctx->CalloutIdV6);
     if (!NT_SUCCESS(status)) goto cleanup;
 
     // Add callouts to BFE
@@ -345,7 +345,7 @@ void WfpCleanup(_In_ PDRIVER_CONTEXT Ctx)
 NTSTATUS NTAPI NotifyFn(
     _In_ FWPS_CALLOUT_NOTIFY_TYPE notifyType,
     _In_ const GUID* filterKey,
-    _Inout_ FWPS_FILTER3* filter)
+    _Inout_ FWPS_FILTER1* filter)
 {
     UNREFERENCED_PARAMETER(notifyType);
     UNREFERENCED_PARAMETER(filterKey);
@@ -361,7 +361,7 @@ static void ClassifyFnCommon(
     _In_ const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
     _Inout_opt_ void* layerData,
     _In_opt_ const void* classifyContext,
-    _In_ const FWPS_FILTER3* filter,
+    _In_ const FWPS_FILTER1* filter,
     _In_ UINT64 flowContext,
     _Inout_ FWPS_CLASSIFY_OUT0* classifyOut,
     _In_ UINT32 localAddrIdx,
@@ -376,7 +376,7 @@ static void ClassifyFnCommon(
     }
 
     // Allocate pending entry
-    PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_PAGED, sizeof(PENDING_ENTRY), 'rniW');
+    PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
         classifyOut->actionType = FWP_ACTION_PERMIT;
         return;
@@ -460,7 +460,7 @@ void NTAPI ClassifyFnV4(
     _In_ const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
     _Inout_opt_ void* layerData,
     _In_opt_ const void* classifyContext,
-    _In_ const FWPS_FILTER3* filter,
+    _In_ const FWPS_FILTER1* filter,
     _In_ UINT64 flowContext,
     _Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
 {
@@ -477,7 +477,7 @@ void NTAPI ClassifyFnV6(
     _In_ const FWPS_INCOMING_METADATA_VALUES0* inMetaValues,
     _Inout_opt_ void* layerData,
     _In_opt_ const void* classifyContext,
-    _In_ const FWPS_FILTER3* filter,
+    _In_ const FWPS_FILTER1* filter,
     _In_ UINT64 flowContext,
     _Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
 {
@@ -494,7 +494,7 @@ void NTAPI ClassifyFnV6(
 PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx)
 {
     UNREFERENCED_PARAMETER(Ctx);
-    return (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_PAGED, sizeof(PENDING_ENTRY), 'rniW');
+    return (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
 }
 
 void PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
