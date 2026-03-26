@@ -1,20 +1,20 @@
 #include "winredirect.h"
 
-// {7B3A8D2E-4F5C-11EE-BE56-0242AC120002}
+// {E513903C-D2F3-4D8C-9458-0483E7D7A01F}
 DEFINE_GUID(WINREDIRECT_PROVIDER_KEY,
-    0x7b3a8d2e, 0x4f5c, 0x11ee, 0xbe, 0x56, 0x02, 0x42, 0xac, 0x12, 0x00, 0x02);
+    0xe513903c, 0xd2f3, 0x4d8c, 0x94, 0x58, 0x04, 0x83, 0xe7, 0xd7, 0xa0, 0x1f);
 
-// {7B3A8D2E-4F5C-11EE-BE56-0242AC120003}
+// {8987A44E-ECB2-4A47-9FB6-B749C804FA3B}
 DEFINE_GUID(WINREDIRECT_SUBLAYER_KEY,
-    0x7b3a8d2e, 0x4f5c, 0x11ee, 0xbe, 0x56, 0x02, 0x42, 0xac, 0x12, 0x00, 0x03);
+    0x8987a44e, 0xecb2, 0x4a47, 0x9f, 0xb6, 0xb7, 0x49, 0xc8, 0x04, 0xfa, 0x3b);
 
-// {7B3A8D2E-4F5C-11EE-BE56-0242AC120004}
+// {7EA20C4E-1A93-427E-80DC-E18A60AAB73B}
 DEFINE_GUID(WINREDIRECT_CALLOUT_V4_KEY,
-    0x7b3a8d2e, 0x4f5c, 0x11ee, 0xbe, 0x56, 0x02, 0x42, 0xac, 0x12, 0x00, 0x04);
+    0x7ea20c4e, 0x1a93, 0x427e, 0x80, 0xdc, 0xe1, 0x8a, 0x60, 0xaa, 0xb7, 0x3b);
 
-// {7B3A8D2E-4F5C-11EE-BE56-0242AC120005}
+// {AABE8538-0A09-4D47-8E61-1127CE5BB1AB}
 DEFINE_GUID(WINREDIRECT_CALLOUT_V6_KEY,
-    0x7b3a8d2e, 0x4f5c, 0x11ee, 0xbe, 0x56, 0x02, 0x42, 0xac, 0x12, 0x00, 0x05);
+    0xaabe8538, 0x0a09, 0x4d47, 0x8e, 0x61, 0x11, 0x27, 0xce, 0x5b, 0xb1, 0xab);
 
 static PDRIVER_CONTEXT g_Ctx = NULL;
 
@@ -59,7 +59,8 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     RtlZeroMemory(ctx, sizeof(DRIVER_CONTEXT));
     ctx->Device = device;
     InitializeListHead(&ctx->PendingList);
-    KeInitializeSpinLock(&ctx->PendingLock);
+    ExInitializeFastMutex(&ctx->PendingLock);
+    ExInitializeFastMutex(&ctx->ConfigLock);
     g_Ctx = ctx;
 
     // Create manual-dispatch queue for pending IOCTLs
@@ -85,6 +86,15 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     status = WdfTimerCreate(&timerConfig, &timerAttrs, &ctx->TimeoutTimer);
     if (!NT_SUCCESS(status)) return status;
 
+    // Create work item for timeout processing at PASSIVE_LEVEL
+    WDF_WORKITEM_CONFIG workItemConfig;
+    WDF_WORKITEM_CONFIG_INIT(&workItemConfig, EvtTimeoutWorkItem);
+    WDF_OBJECT_ATTRIBUTES workItemAttrs;
+    WDF_OBJECT_ATTRIBUTES_INIT(&workItemAttrs);
+    workItemAttrs.ParentObject = device;
+    status = WdfWorkItemCreate(&workItemConfig, &workItemAttrs, &ctx->TimeoutWorkItem);
+    if (!NT_SUCCESS(status)) return status;
+
     WdfControlFinishInitializing(device);
     return STATUS_SUCCESS;
 }
@@ -108,37 +118,40 @@ void EvtIoDeviceControl(
     UNREFERENCED_PARAMETER(Queue);
     PDRIVER_CONTEXT ctx = g_Ctx;
     NTSTATUS status = STATUS_SUCCESS;
-    PVOID inBuf = NULL, outBuf = NULL;
-    size_t inLen = 0, outLen = 0;
+    PVOID inBuf = NULL;
+    size_t inLen = 0;
 
     switch (IoControlCode) {
     case IOCTL_WINREDIRECT_SET_CONFIG:
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_CONFIG), &inBuf, &inLen);
         if (NT_SUCCESS(status)) {
+            ExAcquireFastMutex(&ctx->ConfigLock);
             RtlCopyMemory(&ctx->Config, inBuf, sizeof(WINREDIRECT_CONFIG));
+            ExReleaseFastMutex(&ctx->ConfigLock);
         }
         WdfRequestComplete(Request, status);
         break;
 
     case IOCTL_WINREDIRECT_START:
-        if (ctx->Running) {
+        if (InterlockedCompareExchange(&ctx->Running, TRUE, FALSE) != FALSE) {
             WdfRequestComplete(Request, STATUS_ALREADY_REGISTERED);
             break;
         }
         status = WfpSetup(ctx);
         if (NT_SUCCESS(status)) {
-            ctx->Running = TRUE;
             WdfTimerStart(ctx->TimeoutTimer, WDF_REL_TIMEOUT_IN_SEC(5));
+        } else {
+            InterlockedExchange(&ctx->Running, FALSE);
         }
         WdfRequestComplete(Request, status);
         break;
 
     case IOCTL_WINREDIRECT_STOP:
-        if (ctx->Running) {
-            WdfTimerStop(ctx->TimeoutTimer, FALSE);
+        if (InterlockedCompareExchange(&ctx->Running, FALSE, TRUE) == TRUE) {
+            WdfTimerStop(ctx->TimeoutTimer, TRUE);
+            WdfWorkItemFlush(ctx->TimeoutWorkItem);
             WfpCleanup(ctx);
             PendingFlushAll(ctx);
-            ctx->Running = FALSE;
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         break;
@@ -183,11 +196,17 @@ void EvtTimeoutTimer(_In_ WDFTIMER Timer)
 {
     UNREFERENCED_PARAMETER(Timer);
     if (!g_Ctx) return;
+    WdfWorkItemEnqueue(g_Ctx->TimeoutWorkItem);
+}
+
+void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
+{
+    UNREFERENCED_PARAMETER(WorkItem);
+    if (!g_Ctx) return;
 
     LARGE_INTEGER now;
     KeQuerySystemTime(&now);
-    KIRQL irql;
-    KeAcquireSpinLock(&g_Ctx->PendingLock, &irql);
+    ExAcquireFastMutex(&g_Ctx->PendingLock);
 
     PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
     while (entry != &g_Ctx->PendingList) {
@@ -198,15 +217,15 @@ void EvtTimeoutTimer(_In_ WDFTIMER Timer)
         LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL; // to seconds
         if (elapsed >= 5) {
             RemoveEntryList(&pending->ListEntry);
-            KeReleaseSpinLock(&g_Ctx->PendingLock, irql);
+            ExReleaseFastMutex(&g_Ctx->PendingLock);
             ExecuteVerdict(g_Ctx, pending, VERDICT_BYPASS);
             ExFreePoolWithTag(pending, 'rniW');
-            KeAcquireSpinLock(&g_Ctx->PendingLock, &irql);
+            ExAcquireFastMutex(&g_Ctx->PendingLock);
             entry = g_Ctx->PendingList.Flink;
         }
     }
 
-    KeReleaseSpinLock(&g_Ctx->PendingLock, irql);
+    ExReleaseFastMutex(&g_Ctx->PendingLock);
 }
 
 // --- WFP Setup ---
@@ -357,7 +376,7 @@ static void ClassifyFnCommon(
     }
 
     // Allocate pending entry
-    PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(PENDING_ENTRY), 'rniW');
+    PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_PAGED, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
         classifyOut->actionType = FWP_ACTION_PERMIT;
         return;
@@ -475,22 +494,20 @@ void NTAPI ClassifyFnV6(
 PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx)
 {
     UNREFERENCED_PARAMETER(Ctx);
-    return (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(PENDING_ENTRY), 'rniW');
+    return (PPENDING_ENTRY)ExAllocatePool2(POOL_FLAG_PAGED, sizeof(PENDING_ENTRY), 'rniW');
 }
 
 void PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
 {
-    KIRQL irql;
-    KeAcquireSpinLock(&Ctx->PendingLock, &irql);
+    ExAcquireFastMutex(&Ctx->PendingLock);
     InsertTailList(&Ctx->PendingList, &Entry->ListEntry);
-    KeReleaseSpinLock(&Ctx->PendingLock, irql);
+    ExReleaseFastMutex(&Ctx->PendingLock);
 }
 
 PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID)
 {
-    KIRQL irql;
     PPENDING_ENTRY found = NULL;
-    KeAcquireSpinLock(&Ctx->PendingLock, &irql);
+    ExAcquireFastMutex(&Ctx->PendingLock);
     PLIST_ENTRY entry = Ctx->PendingList.Flink;
     while (entry != &Ctx->PendingList) {
         PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
@@ -501,31 +518,29 @@ PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID)
         }
         entry = entry->Flink;
     }
-    KeReleaseSpinLock(&Ctx->PendingLock, irql);
+    ExReleaseFastMutex(&Ctx->PendingLock);
     return found;
 }
 
 void PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
 {
-    KIRQL irql;
-    KeAcquireSpinLock(&Ctx->PendingLock, &irql);
+    ExAcquireFastMutex(&Ctx->PendingLock);
     RemoveEntryList(&Entry->ListEntry);
-    KeReleaseSpinLock(&Ctx->PendingLock, irql);
+    ExReleaseFastMutex(&Ctx->PendingLock);
 }
 
 void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx)
 {
-    KIRQL irql;
-    KeAcquireSpinLock(&Ctx->PendingLock, &irql);
+    ExAcquireFastMutex(&Ctx->PendingLock);
     while (!IsListEmpty(&Ctx->PendingList)) {
         PLIST_ENTRY entry = RemoveHeadList(&Ctx->PendingList);
         PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-        KeReleaseSpinLock(&Ctx->PendingLock, irql);
+        ExReleaseFastMutex(&Ctx->PendingLock);
         ExecuteVerdict(Ctx, pending, VERDICT_BYPASS);
         ExFreePoolWithTag(pending, 'rniW');
-        KeAcquireSpinLock(&Ctx->PendingLock, &irql);
+        ExAcquireFastMutex(&Ctx->PendingLock);
     }
-    KeReleaseSpinLock(&Ctx->PendingLock, irql);
+    ExReleaseFastMutex(&Ctx->PendingLock);
 }
 
 // --- Verdict execution ---
@@ -541,19 +556,23 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
             (PVOID*)&connReq, &classifyOut);
 
         if (NT_SUCCESS(status) && connReq) {
+            ExAcquireFastMutex(&Ctx->ConfigLock);
+            WINREDIRECT_CONFIG config = Ctx->Config;
+            ExReleaseFastMutex(&Ctx->ConfigLock);
+
             if (Entry->AddressFamily == AF_INET) {
                 SOCKADDR_IN* addr = (SOCKADDR_IN*)&connReq->remoteAddressAndPort;
                 addr->sin_family = AF_INET;
                 addr->sin_addr.s_addr = RtlUlongByteSwap(0x7F000001); // 127.0.0.1
-                addr->sin_port = RtlUshortByteSwap(Ctx->Config.RedirectPort);
+                addr->sin_port = RtlUshortByteSwap(config.RedirectPort);
             } else {
                 SOCKADDR_IN6* addr = (SOCKADDR_IN6*)&connReq->remoteAddressAndPort;
                 RtlZeroMemory(addr, sizeof(SOCKADDR_IN6));
                 addr->sin6_family = AF_INET6;
                 addr->sin6_addr.u.Byte[15] = 1; // ::1
-                addr->sin6_port = RtlUshortByteSwap(Ctx->Config.RedirectPort);
+                addr->sin6_port = RtlUshortByteSwap(config.RedirectPort);
             }
-            connReq->localRedirectTargetPID = Ctx->Config.ProxyPID;
+            connReq->localRedirectTargetPID = config.ProxyPID;
             connReq->localRedirectHandle = Ctx->RedirectHandle;
 
             FwpsApplyModifiedLayerData0(Entry->ClassifyHandle, connReq, 0);

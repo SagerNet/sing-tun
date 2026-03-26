@@ -81,17 +81,19 @@ typedef struct _DRIVER_CONTEXT {
     UINT64                 FilterIdV6;
     HANDLE                 RedirectHandle;
 
-    // Configuration
+    // Configuration (protected by ConfigLock)
+    FAST_MUTEX             ConfigLock;
     WINREDIRECT_CONFIG     Config;
-    BOOLEAN                Running;
+    volatile LONG          Running;
 
-    // Pending connections
+    // Pending connections (protected by PendingLock)
     LIST_ENTRY             PendingList;
-    KSPIN_LOCK             PendingLock;
+    FAST_MUTEX             PendingLock;
     volatile LONG64        NextConnID;
 
-    // Timeout timer
+    // Timeout timer + work item
     WDFTIMER               TimeoutTimer;
+    WDFWORKITEM            TimeoutWorkItem;
 } DRIVER_CONTEXT, *PDRIVER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DRIVER_CONTEXT, GetDriverContext)
@@ -102,6 +104,7 @@ EVT_WDF_DRIVER_UNLOAD EvtDriverUnload;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE EvtIoCanceledOnQueue;
 EVT_WDF_TIMER EvtTimeoutTimer;
+EVT_WDF_WORKITEM EvtTimeoutWorkItem;
 
 // WFP functions
 NTSTATUS WfpSetup(_In_ PDRIVER_CONTEXT Ctx);
