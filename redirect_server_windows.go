@@ -96,9 +96,9 @@ func (s *redirectServer) loopIn() {
 		if entry.IsDNS {
 			destination = entry.DNSServer
 		}
-		ctx := s.ctx
-		if entry.Metadata != nil {
-			ctx = ContextWithAutoRedirectMetadata(ctx, entry.Metadata)
+		ctx := entry.Context
+		if ctx == nil {
+			ctx = s.ctx
 		}
 		go s.handler.NewConnectionEx(ctx, conn, source, destination, nil)
 	}
@@ -119,6 +119,7 @@ type connKey struct {
 
 type connEntry struct {
 	Destination M.Socksaddr
+	Context     context.Context
 	Metadata    *AutoRedirectMetadata
 	IsDNS       bool
 	DNSServer   M.Socksaddr
@@ -133,23 +134,25 @@ func newConnMetadataTable() *connMetadataTable {
 	return t
 }
 
-func (t *connMetadataTable) Store(src M.Socksaddr, dst M.Socksaddr, metadata *AutoRedirectMetadata) {
+func (t *connMetadataTable) Store(src M.Socksaddr, dst M.Socksaddr, ctx context.Context, metadata *AutoRedirectMetadata) {
 	key := connKey{Addr: src.Addr, Port: src.Port}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[key] = &connEntry{
 		Destination: dst,
+		Context:     ctx,
 		Metadata:    metadata,
 		CreatedAt:   time.Now(),
 	}
 }
 
-func (t *connMetadataTable) StoreDNS(src M.Socksaddr, originalDst M.Socksaddr, dnsServer M.Socksaddr, metadata *AutoRedirectMetadata) {
+func (t *connMetadataTable) StoreDNS(src M.Socksaddr, originalDst M.Socksaddr, dnsServer M.Socksaddr, ctx context.Context, metadata *AutoRedirectMetadata) {
 	key := connKey{Addr: src.Addr, Port: src.Port}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[key] = &connEntry{
 		Destination: originalDst,
+		Context:     ctx,
 		Metadata:    metadata,
 		IsDNS:       true,
 		DNSServer:   dnsServer,

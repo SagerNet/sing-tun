@@ -212,7 +212,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		return 0
 	}
 
-	_, pErr := h.handler.PrepareConnection(N.NetworkTCP, srcAddr, dstAddr, nil, 0)
+	_, pErr := h.handler.PrepareConnection(h.ctx, N.NetworkTCP, srcAddr, dstAddr, nil, 0)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
 	// from the beginning, allowing mark-checking rules to save the mark

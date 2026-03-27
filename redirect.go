@@ -25,6 +25,7 @@ type AutoRedirect interface {
 type AutoRedirectOptions struct {
 	TunOptions             *Options
 	Context                context.Context
+	ConnContext            func(ctx context.Context) context.Context
 	Handler                Handler
 	Logger                 logger.Logger
 	ErrorHandler           func(error)

@@ -399,7 +399,7 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 			}
 		}
 		if !loopback {
-			natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+			natPort, err := s.tcpNat.Lookup(s.ctx, source, destination, s.handler)
 			if err != nil {
 				if errors.Is(err, ErrDrop) {
 					return false, nil
@@ -494,7 +494,7 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 			}
 		}
 		if !loopback {
-			natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+			natPort, err := s.tcpNat.Lookup(s.ctx, source, destination, s.handler)
 			if err != nil {
 				if errors.Is(err, ErrDrop) {
 					return false, nil
@@ -589,7 +589,7 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 }
 
 func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
-	_, pErr := s.handler.PrepareConnection(N.NetworkUDP, source, destination, nil, 0)
+	_, pErr := s.handler.PrepareConnection(s.ctx, N.NetworkUDP, source, destination, nil, 0)
 	if pErr != nil {
 		if !errors.Is(pErr, ErrDrop) {
 			if source.IsIPv4() {
@@ -640,6 +640,7 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 	if destinationAddr != s.inet4Address {
 		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 			return s.handler.PrepareConnection(
+				s.ctx,
 				N.NetworkICMP,
 				M.SocksaddrFrom(sourceAddr, 0),
 				M.SocksaddrFrom(destinationAddr, 0),
@@ -715,6 +716,7 @@ func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool
 	if destinationAddr != s.inet6Address {
 		action, err := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func(timeout time.Duration) (DirectRouteDestination, error) {
 			return s.handler.PrepareConnection(
+				s.ctx,
 				N.NetworkICMP,
 				M.SocksaddrFrom(sourceAddr, 0),
 				M.SocksaddrFrom(destinationAddr, 0),

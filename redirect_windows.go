@@ -28,6 +28,7 @@ import (
 type autoRedirect struct {
 	tunOptions             *Options
 	ctx                    context.Context
+	connContext            func(context.Context) context.Context
 	handler                Handler
 	logger                 logger.Logger
 	errorHandler           func(error)
@@ -57,6 +58,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 	r := &autoRedirect{
 		tunOptions:             options.TunOptions,
 		ctx:                    options.Context,
+		connContext:            options.ConnContext,
 		handler:                options.Handler,
 		logger:                 options.Logger,
 		errorHandler:           options.ErrorHandler,
@@ -64,7 +66,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		interfaceFinder:        options.InterfaceFinder,
 		routeAddressSet:        options.RouteAddressSet,
 		routeExcludeAddressSet: options.RouteExcludeAddressSet,
-		workerCount:            4,
+		workerCount:            1,
 	}
 	return r, nil
 }
@@ -244,7 +246,8 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 			dnsServer := r.dnsServerForFamily(dst.Addr)
 			if dnsServer.IsValid() {
 				metadata := r.resolveMetadata(conn)
-				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), metadata)
+				ctx := r.newConnContext(metadata)
+				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), ctx, metadata)
 				return winredirect.VerdictRedirect
 			}
 		}
@@ -257,9 +260,10 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 
 	// Resolve PID → process path
 	metadata := r.resolveMetadata(conn)
+	ctx := r.newConnContext(metadata)
 
 	// PrepareConnection (NFQUEUE equivalent)
-	_, err := r.handler.PrepareConnection("tcp", src, dst, nil, 0)
+	_, err := r.handler.PrepareConnection(ctx, "tcp", src, dst, nil, 0)
 	if errors.Is(err, ErrDrop) {
 		return winredirect.VerdictDrop
 	}
@@ -271,9 +275,23 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 	}
 
 	// Store metadata for redirect server
-	r.redirectServer.connTable.Store(src, dst, metadata)
+	r.redirectServer.connTable.Store(src, dst, ctx, metadata)
 
 	return winredirect.VerdictRedirect
+}
+
+func (r *autoRedirect) newConnContext(metadata *AutoRedirectMetadata) context.Context {
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r.connContext != nil {
+		ctx = r.connContext(ctx)
+	}
+	if metadata != nil {
+		ctx = ContextWithAutoRedirectMetadata(ctx, metadata)
+	}
+	return ctx
 }
 
 func (r *autoRedirect) resolveMetadata(conn *winredirect.PendingConn) *AutoRedirectMetadata {
