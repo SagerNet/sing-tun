@@ -338,7 +338,7 @@ void EvtIoDeviceControl(
         if (NT_SUCCESS(status)) {
             WINREDIRECT_CONFIG* config = (WINREDIRECT_CONFIG*)inBuf;
             GUID tunGuid;
-            NET_LUID tunLuid;
+            NET_LUID tunLuid = {0};
             KIRQL oldIrql;
             if (IsZeroGuid(config->TunGuid)) {
                 status = STATUS_INVALID_PARAMETER;
@@ -385,7 +385,7 @@ void EvtIoDeviceControl(
         break;
 
     case IOCTL_WINREDIRECT_GET_PENDING:
-        // Forward to manual queue — will be completed when a connection arrives
+        // Forward to manual queue - will be completed when a connection arrives
         status = WdfRequestForwardToIoQueue(Request, ctx->PendingIoctlQueue);
         if (!NT_SUCCESS(status)) {
             WdfRequestComplete(Request, status);
@@ -530,7 +530,7 @@ NTSTATUS WfpSetup(_In_ PDRIVER_CONTEXT Ctx)
     status = FwpmCalloutAdd0(Ctx->EngineHandle, &mCalloutV6, NULL, NULL);
     if (!NT_SUCCESS(status)) goto cleanup;
 
-    // Add filters — condition: TCP only
+    // Add filters - condition: TCP only
     FWPM_FILTER_CONDITION0 tcpCondition = {
         .fieldKey = FWPM_CONDITION_IP_PROTOCOL,
         .matchType = FWP_MATCH_EQUAL,
@@ -682,7 +682,7 @@ static void ClassifyFnCommon(
         if (dstArr) {
             RtlCopyMemory(entry->DstAddr, dstArr->byteArray16, 16);
         } else {
-            // No destination address available — cannot redirect, bail out
+            // No destination address available - cannot redirect, bail out
             ExFreePoolWithTag(entry, 'rniW');
             PermitClassify(classifyOut);
             return;

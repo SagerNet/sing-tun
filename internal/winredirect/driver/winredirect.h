@@ -13,7 +13,7 @@
 #define DEVICE_NAME     L"\\Device\\WinRedirect"
 #define SYMLINK_NAME    L"\\DosDevices\\WinRedirect"
 
-// IOCTL codes — must match Go types_windows.go
+// IOCTL codes - must match Go types_windows.go
 #define IOCTL_WINREDIRECT_SET_CONFIG  CTL_CODE(FILE_DEVICE_NETWORK, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_WINREDIRECT_START       CTL_CODE(FILE_DEVICE_NETWORK, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_WINREDIRECT_STOP        CTL_CODE(FILE_DEVICE_NETWORK, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -25,7 +25,7 @@
 #define VERDICT_BYPASS   1
 #define VERDICT_DROP     2
 
-// Shared structures — must match Go types_windows.go layout
+// Shared structures - must match Go types_windows.go layout
 
 #pragma pack(push, 1)
 
