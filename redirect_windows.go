@@ -77,7 +77,29 @@ func (r *autoRedirect) Start() error {
 	if !r.enableIPv4 && !r.enableIPv6 {
 		return E.New("no address configured")
 	}
+	err := r.startRedirect()
+	if err != nil {
+		common.Close(
+			common.PtrOrNil(r.redirectServer),
+			common.PtrOrNil(r.driverManager),
+		)
+		r.redirectServer = nil
+		r.driverManager = nil
+		return err
+	}
+	r.updateLocalAddresses()
+	if r.networkMonitor != nil {
+		r.networkListener = r.networkMonitor.RegisterCallback(func() {
+			r.updateLocalAddresses()
+		})
+	}
+	for i := 0; i < r.workerCount; i++ {
+		go r.preMatchWorker()
+	}
+	return nil
+}
 
+func (r *autoRedirect) startRedirect() error {
 	manager, err := winredirect.NewManager()
 	if err != nil {
 		return E.Cause(err, "create driver manager")
@@ -86,22 +108,16 @@ func (r *autoRedirect) Start() error {
 
 	err = manager.Install()
 	if err != nil {
-		manager.Close()
-		r.driverManager = nil
 		return E.Cause(err, "install driver")
 	}
 
 	err = manager.Start()
 	if err != nil {
-		manager.Close()
-		r.driverManager = nil
 		return E.Cause(err, "start driver")
 	}
 
 	err = manager.OpenDevice()
 	if err != nil {
-		manager.Close()
-		r.driverManager = nil
 		return E.Cause(err, "open driver device")
 	}
 
@@ -115,18 +131,11 @@ func (r *autoRedirect) Start() error {
 	r.redirectServer = server
 	err = server.Start()
 	if err != nil {
-		r.redirectServer = nil
-		manager.Close()
-		r.driverManager = nil
 		return E.Cause(err, "start redirect server")
 	}
 
 	tunGUID, err := r.resolveTunInterfaceGUID()
 	if err != nil {
-		server.Close()
-		manager.Close()
-		r.redirectServer = nil
-		r.driverManager = nil
 		return E.Cause(err, "resolve tun interface")
 	}
 
@@ -137,31 +146,12 @@ func (r *autoRedirect) Start() error {
 		TunGUID:      tunGUID,
 	})
 	if err != nil {
-		server.Close()
-		manager.Close()
-		r.redirectServer = nil
-		r.driverManager = nil
 		return E.Cause(err, "set driver config")
 	}
 
 	err = manager.StartRedirect()
 	if err != nil {
-		server.Close()
-		manager.Close()
-		r.redirectServer = nil
-		r.driverManager = nil
 		return E.Cause(err, "start redirect")
-	}
-
-	r.updateLocalAddresses()
-	if r.networkMonitor != nil {
-		r.networkListener = r.networkMonitor.RegisterCallback(func() {
-			r.updateLocalAddresses()
-		})
-	}
-
-	for i := 0; i < r.workerCount; i++ {
-		go r.preMatchWorker()
 	}
 
 	return nil
@@ -377,27 +367,22 @@ func (r *autoRedirect) dnsServerForFamily(addr netip.Addr) netip.Addr {
 }
 
 func (r *autoRedirect) resolveTunInterfaceGUID() ([16]byte, error) {
+	var index int
 	if r.interfaceFinder != nil {
-		if err := r.interfaceFinder.Update(); err == nil {
-			iface, err := r.interfaceFinder.ByName(r.tunOptions.Name)
-			if err == nil {
-				luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
-				if err != nil {
-					return [16]byte{}, err
-				}
-				guid, err := luid.GUID()
-				if err != nil {
-					return [16]byte{}, err
-				}
-				return guidBytes(guid), nil
-			}
+		_ = r.interfaceFinder.Update()
+		iface, err := r.interfaceFinder.ByName(r.tunOptions.Name)
+		if err == nil {
+			index = iface.Index
 		}
 	}
-	iface, err := net.InterfaceByName(r.tunOptions.Name)
-	if err != nil {
-		return [16]byte{}, err
+	if index == 0 {
+		iface, err := net.InterfaceByName(r.tunOptions.Name)
+		if err != nil {
+			return [16]byte{}, err
+		}
+		index = iface.Index
 	}
-	luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
+	luid, err := winipcfg.LUIDFromIndex(uint32(index))
 	if err != nil {
 		return [16]byte{}, err
 	}
