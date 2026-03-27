@@ -9,7 +9,9 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tun "github.com/sagernet/sing-tun"
@@ -22,7 +24,22 @@ const (
 	autoTestTarget    = "198.18.0.1:65000"
 )
 
-type testHandler struct{}
+type redirectEvent struct {
+	source      string
+	destination string
+	processID   uint32
+	processPath string
+}
+
+type testHandler struct {
+	redirectEvents chan redirectEvent
+}
+
+func newTestHandler(bufferSize int) *testHandler {
+	return &testHandler{
+		redirectEvents: make(chan redirectEvent, bufferSize),
+	}
+}
 
 func (h *testHandler) PrepareConnection(
 	network string,
@@ -48,8 +65,18 @@ func (h *testHandler) NewConnectionEx(
 	if metadata := tun.AutoRedirectMetadataFromContext(ctx); metadata != nil {
 		fmt.Printf("[redirect] source=%s destination=%s pid=%d path=%s\n",
 			source, destination, metadata.ProcessID, metadata.ProcessPath)
+		h.redirectEvents <- redirectEvent{
+			source:      source.String(),
+			destination: destination.String(),
+			processID:   metadata.ProcessID,
+			processPath: metadata.ProcessPath,
+		}
 	} else {
 		fmt.Printf("[redirect] source=%s destination=%s metadata=<nil>\n", source, destination)
+		h.redirectEvents <- redirectEvent{
+			source:      source.String(),
+			destination: destination.String(),
+		}
 	}
 	_, _ = conn.Write([]byte("AUTO REDIRECT OK\n"))
 }
@@ -81,14 +108,18 @@ func main() {
 }
 
 func runAutoRedirect() error {
+	iterations := envInt("WINREDIRECT_ITERATIONS", 3)
+	concurrency := envInt("WINREDIRECT_CONCURRENCY", 3)
+
 	options := tun.Options{
 		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.2/30")},
 	}
+	handler := newTestHandler(iterations*concurrency + 8)
 
 	redirect, err := tun.NewAutoRedirect(tun.AutoRedirectOptions{
 		TunOptions: &options,
 		Context:    context.Background(),
-		Handler:    &testHandler{},
+		Handler:    handler,
 	})
 	if err != nil {
 		return fmt.Errorf("new auto redirect: %w", err)
@@ -100,24 +131,32 @@ func runAutoRedirect() error {
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	fmt.Printf("[1] AutoRedirect started\n")
+	fmt.Printf("[1] AutoRedirect started iterations=%d concurrency=%d\n", iterations, concurrency)
 
-	fmt.Printf("[2] Self-dialing %s (should bypass) ...\n", autoTestTarget)
-	if err = expectBypass(autoTestTarget); err != nil {
-		return fmt.Errorf("self bypass check failed: %w", err)
-	}
-	fmt.Println("[2] Bypass confirmed")
+	for iteration := 1; iteration <= iterations; iteration++ {
+		fmt.Printf("[2.%d] Self-dialing %s (should bypass) ...\n", iteration, autoTestTarget)
+		if err = expectBypass(autoTestTarget); err != nil {
+			return fmt.Errorf("iteration %d self bypass check failed: %w", iteration, err)
+		}
+		fmt.Printf("[2.%d] Bypass confirmed\n", iteration)
 
-	fmt.Printf("[3] Child client dialing %s (should redirect) ...\n", autoTestTarget)
-	output, err := runExternalClient()
-	if err != nil {
-		return fmt.Errorf("child client failed: %w\n%s", err, output)
+		fmt.Printf("[3.%d] Launching %d child clients ...\n", iteration, concurrency)
+		outputs, err := runExternalClients(concurrency)
+		if err != nil {
+			return fmt.Errorf("iteration %d child clients failed: %w\n%s", iteration, err, strings.Join(outputs, "\n"))
+		}
+		for _, output := range outputs {
+			fmt.Print(output)
+			if !strings.Contains(output, "AUTO REDIRECT OK") {
+				return fmt.Errorf("iteration %d child client did not receive redirected response", iteration)
+			}
+		}
+
+		if err = handler.expectRedirectEvents(concurrency, 5*time.Second); err != nil {
+			return fmt.Errorf("iteration %d redirect validation failed: %w", iteration, err)
+		}
+		fmt.Printf("[3.%d] Redirect confirmed\n", iteration)
 	}
-	fmt.Print(output)
-	if !strings.Contains(output, "AUTO REDIRECT OK") {
-		return fmt.Errorf("child client did not receive redirected response")
-	}
-	fmt.Println("[3] Redirect confirmed")
 
 	return nil
 }
@@ -150,6 +189,29 @@ func runExternalClient() (string, error) {
 	return string(output), err
 }
 
+func runExternalClients(concurrency int) ([]string, error) {
+	outputs := make([]string, concurrency)
+	errs := make([]error, concurrency)
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			outputs[index], errs[index] = runExternalClient()
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return outputs, err
+		}
+	}
+
+	return outputs, nil
+}
+
 func expectBypass(target string) error {
 	conn, err := net.DialTimeout("tcp", target, 1200*time.Millisecond)
 	if err == nil {
@@ -165,6 +227,39 @@ func expectBypass(target string) error {
 		}
 	}
 	return nil
+}
+
+func (h *testHandler) expectRedirectEvents(expected int, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	for i := 0; i < expected; i++ {
+		select {
+		case event := <-h.redirectEvents:
+			if event.destination != autoTestTarget {
+				return fmt.Errorf("unexpected destination %s", event.destination)
+			}
+			if event.processID == 0 {
+				return fmt.Errorf("missing process id for redirected connection")
+			}
+			if !strings.Contains(strings.ToLower(event.processPath), "test_auto_redirect.exe") {
+				return fmt.Errorf("unexpected process path %q", event.processPath)
+			}
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for redirect events")
+		}
+	}
+	return nil
+}
+
+func envInt(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return defaultValue
+	}
+	return parsed
 }
 
 var _ tun.Handler = (*testHandler)(nil)
