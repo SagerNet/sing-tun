@@ -130,7 +130,7 @@ static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const CONFIG_SNAPSHOT* Snapshot,
     }
 
     status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, NULL);
-    if (status != NO_ERROR) {
+    if (status != STATUS_SUCCESS) {
         return BestRouteUnknown;
     }
     if (RtlEqualMemory(&bestRoute.InterfaceLuid, &Snapshot->TunLuid, sizeof(NET_LUID))) {
