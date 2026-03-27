@@ -7,6 +7,7 @@
 #include <fwpsk.h>
 #include <fwpmk.h>
 #include <mstcpip.h>
+#include <netioapi.h>
 
 // Device names
 #define DEVICE_NAME     L"\\Device\\WinRedirect"
@@ -32,6 +33,7 @@ typedef struct _WINREDIRECT_CONFIG {
     UINT16 RedirectPort;
     UINT8  _pad0[2];
     UINT32 ProxyPID;
+    UINT32 TunIndex;
 } WINREDIRECT_CONFIG;
 
 typedef struct _WINREDIRECT_PENDING_CONN {

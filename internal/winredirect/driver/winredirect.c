@@ -62,6 +62,58 @@ static BOOLEAN IsAnyAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8
     return FALSE;
 }
 
+typedef enum _BEST_ROUTE_RESULT {
+    BestRouteUnknown = 0,
+    BestRouteTun = 1,
+    BestRouteOther = 2,
+} BEST_ROUTE_RESULT;
+
+static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const WINREDIRECT_CONFIG* Config, _In_ const PENDING_ENTRY* Entry)
+{
+    SOCKADDR_INET sourceAddress;
+    SOCKADDR_INET destinationAddress;
+    SOCKADDR_INET* sourceAddressPtr = NULL;
+    MIB_IPFORWARD_ROW2 bestRoute;
+    NETIO_STATUS status;
+
+    if (Config->TunIndex == 0 || KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+        return BestRouteUnknown;
+    }
+
+    RtlZeroMemory(&sourceAddress, sizeof(sourceAddress));
+    RtlZeroMemory(&destinationAddress, sizeof(destinationAddress));
+    RtlZeroMemory(&bestRoute, sizeof(bestRoute));
+
+    if (Entry->AddressFamily == AF_INET) {
+        destinationAddress.Ipv4.sin_family = AF_INET;
+        RtlCopyMemory(&destinationAddress.Ipv4.sin_addr, Entry->DstAddr, sizeof(destinationAddress.Ipv4.sin_addr));
+        if (!IsAnyAddress(AF_INET, Entry->SrcAddr)) {
+            sourceAddress.Ipv4.sin_family = AF_INET;
+            RtlCopyMemory(&sourceAddress.Ipv4.sin_addr, Entry->SrcAddr, sizeof(sourceAddress.Ipv4.sin_addr));
+            sourceAddressPtr = &sourceAddress;
+        }
+    } else if (Entry->AddressFamily == AF_INET6) {
+        destinationAddress.Ipv6.sin6_family = AF_INET6;
+        RtlCopyMemory(destinationAddress.Ipv6.sin6_addr.u.Byte, Entry->DstAddr, sizeof(destinationAddress.Ipv6.sin6_addr.u.Byte));
+        if (!IsAnyAddress(AF_INET6, Entry->SrcAddr)) {
+            sourceAddress.Ipv6.sin6_family = AF_INET6;
+            RtlCopyMemory(sourceAddress.Ipv6.sin6_addr.u.Byte, Entry->SrcAddr, sizeof(sourceAddress.Ipv6.sin6_addr.u.Byte));
+            sourceAddressPtr = &sourceAddress;
+        }
+    } else {
+        return BestRouteUnknown;
+    }
+
+    status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, NULL);
+    if (status != NO_ERROR) {
+        return BestRouteUnknown;
+    }
+    if (bestRoute.InterfaceIndex == Config->TunIndex) {
+        return BestRouteTun;
+    }
+    return BestRouteOther;
+}
+
 typedef struct _LOCAL_REDIRECT_CONTEXT {
     SOCKADDR_STORAGE OriginalRemoteAddressAndPort;
     UINT32 ProcessId;
@@ -614,6 +666,12 @@ static void ClassifyFnCommon(
     entry->DstPort = inFixedValues->incomingValue[remotePortIdx].value.uint16;
 
     if (IsLoopbackAddress(addressFamily, entry->DstAddr)) {
+        ExFreePoolWithTag(entry, 'rniW');
+        PermitClassify(classifyOut);
+        return;
+    }
+
+    if (BestRouteForEntry(&config, entry) == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
         return;

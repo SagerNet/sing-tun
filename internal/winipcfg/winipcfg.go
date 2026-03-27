@@ -134,6 +134,7 @@ func GetAnycastIPAddressTable(family AddressFamily) ([]MibAnycastIPAddressRow, e
 //
 
 //sys	getIPForwardTable2(family AddressFamily, table **mibIPforwardTable2) (ret error) = iphlpapi.GetIpForwardTable2
+//sys	getBestRoute2(interfaceLUID *LUID, interfaceIndex uint32, sourceAddress *RawSockaddrInet, destinationAddress *RawSockaddrInet, sortOptions uint32, bestRoute *MibIPforwardRow2, bestSourceAddress *RawSockaddrInet) (ret error) = iphlpapi.GetBestRoute2
 //sys	initializeIPForwardEntry(route *MibIPforwardRow2) = iphlpapi.InitializeIpForwardEntry
 //sys	getIPForwardEntry2(route *MibIPforwardRow2) (ret error) = iphlpapi.GetIpForwardEntry2
 //sys	setIPForwardEntry2(route *MibIPforwardRow2) (ret error) = iphlpapi.SetIpForwardEntry2
@@ -151,6 +152,18 @@ func GetIPForwardTable2(family AddressFamily) ([]MibIPforwardRow2, error) {
 	t := append(make([]MibIPforwardRow2, 0, tab.numEntries), tab.get()...)
 	tab.free()
 	return t, nil
+}
+
+// GetBestRoute2 function retrieves the best route for the specified destination IP address on the local computer.
+// https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getbestroute2
+func GetBestRoute2(interfaceLUID *LUID, interfaceIndex uint32, sourceAddress *RawSockaddrInet, destinationAddress *RawSockaddrInet, sortOptions uint32) (*MibIPforwardRow2, *RawSockaddrInet, error) {
+	bestRoute := &MibIPforwardRow2{}
+	bestSourceAddress := &RawSockaddrInet{}
+	err := getBestRoute2(interfaceLUID, interfaceIndex, sourceAddress, destinationAddress, sortOptions, bestRoute, bestSourceAddress)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bestRoute, bestSourceAddress, nil
 }
 
 //

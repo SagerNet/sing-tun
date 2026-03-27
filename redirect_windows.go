@@ -3,12 +3,14 @@ package tun
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/sagernet/sing-tun/internal/winipcfg"
 	"github.com/sagernet/sing-tun/internal/winredirect"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
@@ -37,8 +39,9 @@ type autoRedirect struct {
 	enableIPv4 bool
 	enableIPv6 bool
 
-	localAddressMu sync.RWMutex
-	localAddresses []netip.Prefix
+	localAddressMu    sync.RWMutex
+	localAddresses    []netip.Prefix
+	tunInterfaceIndex uint32
 
 	workerCount int
 }
@@ -103,10 +106,19 @@ func (r *autoRedirect) Start() error {
 	}
 	r.redirectServer = server
 
+	tunInterfaceIndex, err := r.resolveTunInterfaceIndex()
+	if err != nil {
+		server.Close()
+		manager.Close()
+		return E.Cause(err, "resolve tun interface")
+	}
+	r.tunInterfaceIndex = tunInterfaceIndex
+
 	redirectPort := M.AddrPortFromNet(server.listener.Addr()).Port()
 	err = manager.SetConfig(&winredirect.Config{
 		RedirectPort: redirectPort,
 		ProxyPID:     uint32(os.Getpid()),
+		TunIndex:     tunInterfaceIndex,
 	})
 	if err != nil {
 		server.Close()
@@ -179,17 +191,12 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 		return winredirect.VerdictBypass
 	}
 
-	// 2. Static route address whitelist (Inet4/6RouteAddress)
-	if r.hasStaticRouteAddress() && !r.matchStaticRouteAddress(dst.Addr) {
+	// Only intercept connections whose Windows best route resolves to the TUN interface.
+	if !r.routeWouldHitTun(src.Addr, dst.Addr) {
 		return winredirect.VerdictBypass
 	}
 
-	// 3. Static route address blacklist (Inet4/6RouteExcludeAddress)
-	if r.matchStaticRouteExcludeAddress(dst.Addr) {
-		return winredirect.VerdictBypass
-	}
-
-	// 4. DNS hijack: port 53 from local network → redirect to DNS server
+	// DNS hijack: port 53 from local network → redirect to DNS server
 	if !r.tunOptions.EXP_DisableDNSHijack && dst.Port == 53 {
 		if r.isLocalAddress(src.Addr) {
 			dnsServer := r.dnsServerForFamily(dst.Addr)
@@ -201,39 +208,27 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 		}
 	}
 
-	// 5. Local address exclusion
-	if r.isLocalAddress(dst.Addr) {
-		return winredirect.VerdictBypass
-	}
-
-	// 6. Dynamic route address set whitelist
-	if r.hasDynamicRouteAddressSet() && !r.matchDynamicRouteAddressSet(dst.Addr) {
-		return winredirect.VerdictBypass
-	}
-
-	// 7. Dynamic route address set blacklist
-	if r.matchDynamicRouteExcludeAddressSet(dst.Addr) {
-		return winredirect.VerdictBypass
-	}
-
-	// 8. Strict route: reject disabled address family
+	// Strict route: reject disabled address family
 	if r.tunOptions.StrictRoute && r.isDisabledFamily(dst.Addr) {
 		return winredirect.VerdictDrop
 	}
 
-	// 9. Resolve PID → process path
+	// Resolve PID → process path
 	metadata := r.resolveMetadata(conn)
 
-	// 10. PrepareConnection (NFQUEUE equivalent)
+	// PrepareConnection (NFQUEUE equivalent)
 	_, err := r.handler.PrepareConnection("tcp", src, dst, nil, 0)
-	if errors.Is(err, ErrBypass) {
-		return winredirect.VerdictBypass
-	}
-	if errors.Is(err, ErrDrop) || errors.Is(err, ErrReset) || err != nil {
+	if errors.Is(err, ErrDrop) {
 		return winredirect.VerdictDrop
 	}
+	if errors.Is(err, ErrReset) {
+		return winredirect.VerdictBypass
+	}
+	if err != nil && !errors.Is(err, ErrBypass) && r.logger != nil {
+		r.logger.Warn("prepare connection fallback to redirect: ", err)
+	}
 
-	// 11. Store metadata for redirect server
+	// Store metadata for redirect server
 	r.redirectServer.connTable.Store(src, dst, metadata)
 
 	return winredirect.VerdictRedirect
@@ -282,72 +277,6 @@ func (r *autoRedirect) isLocalAddress(addr netip.Addr) bool {
 	return false
 }
 
-func (r *autoRedirect) hasStaticRouteAddress() bool {
-	return len(r.tunOptions.Inet4RouteAddress) > 0 || len(r.tunOptions.Inet6RouteAddress) > 0
-}
-
-func (r *autoRedirect) matchStaticRouteAddress(addr netip.Addr) bool {
-	var prefixes []netip.Prefix
-	if addr.Is4() {
-		prefixes = r.tunOptions.Inet4RouteAddress
-	} else {
-		prefixes = r.tunOptions.Inet6RouteAddress
-	}
-	for _, prefix := range prefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *autoRedirect) matchStaticRouteExcludeAddress(addr netip.Addr) bool {
-	var prefixes []netip.Prefix
-	if addr.Is4() {
-		prefixes = r.tunOptions.Inet4RouteExcludeAddress
-	} else {
-		prefixes = r.tunOptions.Inet6RouteExcludeAddress
-	}
-	for _, prefix := range prefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *autoRedirect) hasDynamicRouteAddressSet() bool {
-	if r.routeAddressSet == nil {
-		return false
-	}
-	sets := *r.routeAddressSet
-	return len(sets) > 0
-}
-
-func (r *autoRedirect) matchDynamicRouteAddressSet(addr netip.Addr) bool {
-	if r.routeAddressSet == nil {
-		return true
-	}
-	for _, set := range *r.routeAddressSet {
-		if set.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *autoRedirect) matchDynamicRouteExcludeAddressSet(addr netip.Addr) bool {
-	if r.routeExcludeAddressSet == nil {
-		return false
-	}
-	for _, set := range *r.routeExcludeAddressSet {
-		if set.Contains(addr) {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *autoRedirect) isDisabledFamily(addr netip.Addr) bool {
 	if addr.Is4() {
 		return !r.enableIPv4
@@ -373,6 +302,50 @@ func (r *autoRedirect) dnsServerForFamily(addr netip.Addr) netip.Addr {
 		}
 	}
 	return netip.Addr{}
+}
+
+func (r *autoRedirect) resolveTunInterfaceIndex() (uint32, error) {
+	if r.interfaceFinder != nil {
+		if err := r.interfaceFinder.Update(); err == nil {
+			iface, err := r.interfaceFinder.ByName(r.tunOptions.Name)
+			if err == nil {
+				return uint32(iface.Index), nil
+			}
+		}
+	}
+	iface, err := net.InterfaceByName(r.tunOptions.Name)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(iface.Index), nil
+}
+
+func (r *autoRedirect) routeWouldHitTun(src netip.Addr, dst netip.Addr) bool {
+	if r.tunInterfaceIndex == 0 || !dst.IsValid() {
+		return true
+	}
+
+	var destinationAddress winipcfg.RawSockaddrInet
+	if err := destinationAddress.SetAddr(dst); err != nil {
+		return true
+	}
+
+	var sourceAddress *winipcfg.RawSockaddrInet
+	if src.IsValid() && !src.IsUnspecified() {
+		source := new(winipcfg.RawSockaddrInet)
+		if err := source.SetAddr(src); err == nil {
+			sourceAddress = source
+		}
+	}
+
+	bestRoute, _, err := winipcfg.GetBestRoute2(nil, 0, sourceAddress, &destinationAddress, 0)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("get best route fallback to redirect: ", err)
+		}
+		return true
+	}
+	return bestRoute.InterfaceIndex == r.tunInterfaceIndex
 }
 
 func pendingConnSrc(conn *winredirect.PendingConn) M.Socksaddr {
