@@ -4,17 +4,20 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	tun "github.com/sagernet/sing-tun"
+	"github.com/sagernet/sing-tun/internal/winipcfg"
+	"github.com/sagernet/sing/common/control"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -22,6 +25,9 @@ import (
 const (
 	autoClientModeArg = "client"
 	autoTestTarget    = "198.18.0.1:65000"
+	autoTestRoute     = "198.18.0.0/15"
+	autoTestPrefix    = "198.18.0.2/30"
+	autoTestMTU       = 1500
 )
 
 type redirectEvent struct {
@@ -99,7 +105,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == autoClientModeArg {
 		err = runClient(autoTestTarget)
 	} else {
-		err = runAutoRedirect()
+		err = runAutoRedirect(parseConfig(os.Args[1:]))
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -107,19 +113,82 @@ func main() {
 	}
 }
 
-func runAutoRedirect() error {
-	iterations := envInt("WINREDIRECT_ITERATIONS", 3)
-	concurrency := envInt("WINREDIRECT_CONCURRENCY", 3)
+type testConfig struct {
+	iterations  int
+	concurrency int
+}
+
+func parseConfig(args []string) testConfig {
+	fs := flag.NewFlagSet("test_auto_redirect", flag.ExitOnError)
+	cfg := testConfig{}
+	fs.IntVar(&cfg.iterations, "iterations", 3, "number of test rounds")
+	fs.IntVar(&cfg.concurrency, "concurrency", 3, "number of child clients per round")
+	_ = fs.Parse(args)
+	if cfg.iterations <= 0 {
+		cfg.iterations = 3
+	}
+	if cfg.concurrency <= 0 {
+		cfg.concurrency = 3
+	}
+	return cfg
+}
+
+func runAutoRedirect(cfg testConfig) error {
+	log := logger.NOP()
+	interfaceFinder := control.NewDefaultInterfaceFinder()
+	networkMonitor, err := tun.NewNetworkUpdateMonitor(log)
+	if err != nil {
+		return fmt.Errorf("create network monitor: %w", err)
+	}
+	defer networkMonitor.Close()
+	if err = networkMonitor.Start(); err != nil {
+		return fmt.Errorf("start network monitor: %w", err)
+	}
+
+	interfaceMonitor, err := tun.NewDefaultInterfaceMonitor(networkMonitor, log, tun.DefaultInterfaceMonitorOptions{
+		InterfaceFinder: interfaceFinder,
+	})
+	if err != nil {
+		return fmt.Errorf("create interface monitor: %w", err)
+	}
+	defer interfaceMonitor.Close()
+	if err = interfaceMonitor.Start(); err != nil {
+		return fmt.Errorf("start interface monitor: %w", err)
+	}
 
 	options := tun.Options{
-		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.2/30")},
+		Name:              tun.CalculateInterfaceName("singtun-test"),
+		MTU:               autoTestMTU,
+		AutoRoute:         true,
+		Inet4Address:      []netip.Prefix{netip.MustParsePrefix(autoTestPrefix)},
+		Inet4RouteAddress: []netip.Prefix{netip.MustParsePrefix(autoTestRoute)},
+		InterfaceFinder:   interfaceFinder,
+		InterfaceMonitor:  interfaceMonitor,
+		Logger:            log,
 	}
-	handler := newTestHandler(iterations*concurrency + 8)
+
+	tunDevice, err := tun.New(options)
+	if err != nil {
+		return fmt.Errorf("create tun: %w", err)
+	}
+	defer tunDevice.Close()
+	if err = tunDevice.Start(); err != nil {
+		return fmt.Errorf("start tun: %w", err)
+	}
+
+	if err = ensureBestRoute(options.Name, netip.MustParseAddr("198.18.0.1")); err != nil {
+		return fmt.Errorf("verify best route: %w", err)
+	}
+
+	handler := newTestHandler(cfg.iterations*cfg.concurrency + 8)
 
 	redirect, err := tun.NewAutoRedirect(tun.AutoRedirectOptions{
-		TunOptions: &options,
-		Context:    context.Background(),
-		Handler:    handler,
+		TunOptions:      &options,
+		Context:         context.Background(),
+		Handler:         handler,
+		Logger:          log,
+		NetworkMonitor:  networkMonitor,
+		InterfaceFinder: interfaceFinder,
 	})
 	if err != nil {
 		return fmt.Errorf("new auto redirect: %w", err)
@@ -131,17 +200,17 @@ func runAutoRedirect() error {
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	fmt.Printf("[1] AutoRedirect started iterations=%d concurrency=%d\n", iterations, concurrency)
+	fmt.Printf("[1] AutoRedirect started interface=%s iterations=%d concurrency=%d\n", options.Name, cfg.iterations, cfg.concurrency)
 
-	for iteration := 1; iteration <= iterations; iteration++ {
+	for iteration := 1; iteration <= cfg.iterations; iteration++ {
 		fmt.Printf("[2.%d] Self-dialing %s (should bypass) ...\n", iteration, autoTestTarget)
 		if err = expectBypass(autoTestTarget); err != nil {
 			return fmt.Errorf("iteration %d self bypass check failed: %w", iteration, err)
 		}
 		fmt.Printf("[2.%d] Bypass confirmed\n", iteration)
 
-		fmt.Printf("[3.%d] Launching %d child clients ...\n", iteration, concurrency)
-		outputs, err := runExternalClients(concurrency)
+		fmt.Printf("[3.%d] Launching %d child clients ...\n", iteration, cfg.concurrency)
+		outputs, err := runExternalClients(cfg.concurrency)
 		if err != nil {
 			return fmt.Errorf("iteration %d child clients failed: %w\n%s", iteration, err, strings.Join(outputs, "\n"))
 		}
@@ -152,12 +221,35 @@ func runAutoRedirect() error {
 			}
 		}
 
-		if err = handler.expectRedirectEvents(concurrency, 5*time.Second); err != nil {
+		if err = handler.expectRedirectEvents(cfg.concurrency, 5*time.Second); err != nil {
 			return fmt.Errorf("iteration %d redirect validation failed: %w", iteration, err)
 		}
 		fmt.Printf("[3.%d] Redirect confirmed\n", iteration)
 	}
 
+	return nil
+}
+
+func ensureBestRoute(interfaceName string, destination netip.Addr) error {
+	iface, err := net.InterfaceByName(interfaceName)
+	if err != nil {
+		return err
+	}
+	luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
+	if err != nil {
+		return err
+	}
+	var destinationAddress winipcfg.RawSockaddrInet
+	if err = destinationAddress.SetAddr(destination); err != nil {
+		return err
+	}
+	bestRoute, _, err := winipcfg.GetBestRoute2(nil, 0, nil, &destinationAddress, 0)
+	if err != nil {
+		return err
+	}
+	if bestRoute.InterfaceLUID != luid {
+		return fmt.Errorf("destination %s routed via %v, want %v", destination, bestRoute.InterfaceLUID, luid)
+	}
 	return nil
 }
 
@@ -248,18 +340,6 @@ func (h *testHandler) expectRedirectEvents(expected int, timeout time.Duration) 
 		}
 	}
 	return nil
-}
-
-func envInt(key string, defaultValue int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return defaultValue
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return defaultValue
-	}
-	return parsed
 }
 
 var _ tun.Handler = (*testHandler)(nil)
