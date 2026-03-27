@@ -25,6 +25,12 @@ type redirectServer struct {
 	inShutdown atomic.Bool
 }
 
+func (s *redirectServer) logError(args ...any) {
+	if s.logger != nil {
+		s.logger.Error(args...)
+	}
+}
+
 func newRedirectServerWindows(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
 	return &redirectServer{
 		ctx:        ctx,
@@ -62,14 +68,14 @@ func (s *redirectServer) loopIn() {
 			var netError net.Error
 			//nolint:staticcheck
 			if errors.As(err, &netError) && netError.Temporary() {
-				s.logger.Error(err)
+				s.logError(err)
 				continue
 			}
 			if s.inShutdown.Load() && E.IsClosed(err) {
 				return
 			}
 			s.listener.Close()
-			s.logger.Error("serve error: ", err)
+			s.logError("serve error: ", err)
 			return
 		}
 		source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
@@ -77,7 +83,7 @@ func (s *redirectServer) loopIn() {
 		if !ok {
 			_ = conn.SetLinger(0)
 			_ = conn.Close()
-			s.logger.Error("process redirect connection from ", source, ": no metadata")
+			s.logError("process redirect connection from ", source, ": no metadata")
 			continue
 		}
 		destination := entry.Destination
@@ -152,6 +158,24 @@ func (t *connMetadataTable) Lookup(src M.Socksaddr) (*connEntry, bool) {
 	entry, ok := t.entries[key]
 	if ok {
 		delete(t.entries, key)
+		return entry, true
+	}
+
+	// ALE_CONNECT_REDIRECT may report an unspecified local source address
+	// (0.0.0.0/::) before connect completes, while the accepted redirected
+	// connection later appears as loopback with the same source port.
+	if src.Addr.IsLoopback() {
+		var fallbackAddr netip.Addr
+		if src.Addr.Is4() {
+			fallbackAddr = netip.IPv4Unspecified()
+		} else {
+			fallbackAddr = netip.IPv6Unspecified()
+		}
+		fallbackKey := connKey{Addr: fallbackAddr, Port: src.Port}
+		entry, ok = t.entries[fallbackKey]
+		if ok {
+			delete(t.entries, fallbackKey)
+		}
 	}
 	return entry, ok
 }

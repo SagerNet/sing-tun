@@ -20,6 +20,141 @@ DEFINE_GUID(WINREDIRECT_CALLOUT_V6_KEY,
 
 static PDRIVER_CONTEXT g_Ctx = NULL;
 
+static void PermitClassify(_Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
+{
+    classifyOut->actionType = FWP_ACTION_PERMIT;
+    classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+}
+
+static BOOLEAN IsLoopbackAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8* Address)
+{
+    if (AddressFamily == AF_INET) {
+        return Address[0] == 127;
+    }
+
+    if (AddressFamily == AF_INET6) {
+        for (UINT32 i = 0; i < 15; i++) {
+            if (Address[i] != 0) {
+                return FALSE;
+            }
+        }
+        return Address[15] == 1;
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN IsAnyAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8* Address)
+{
+    if (AddressFamily == AF_INET) {
+        return Address[0] == 0 && Address[1] == 0 && Address[2] == 0 && Address[3] == 0;
+    }
+
+    if (AddressFamily == AF_INET6) {
+        for (UINT32 i = 0; i < 16; i++) {
+            if (Address[i] != 0) {
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+typedef struct _LOCAL_REDIRECT_CONTEXT {
+    SOCKADDR_STORAGE OriginalRemoteAddressAndPort;
+    UINT32 ProcessId;
+} LOCAL_REDIRECT_CONTEXT, *PLOCAL_REDIRECT_CONTEXT;
+
+static WINREDIRECT_CONFIG ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
+{
+    WINREDIRECT_CONFIG config;
+    KIRQL oldIrql;
+
+    RtlZeroMemory(&config, sizeof(config));
+    KeAcquireSpinLock(&Ctx->ConfigLock, &oldIrql);
+    config = Ctx->Config;
+    KeReleaseSpinLock(&Ctx->ConfigLock, oldIrql);
+
+    return config;
+}
+
+static void CancelPendingIoctlRequests(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
+{
+    WDFREQUEST request;
+
+    while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(Ctx->PendingIoctlQueue, &request))) {
+        WdfRequestComplete(request, Status);
+    }
+}
+
+static PPENDING_ENTRY PendingReserveNextUndelivered(_In_ PDRIVER_CONTEXT Ctx)
+{
+    PPENDING_ENTRY found = NULL;
+    KIRQL oldIrql;
+
+    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
+    PLIST_ENTRY entry = Ctx->PendingList.Flink;
+    while (entry != &Ctx->PendingList) {
+        PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
+        if (!pending->Delivered) {
+            pending->Delivered = TRUE;
+            found = pending;
+            break;
+        }
+        entry = entry->Flink;
+    }
+    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
+
+    return found;
+}
+
+static void PendingSetDelivered(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ BOOLEAN Delivered)
+{
+    KIRQL oldIrql;
+
+    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
+    Entry->Delivered = Delivered;
+    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
+}
+
+static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
+{
+    for (;;) {
+        PPENDING_ENTRY pending = PendingReserveNextUndelivered(Ctx);
+        if (!pending) {
+            break;
+        }
+
+        WDFREQUEST request;
+        NTSTATUS status = WdfIoQueueRetrieveNextRequest(Ctx->PendingIoctlQueue, &request);
+        if (!NT_SUCCESS(status)) {
+            PendingSetDelivered(Ctx, pending, FALSE);
+            break;
+        }
+
+        PVOID outBuf;
+        status = WdfRequestRetrieveOutputBuffer(request, sizeof(WINREDIRECT_PENDING_CONN), &outBuf, NULL);
+        if (!NT_SUCCESS(status)) {
+            PendingSetDelivered(Ctx, pending, FALSE);
+            WdfRequestComplete(request, status);
+            continue;
+        }
+
+        WINREDIRECT_PENDING_CONN* out = (WINREDIRECT_PENDING_CONN*)outBuf;
+        RtlZeroMemory(out, sizeof(*out));
+        out->ConnID = pending->ConnID;
+        out->AddressFamily = pending->AddressFamily;
+        RtlCopyMemory(out->SrcAddr, pending->SrcAddr, 16);
+        out->SrcPort = pending->SrcPort;
+        RtlCopyMemory(out->DstAddr, pending->DstAddr, 16);
+        out->DstPort = pending->DstPort;
+        out->ProcessID = pending->ProcessID;
+        WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(WINREDIRECT_PENDING_CONN));
+    }
+}
+
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 {
     NTSTATUS status;
@@ -61,8 +196,8 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     RtlZeroMemory(ctx, sizeof(DRIVER_CONTEXT));
     ctx->Device = device;
     InitializeListHead(&ctx->PendingList);
-    ExInitializeFastMutex(&ctx->PendingLock);
-    ExInitializeFastMutex(&ctx->ConfigLock);
+    KeInitializeSpinLock(&ctx->PendingLock);
+    KeInitializeSpinLock(&ctx->ConfigLock);
     g_Ctx = ctx;
 
     // Create manual-dispatch queue for pending IOCTLs
@@ -97,6 +232,14 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     status = WdfWorkItemCreate(&workItemConfig, &workItemAttrs, &ctx->TimeoutWorkItem);
     if (!NT_SUCCESS(status)) return status;
 
+    WDF_WORKITEM_CONFIG pendingDeliveryConfig;
+    WDF_WORKITEM_CONFIG_INIT(&pendingDeliveryConfig, EvtPendingDeliveryWorkItem);
+    WDF_OBJECT_ATTRIBUTES pendingDeliveryAttrs;
+    WDF_OBJECT_ATTRIBUTES_INIT(&pendingDeliveryAttrs);
+    pendingDeliveryAttrs.ParentObject = device;
+    status = WdfWorkItemCreate(&pendingDeliveryConfig, &pendingDeliveryAttrs, &ctx->PendingDeliveryWorkItem);
+    if (!NT_SUCCESS(status)) return status;
+
     WdfControlFinishInitializing(device);
     return STATUS_SUCCESS;
 }
@@ -106,7 +249,9 @@ void EvtDriverUnload(_In_ WDFDRIVER Driver)
     UNREFERENCED_PARAMETER(Driver);
     if (g_Ctx) {
         WfpCleanup(g_Ctx);
+        WdfWorkItemFlush(g_Ctx->PendingDeliveryWorkItem);
         PendingFlushAll(g_Ctx);
+        CancelPendingIoctlRequests(g_Ctx, STATUS_CANCELLED);
     }
 }
 
@@ -127,9 +272,10 @@ void EvtIoDeviceControl(
     case IOCTL_WINREDIRECT_SET_CONFIG:
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_CONFIG), &inBuf, &inLen);
         if (NT_SUCCESS(status)) {
-            ExAcquireFastMutex(&ctx->ConfigLock);
+            KIRQL oldIrql;
+            KeAcquireSpinLock(&ctx->ConfigLock, &oldIrql);
             RtlCopyMemory(&ctx->Config, inBuf, sizeof(WINREDIRECT_CONFIG));
-            ExReleaseFastMutex(&ctx->ConfigLock);
+            KeReleaseSpinLock(&ctx->ConfigLock, oldIrql);
         }
         WdfRequestComplete(Request, status);
         break;
@@ -153,7 +299,9 @@ void EvtIoDeviceControl(
             WdfTimerStop(ctx->TimeoutTimer, TRUE);
             WdfWorkItemFlush(ctx->TimeoutWorkItem);
             WfpCleanup(ctx);
+            WdfWorkItemFlush(ctx->PendingDeliveryWorkItem);
             PendingFlushAll(ctx);
+            CancelPendingIoctlRequests(ctx, STATUS_CANCELLED);
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         break;
@@ -163,6 +311,8 @@ void EvtIoDeviceControl(
         status = WdfRequestForwardToIoQueue(Request, ctx->PendingIoctlQueue);
         if (!NT_SUCCESS(status)) {
             WdfRequestComplete(Request, status);
+        } else {
+            WdfWorkItemEnqueue(ctx->PendingDeliveryWorkItem);
         }
         break;
 
@@ -208,26 +358,42 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
 
     LARGE_INTEGER now;
     KeQuerySystemTime(&now);
-    ExAcquireFastMutex(&g_Ctx->PendingLock);
+    for (;;) {
+        KIRQL oldIrql;
+        PPENDING_ENTRY expired = NULL;
 
-    PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
-    while (entry != &g_Ctx->PendingList) {
-        PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-        entry = entry->Flink;
+        KeAcquireSpinLock(&g_Ctx->PendingLock, &oldIrql);
 
-        // Auto-bypass entries older than 5 seconds
-        LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL; // to seconds
-        if (elapsed >= 5) {
-            RemoveEntryList(&pending->ListEntry);
-            ExReleaseFastMutex(&g_Ctx->PendingLock);
-            ExecuteVerdict(g_Ctx, pending, VERDICT_BYPASS);
-            ExFreePoolWithTag(pending, 'rniW');
-            ExAcquireFastMutex(&g_Ctx->PendingLock);
-            entry = g_Ctx->PendingList.Flink;
+        PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
+        while (entry != &g_Ctx->PendingList) {
+            PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
+            entry = entry->Flink;
+
+            // Auto-bypass entries older than 5 seconds
+            LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL; // to seconds
+            if (elapsed >= 5) {
+                RemoveEntryList(&pending->ListEntry);
+                expired = pending;
+                break;
+            }
         }
-    }
 
-    ExReleaseFastMutex(&g_Ctx->PendingLock);
+        KeReleaseSpinLock(&g_Ctx->PendingLock, oldIrql);
+
+        if (!expired) {
+            break;
+        }
+
+        ExecuteVerdict(g_Ctx, expired, VERDICT_BYPASS);
+        ExFreePoolWithTag(expired, 'rniW');
+    }
+}
+
+void EvtPendingDeliveryWorkItem(_In_ WDFWORKITEM WorkItem)
+{
+    UNREFERENCED_PARAMETER(WorkItem);
+    if (!g_Ctx || !g_Ctx->Running) return;
+    TryCompletePendingRequests(g_Ctx);
 }
 
 // --- WFP Setup ---
@@ -373,7 +539,7 @@ static void ClassifyFnCommon(
 {
     PDRIVER_CONTEXT ctx = g_Ctx;
     if (!ctx || !ctx->Running) {
-        classifyOut->actionType = FWP_ACTION_PERMIT;
+        PermitClassify(classifyOut);
         return;
     }
 
@@ -382,10 +548,37 @@ static void ClassifyFnCommon(
         return;
     }
 
+    WINREDIRECT_CONFIG config = ReadConfigSnapshot(ctx);
+
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+    if (ctx->RedirectHandle &&
+        FWPS_IS_METADATA_FIELD_PRESENT(inMetaValues, FWPS_METADATA_FIELD_REDIRECT_RECORD_HANDLE)) {
+        FWPS_CONNECTION_REDIRECT_STATE redirectState =
+            FwpsQueryConnectionRedirectState0(inMetaValues->redirectRecords, ctx->RedirectHandle, NULL);
+        switch (redirectState) {
+        case FWPS_CONNECTION_REDIRECTED_BY_SELF:
+        case FWPS_CONNECTION_PREVIOUSLY_REDIRECTED_BY_SELF:
+            PermitClassify(classifyOut);
+            return;
+        case FWPS_CONNECTION_NOT_REDIRECTED:
+        case FWPS_CONNECTION_REDIRECTED_BY_OTHER:
+        default:
+            break;
+        }
+    }
+#endif
+
+    if (config.ProxyPID != 0 &&
+        FWPS_IS_METADATA_FIELD_PRESENT(inMetaValues, FWPS_METADATA_FIELD_PROCESS_ID) &&
+        (UINT32)inMetaValues->processId == config.ProxyPID) {
+        PermitClassify(classifyOut);
+        return;
+    }
+
     // Allocate pending entry
     PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
-        classifyOut->actionType = FWP_ACTION_PERMIT;
+        PermitClassify(classifyOut);
         return;
     }
 
@@ -393,6 +586,7 @@ static void ClassifyFnCommon(
     entry->ConnID = InterlockedIncrement64(&ctx->NextConnID);
     entry->AddressFamily = addressFamily;
     entry->FilterId = filter->filterId;
+    entry->ClassifyOut = *classifyOut;
 
     // Extract addresses with NULL checks for IPv6 pointers
     if (addressFamily == AF_INET) {
@@ -412,61 +606,70 @@ static void ClassifyFnCommon(
         } else {
             // No destination address available — cannot redirect, bail out
             ExFreePoolWithTag(entry, 'rniW');
-            classifyOut->actionType = FWP_ACTION_PERMIT;
+            PermitClassify(classifyOut);
             return;
         }
     }
     entry->SrcPort = inFixedValues->incomingValue[localPortIdx].value.uint16;
     entry->DstPort = inFixedValues->incomingValue[remotePortIdx].value.uint16;
 
+    if (IsLoopbackAddress(addressFamily, entry->DstAddr)) {
+        ExFreePoolWithTag(entry, 'rniW');
+        PermitClassify(classifyOut);
+        return;
+    }
+
     // Extract PID from metadata
     if (FWPS_IS_METADATA_FIELD_PRESENT(inMetaValues, FWPS_METADATA_FIELD_PROCESS_ID)) {
         entry->ProcessID = (UINT32)inMetaValues->processId;
     }
 
+    if (!classifyContext) {
+        ExFreePoolWithTag(entry, 'rniW');
+        PermitClassify(classifyOut);
+        return;
+    }
+
     // Pend the classify
     UINT64 classifyHandle;
-    NTSTATUS status = FwpsAcquireClassifyHandle0(classifyOut, 0, &classifyHandle);
+    NTSTATUS status = FwpsAcquireClassifyHandle0((void*)classifyContext, 0, &classifyHandle);
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(entry, 'rniW');
-        classifyOut->actionType = FWP_ACTION_PERMIT;
+        PermitClassify(classifyOut);
         return;
     }
 
     entry->ClassifyHandle = classifyHandle;
+    entry->ClassifyOut = *classifyOut;
 
-    status = FwpsPendClassify0(classifyHandle, filter->filterId, 0, classifyOut);
-    if (!NT_SUCCESS(status)) {
+    status = FwpsAcquireWritableLayerDataPointer0(
+        classifyHandle, filter->filterId, 0,
+        &entry->WritableLayerData, classifyOut);
+    if (!NT_SUCCESS(status) || !entry->WritableLayerData) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        classifyOut->actionType = FWP_ACTION_PERMIT;
+        PermitClassify(classifyOut);
         return;
     }
 
+    status = FwpsPendClassify0(classifyHandle, filter->filterId, 0, classifyOut);
+    if (!NT_SUCCESS(status)) {
+        FwpsApplyModifiedLayerData0(
+            classifyHandle,
+            entry->WritableLayerData,
+            FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
+        FwpsReleaseClassifyHandle0(classifyHandle);
+        ExFreePoolWithTag(entry, 'rniW');
+        PermitClassify(classifyOut);
+        return;
+    }
+
+    classifyOut->actionType = FWP_ACTION_BLOCK;
+    classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+
     KeQuerySystemTime(&entry->Timestamp);
     PendingInsert(ctx, entry);
-
-    // Try to complete a waiting IOCTL_GET_PENDING
-    WDFREQUEST request;
-    status = WdfIoQueueRetrieveNextRequest(ctx->PendingIoctlQueue, &request);
-    if (NT_SUCCESS(status)) {
-        PVOID outBuf;
-        status = WdfRequestRetrieveOutputBuffer(request, sizeof(WINREDIRECT_PENDING_CONN), &outBuf, NULL);
-        if (NT_SUCCESS(status)) {
-            WINREDIRECT_PENDING_CONN* out = (WINREDIRECT_PENDING_CONN*)outBuf;
-            RtlZeroMemory(out, sizeof(*out));
-            out->ConnID = entry->ConnID;
-            out->AddressFamily = entry->AddressFamily;
-            RtlCopyMemory(out->SrcAddr, entry->SrcAddr, 16);
-            out->SrcPort = entry->SrcPort;
-            RtlCopyMemory(out->DstAddr, entry->DstAddr, 16);
-            out->DstPort = entry->DstPort;
-            out->ProcessID = entry->ProcessID;
-            WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(WINREDIRECT_PENDING_CONN));
-        } else {
-            WdfRequestComplete(request, status);
-        }
-    }
+    WdfWorkItemEnqueue(ctx->PendingDeliveryWorkItem);
 }
 
 void NTAPI ClassifyFnV4(
@@ -513,15 +716,17 @@ PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx)
 
 void PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
 {
-    ExAcquireFastMutex(&Ctx->PendingLock);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
     InsertTailList(&Ctx->PendingList, &Entry->ListEntry);
-    ExReleaseFastMutex(&Ctx->PendingLock);
+    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
 PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID)
 {
     PPENDING_ENTRY found = NULL;
-    ExAcquireFastMutex(&Ctx->PendingLock);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
     PLIST_ENTRY entry = Ctx->PendingList.Flink;
     while (entry != &Ctx->PendingList) {
         PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
@@ -532,77 +737,103 @@ PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID)
         }
         entry = entry->Flink;
     }
-    ExReleaseFastMutex(&Ctx->PendingLock);
+    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
     return found;
 }
 
 void PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
 {
-    ExAcquireFastMutex(&Ctx->PendingLock);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
     RemoveEntryList(&Entry->ListEntry);
-    ExReleaseFastMutex(&Ctx->PendingLock);
+    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
 void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx)
 {
-    ExAcquireFastMutex(&Ctx->PendingLock);
-    while (!IsListEmpty(&Ctx->PendingList)) {
-        PLIST_ENTRY entry = RemoveHeadList(&Ctx->PendingList);
-        PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-        ExReleaseFastMutex(&Ctx->PendingLock);
+    for (;;) {
+        KIRQL oldIrql;
+        PPENDING_ENTRY pending = NULL;
+
+        KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
+        if (!IsListEmpty(&Ctx->PendingList)) {
+            PLIST_ENTRY entry = RemoveHeadList(&Ctx->PendingList);
+            pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
+        }
+        KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
+
+        if (!pending) {
+            break;
+        }
+
         ExecuteVerdict(Ctx, pending, VERDICT_BYPASS);
         ExFreePoolWithTag(pending, 'rniW');
-        ExAcquireFastMutex(&Ctx->PendingLock);
     }
-    ExReleaseFastMutex(&Ctx->PendingLock);
 }
 
 // --- Verdict execution ---
 
 void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UINT32 Verdict)
 {
-    FWPS_CLASSIFY_OUT0 classifyOut = { 0 };
-    classifyOut.rights = FWPS_RIGHT_ACTION_WRITE;
+    FWPS_CLASSIFY_OUT0 classifyOut = Entry->ClassifyOut;
+    FWPS_CONNECT_REQUEST0* connReq = (FWPS_CONNECT_REQUEST0*)Entry->WritableLayerData;
 
     if (Verdict == VERDICT_REDIRECT) {
-        FWPS_CONNECT_REQUEST0* connReq = NULL;
-        NTSTATUS status = FwpsAcquireWritableLayerDataPointer0(
-            Entry->ClassifyHandle, Entry->FilterId, 0,
-            (PVOID*)&connReq, &classifyOut);
-
-        if (!NT_SUCCESS(status) || !connReq) {
-            // Failed to acquire writable data — fall back to bypass
+        WINREDIRECT_CONFIG config = ReadConfigSnapshot(Ctx);
+        if (!connReq ||
+            config.RedirectPort == 0 || config.ProxyPID == 0 || Ctx->RedirectHandle == NULL) {
             Verdict = VERDICT_BYPASS;
-            goto complete;
-        }
-
-        if (TRUE) {
-            ExAcquireFastMutex(&Ctx->ConfigLock);
-            WINREDIRECT_CONFIG config = Ctx->Config;
-            ExReleaseFastMutex(&Ctx->ConfigLock);
-
-            if (Entry->AddressFamily == AF_INET) {
-                SOCKADDR_IN* addr = (SOCKADDR_IN*)&connReq->remoteAddressAndPort;
-                addr->sin_family = AF_INET;
-                addr->sin_addr.s_addr = RtlUlongByteSwap(0x7F000001); // 127.0.0.1
-                addr->sin_port = RtlUshortByteSwap(config.RedirectPort);
+        } else {
+            SOCKADDR_STORAGE* redirectContext =
+                (SOCKADDR_STORAGE*)ExAllocatePoolWithTag(NonPagedPool, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
+            if (!redirectContext) {
+                Verdict = VERDICT_BYPASS;
             } else {
-                SOCKADDR_IN6* addr = (SOCKADDR_IN6*)&connReq->remoteAddressAndPort;
-                RtlZeroMemory(addr, sizeof(SOCKADDR_IN6));
-                addr->sin6_family = AF_INET6;
-                addr->sin6_addr.u.Byte[15] = 1; // ::1
-                addr->sin6_port = RtlUshortByteSwap(config.RedirectPort);
+                RtlZeroMemory(redirectContext, sizeof(SOCKADDR_STORAGE) * 2);
+                RtlCopyMemory(&redirectContext[0], &connReq->remoteAddressAndPort, sizeof(SOCKADDR_STORAGE));
+                RtlCopyMemory(&redirectContext[1], &connReq->localAddressAndPort, sizeof(SOCKADDR_STORAGE));
+
+                connReq->localRedirectHandle = Ctx->RedirectHandle;
+                connReq->localRedirectTargetPID = config.ProxyPID;
+                connReq->localRedirectContext = redirectContext;
+                connReq->localRedirectContextSize = sizeof(SOCKADDR_STORAGE) * 2;
+
+                if (Entry->AddressFamily == AF_INET) {
+                    SOCKADDR_IN* localAddr = (SOCKADDR_IN*)&connReq->localAddressAndPort;
+                    SOCKADDR_IN* addr = (SOCKADDR_IN*)&connReq->remoteAddressAndPort;
+                    addr->sin_family = AF_INET;
+                    if (localAddr->sin_addr.s_addr == 0) {
+                        addr->sin_addr.s_addr = RtlUlongByteSwap(0x7F000001); // 127.0.0.1
+                    } else {
+                        addr->sin_addr = localAddr->sin_addr;
+                    }
+                    addr->sin_port = RtlUshortByteSwap(config.RedirectPort);
+                } else {
+                    SOCKADDR_IN6* localAddr = (SOCKADDR_IN6*)&connReq->localAddressAndPort;
+                    SOCKADDR_IN6* addr = (SOCKADDR_IN6*)&connReq->remoteAddressAndPort;
+                    if (IsAnyAddress(AF_INET6, localAddr->sin6_addr.u.Byte)) {
+                        RtlZeroMemory(addr, sizeof(SOCKADDR_IN6));
+                        addr->sin6_family = AF_INET6;
+                        addr->sin6_addr.u.Byte[15] = 1; // ::1
+                    } else {
+                        *addr = *localAddr;
+                        addr->sin6_family = AF_INET6;
+                    }
+                    addr->sin6_port = RtlUshortByteSwap(config.RedirectPort);
+                }
             }
-            connReq->localRedirectTargetPID = config.ProxyPID;
-            connReq->localRedirectHandle = Ctx->RedirectHandle;
-
-            FwpsApplyModifiedLayerData0(Entry->ClassifyHandle, connReq, 0);
         }
+    }
 
-        classifyOut.actionType = FWP_ACTION_PERMIT;
-        classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
-    } else if (Verdict == VERDICT_BYPASS) {
-complete:
+    if (Entry->WritableLayerData) {
+        FwpsApplyModifiedLayerData0(
+            Entry->ClassifyHandle,
+            Entry->WritableLayerData,
+            FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
+        Entry->WritableLayerData = NULL;
+    }
+
+    if (Verdict == VERDICT_REDIRECT || Verdict == VERDICT_BYPASS) {
         classifyOut.actionType = FWP_ACTION_PERMIT;
         classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
     } else { // VERDICT_DROP

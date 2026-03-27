@@ -169,6 +169,11 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 	dst := pendingConnDst(conn)
 	src := pendingConnSrc(conn)
 
+	// Proxy process outbound connections must never be redirected back into itself.
+	if conn.ProcessID == uint32(os.Getpid()) {
+		return winredirect.VerdictBypass
+	}
+
 	// 1. Loopback destinations
 	if dst.Addr.IsLoopback() {
 		return winredirect.VerdictBypass

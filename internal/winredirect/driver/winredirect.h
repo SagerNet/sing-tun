@@ -61,6 +61,9 @@ typedef struct _PENDING_ENTRY {
     UINT64      ConnID;
     UINT64      ClassifyHandle;
     UINT64      FilterId;
+    FWPS_CLASSIFY_OUT0 ClassifyOut;
+    PVOID       WritableLayerData;
+    BOOLEAN     Delivered;
     UINT8       AddressFamily;
     UINT8       SrcAddr[16];
     UINT16      SrcPort;
@@ -84,18 +87,19 @@ typedef struct _DRIVER_CONTEXT {
     HANDLE                 RedirectHandle;
 
     // Configuration (protected by ConfigLock)
-    FAST_MUTEX             ConfigLock;
+    KSPIN_LOCK             ConfigLock;
     WINREDIRECT_CONFIG     Config;
     volatile LONG          Running;
 
     // Pending connections (protected by PendingLock)
     LIST_ENTRY             PendingList;
-    FAST_MUTEX             PendingLock;
+    KSPIN_LOCK             PendingLock;
     volatile LONG64        NextConnID;
 
     // Timeout timer + work item
     WDFTIMER               TimeoutTimer;
     WDFWORKITEM            TimeoutWorkItem;
+    WDFWORKITEM            PendingDeliveryWorkItem;
 } DRIVER_CONTEXT, *PDRIVER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DRIVER_CONTEXT, GetDriverContext)
@@ -107,6 +111,7 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE EvtIoCanceledOnQueue;
 EVT_WDF_TIMER EvtTimeoutTimer;
 EVT_WDF_WORKITEM EvtTimeoutWorkItem;
+EVT_WDF_WORKITEM EvtPendingDeliveryWorkItem;
 
 // WFP functions
 NTSTATUS WfpSetup(_In_ PDRIVER_CONTEXT Ctx);
