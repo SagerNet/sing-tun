@@ -581,38 +581,31 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
 
     LARGE_INTEGER now;
     KeQuerySystemTime(&now);
-    for (;;) {
-        KIRQL oldIrql;
-        PPENDING_ENTRY expired = NULL;
+    BOOLEAN stuck = FALSE;
+    KIRQL oldIrql;
 
-        KeAcquireSpinLock(&g_Ctx->PendingLock, &oldIrql);
+    KeAcquireSpinLock(&g_Ctx->PendingLock, &oldIrql);
 
-        PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
-        while (entry != &g_Ctx->PendingList) {
-            PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-            entry = entry->Flink;
+    PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
+    while (entry != &g_Ctx->PendingList) {
+        PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
+        entry = entry->Flink;
 
-            if (pending->DeliveryState != PendingDeliveryQueued) {
-                continue;
-            }
-
-            // Auto-bypass queued entries older than 5 seconds.
-            LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL; // to seconds
-            if (elapsed >= 5) {
-                RemoveEntryList(&pending->ListEntry);
-                expired = pending;
-                break;
-            }
+        if (pending->DeliveryState == PendingDeliveryCopying) {
+            continue;
         }
 
-        KeReleaseSpinLock(&g_Ctx->PendingLock, oldIrql);
-
-        if (!expired) {
+        LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL;
+        if (elapsed >= 15) {
+            stuck = TRUE;
             break;
         }
+    }
 
-        ExecuteVerdict(g_Ctx, expired, VERDICT_BYPASS);
-        ExFreePoolWithTag(expired, 'rniW');
+    KeReleaseSpinLock(&g_Ctx->PendingLock, oldIrql);
+
+    if (stuck) {
+        TriggerFatal(g_Ctx, STATUS_DRIVER_INTERNAL_ERROR, "pending entry timed out without verdict");
     }
 }
 
