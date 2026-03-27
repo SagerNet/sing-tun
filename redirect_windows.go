@@ -20,6 +20,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/x/list"
 
 	"golang.org/x/sys/windows"
@@ -45,8 +46,6 @@ type autoRedirect struct {
 	localAddressMu sync.RWMutex
 	localAddresses []netip.Prefix
 
-	workerCount int
-
 	closing   atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
@@ -63,7 +62,6 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		errorHandler:    options.ErrorHandler,
 		networkMonitor:  options.NetworkMonitor,
 		interfaceFinder: options.InterfaceFinder,
-		workerCount:     1,
 	}
 	return r, nil
 }
@@ -91,9 +89,7 @@ func (r *autoRedirect) Start() error {
 			r.updateLocalAddresses()
 		})
 	}
-	for i := 0; i < r.workerCount; i++ {
-		go r.preMatchWorker()
-	}
+	go r.dispatchLoop()
 	return nil
 }
 
@@ -173,7 +169,7 @@ func (r *autoRedirect) Close() error {
 func (r *autoRedirect) UpdateRouteAddressSet() {
 }
 
-func (r *autoRedirect) preMatchWorker() {
+func (r *autoRedirect) dispatchLoop() {
 	for {
 		conn, err := r.driverManager.GetPendingConn()
 		if err != nil {
@@ -182,16 +178,19 @@ func (r *autoRedirect) preMatchWorker() {
 			}
 			return
 		}
-		verdict := r.evaluateConnection(conn)
-		err = r.driverManager.SetVerdict(&winredirect.Verdict{
-			ConnID:  conn.ConnID,
-			Verdict: verdict,
-		})
-		if err != nil {
-			if !r.closing.Load() {
-				r.handleFatalError(E.Cause(r.enrichDriverError(err), "set redirect verdict"))
-			}
-			return
+		go r.handlePendingConn(conn)
+	}
+}
+
+func (r *autoRedirect) handlePendingConn(conn *winredirect.PendingConn) {
+	verdict := r.evaluateConnection(conn)
+	err := r.driverManager.SetVerdict(&winredirect.Verdict{
+		ConnID:  conn.ConnID,
+		Verdict: verdict,
+	})
+	if err != nil {
+		if !r.closing.Load() {
+			r.handleFatalError(E.Cause(r.enrichDriverError(err), "set redirect verdict"))
 		}
 	}
 }
@@ -205,7 +204,7 @@ func (r *autoRedirect) enrichDriverError(err error) error {
 	if message == "" {
 		return err
 	}
-	return E.Cause(windows.Errno(fatalInfo.Status), message)
+	return E.Cause(err, E.Cause(windows.Errno(fatalInfo.Status), message))
 }
 
 func (r *autoRedirect) handleFatalError(err error) {
@@ -242,6 +241,10 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 			if dnsServer.IsValid() {
 				metadata := r.resolveMetadata(conn)
 				ctx := r.newConnContext(metadata)
+				_, err := r.handler.PrepareConnection(ctx, "tcp", src, dst, nil, 0)
+				if errors.Is(err, ErrDrop) {
+					return winredirect.VerdictDrop
+				}
 				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), ctx)
 				return winredirect.VerdictRedirect
 			}
@@ -255,7 +258,7 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 	metadata := r.resolveMetadata(conn)
 	ctx := r.newConnContext(metadata)
 
-	_, err := r.handler.PrepareConnection(ctx, "tcp", src, dst, nil, 0)
+	_, err := r.handler.PrepareConnection(ctx, N.NetworkTCP, src, dst, nil, 0)
 	if errors.Is(err, ErrDrop) {
 		return winredirect.VerdictDrop
 	}
@@ -266,8 +269,8 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 		// where reset semantics are enforced by the TUN stack.
 		return winredirect.VerdictBypass
 	}
-	if err != nil && !errors.Is(err, ErrBypass) && r.logger != nil {
-		r.logger.Warn("prepare connection fallback to redirect: ", err)
+	if errors.Is(err, ErrBypass) && r.logger != nil {
+		r.logger.Debug("bypass not supported on Windows, redirecting: ", src, " -> ", dst)
 	}
 
 	r.redirectServer.connTable.Store(src, dst, ctx)
@@ -362,8 +365,14 @@ func (r *autoRedirect) dnsServerForFamily(addr netip.Addr) netip.Addr {
 func (r *autoRedirect) resolveTunInterfaceGUID() ([16]byte, error) {
 	var index int
 	if r.interfaceFinder != nil {
-		_ = r.interfaceFinder.Update()
+		err := r.interfaceFinder.Update()
+		if err != nil && r.logger != nil {
+			r.logger.Debug("update interface finder: ", err)
+		}
 		iface, err := r.interfaceFinder.ByName(r.tunOptions.Name)
+		if err != nil && r.logger != nil {
+			r.logger.Debug("interface finder lookup: ", err)
+		}
 		if err == nil {
 			index = iface.Index
 		}
