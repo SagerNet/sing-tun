@@ -377,6 +377,11 @@ static void ClassifyFnCommon(
         return;
     }
 
+    // Must have write rights to modify the classify decision
+    if (!(classifyOut->rights & FWPS_RIGHT_ACTION_WRITE)) {
+        return;
+    }
+
     // Allocate pending entry
     PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
@@ -389,7 +394,7 @@ static void ClassifyFnCommon(
     entry->AddressFamily = addressFamily;
     entry->FilterId = filter->filterId;
 
-    // Extract addresses
+    // Extract addresses with NULL checks for IPv6 pointers
     if (addressFamily == AF_INET) {
         UINT32 srcIp = inFixedValues->incomingValue[localAddrIdx].value.uint32;
         UINT32 dstIp = inFixedValues->incomingValue[remoteAddrIdx].value.uint32;
@@ -397,10 +402,19 @@ static void ClassifyFnCommon(
         *(UINT32*)entry->SrcAddr = RtlUlongByteSwap(srcIp);
         *(UINT32*)entry->DstAddr = RtlUlongByteSwap(dstIp);
     } else {
-        RtlCopyMemory(entry->SrcAddr,
-            inFixedValues->incomingValue[localAddrIdx].value.byteArray16->byteArray16, 16);
-        RtlCopyMemory(entry->DstAddr,
-            inFixedValues->incomingValue[remoteAddrIdx].value.byteArray16->byteArray16, 16);
+        FWP_BYTE_ARRAY16* srcArr = inFixedValues->incomingValue[localAddrIdx].value.byteArray16;
+        FWP_BYTE_ARRAY16* dstArr = inFixedValues->incomingValue[remoteAddrIdx].value.byteArray16;
+        if (srcArr) {
+            RtlCopyMemory(entry->SrcAddr, srcArr->byteArray16, 16);
+        }
+        if (dstArr) {
+            RtlCopyMemory(entry->DstAddr, dstArr->byteArray16, 16);
+        } else {
+            // No destination address available — cannot redirect, bail out
+            ExFreePoolWithTag(entry, 'rniW');
+            classifyOut->actionType = FWP_ACTION_PERMIT;
+            return;
+        }
     }
     entry->SrcPort = inFixedValues->incomingValue[localPortIdx].value.uint16;
     entry->DstPort = inFixedValues->incomingValue[remotePortIdx].value.uint16;
@@ -548,6 +562,7 @@ void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx)
 void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UINT32 Verdict)
 {
     FWPS_CLASSIFY_OUT0 classifyOut = { 0 };
+    classifyOut.rights = FWPS_RIGHT_ACTION_WRITE;
 
     if (Verdict == VERDICT_REDIRECT) {
         FWPS_CONNECT_REQUEST0* connReq = NULL;
@@ -555,7 +570,13 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
             Entry->ClassifyHandle, Entry->FilterId, 0,
             (PVOID*)&connReq, &classifyOut);
 
-        if (NT_SUCCESS(status) && connReq) {
+        if (!NT_SUCCESS(status) || !connReq) {
+            // Failed to acquire writable data — fall back to bypass
+            Verdict = VERDICT_BYPASS;
+            goto complete;
+        }
+
+        if (TRUE) {
             ExAcquireFastMutex(&Ctx->ConfigLock);
             WINREDIRECT_CONFIG config = Ctx->Config;
             ExReleaseFastMutex(&Ctx->ConfigLock);
@@ -581,6 +602,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
         classifyOut.actionType = FWP_ACTION_PERMIT;
         classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
     } else if (Verdict == VERDICT_BYPASS) {
+complete:
         classifyOut.actionType = FWP_ACTION_PERMIT;
         classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
     } else { // VERDICT_DROP
