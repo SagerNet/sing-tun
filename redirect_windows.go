@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
 	"github.com/sagernet/sing-tun/internal/winredirect"
@@ -39,9 +40,8 @@ type autoRedirect struct {
 	enableIPv4 bool
 	enableIPv6 bool
 
-	localAddressMu    sync.RWMutex
-	localAddresses    []netip.Prefix
-	tunInterfaceIndex uint32
+	localAddressMu sync.RWMutex
+	localAddresses []netip.Prefix
 
 	workerCount int
 }
@@ -106,19 +106,18 @@ func (r *autoRedirect) Start() error {
 	}
 	r.redirectServer = server
 
-	tunInterfaceIndex, err := r.resolveTunInterfaceIndex()
+	tunGUID, err := r.resolveTunInterfaceGUID()
 	if err != nil {
 		server.Close()
 		manager.Close()
 		return E.Cause(err, "resolve tun interface")
 	}
-	r.tunInterfaceIndex = tunInterfaceIndex
 
 	redirectPort := M.AddrPortFromNet(server.listener.Addr()).Port()
 	err = manager.SetConfig(&winredirect.Config{
 		RedirectPort: redirectPort,
 		ProxyPID:     uint32(os.Getpid()),
-		TunIndex:     tunInterfaceIndex,
+		TunGUID:      tunGUID,
 	})
 	if err != nil {
 		server.Close()
@@ -188,11 +187,6 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 
 	// 1. Loopback destinations
 	if dst.Addr.IsLoopback() {
-		return winredirect.VerdictBypass
-	}
-
-	// Only intercept connections whose Windows best route resolves to the TUN interface.
-	if !r.routeWouldHitTun(src.Addr, dst.Addr) {
 		return winredirect.VerdictBypass
 	}
 
@@ -304,48 +298,40 @@ func (r *autoRedirect) dnsServerForFamily(addr netip.Addr) netip.Addr {
 	return netip.Addr{}
 }
 
-func (r *autoRedirect) resolveTunInterfaceIndex() (uint32, error) {
+func (r *autoRedirect) resolveTunInterfaceGUID() ([16]byte, error) {
 	if r.interfaceFinder != nil {
 		if err := r.interfaceFinder.Update(); err == nil {
 			iface, err := r.interfaceFinder.ByName(r.tunOptions.Name)
 			if err == nil {
-				return uint32(iface.Index), nil
+				luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
+				if err != nil {
+					return [16]byte{}, err
+				}
+				guid, err := luid.GUID()
+				if err != nil {
+					return [16]byte{}, err
+				}
+				return guidBytes(guid), nil
 			}
 		}
 	}
 	iface, err := net.InterfaceByName(r.tunOptions.Name)
 	if err != nil {
-		return 0, err
+		return [16]byte{}, err
 	}
-	return uint32(iface.Index), nil
+	luid, err := winipcfg.LUIDFromIndex(uint32(iface.Index))
+	if err != nil {
+		return [16]byte{}, err
+	}
+	guid, err := luid.GUID()
+	if err != nil {
+		return [16]byte{}, err
+	}
+	return guidBytes(guid), nil
 }
 
-func (r *autoRedirect) routeWouldHitTun(src netip.Addr, dst netip.Addr) bool {
-	if r.tunInterfaceIndex == 0 || !dst.IsValid() {
-		return true
-	}
-
-	var destinationAddress winipcfg.RawSockaddrInet
-	if err := destinationAddress.SetAddr(dst); err != nil {
-		return true
-	}
-
-	var sourceAddress *winipcfg.RawSockaddrInet
-	if src.IsValid() && !src.IsUnspecified() {
-		source := new(winipcfg.RawSockaddrInet)
-		if err := source.SetAddr(src); err == nil {
-			sourceAddress = source
-		}
-	}
-
-	bestRoute, _, err := winipcfg.GetBestRoute2(nil, 0, sourceAddress, &destinationAddress, 0)
-	if err != nil {
-		if r.logger != nil {
-			r.logger.Warn("get best route fallback to redirect: ", err)
-		}
-		return true
-	}
-	return bestRoute.InterfaceIndex == r.tunInterfaceIndex
+func guidBytes(guid *windows.GUID) [16]byte {
+	return *(*[16]byte)(unsafe.Pointer(guid))
 }
 
 func pendingConnSrc(conn *winredirect.PendingConn) M.Socksaddr {

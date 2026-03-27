@@ -22,7 +22,7 @@ type Config struct {
 	RedirectPort uint16
 	_            [2]byte // padding
 	ProxyPID     uint32
-	TunIndex     uint32
+	TunGUID      [16]byte
 }
 
 // PendingConn is received from the driver via IOCTL_GET_PENDING.

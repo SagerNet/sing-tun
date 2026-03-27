@@ -68,7 +68,32 @@ typedef enum _BEST_ROUTE_RESULT {
     BestRouteOther = 2,
 } BEST_ROUTE_RESULT;
 
-static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const WINREDIRECT_CONFIG* Config, _In_ const PENDING_ENTRY* Entry)
+static BOOLEAN IsZeroGuid(_In_reads_(16) const UINT8* GuidBytes)
+{
+    for (UINT32 i = 0; i < sizeof(GUID); i++) {
+        if (GuidBytes[i] != 0) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static CONFIG_SNAPSHOT ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
+{
+    CONFIG_SNAPSHOT snapshot;
+    KIRQL oldIrql;
+
+    RtlZeroMemory(&snapshot, sizeof(snapshot));
+    KeAcquireSpinLock(&Ctx->ConfigLock, &oldIrql);
+    snapshot.Config = Ctx->Config;
+    snapshot.TunLuid = Ctx->TunLuid;
+    snapshot.HasTunLuid = Ctx->HasTunLuid;
+    KeReleaseSpinLock(&Ctx->ConfigLock, oldIrql);
+
+    return snapshot;
+}
+
+static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const CONFIG_SNAPSHOT* Snapshot, _In_ const PENDING_ENTRY* Entry)
 {
     SOCKADDR_INET sourceAddress;
     SOCKADDR_INET destinationAddress;
@@ -76,7 +101,7 @@ static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const WINREDIRECT_CONFIG* Config
     MIB_IPFORWARD_ROW2 bestRoute;
     NETIO_STATUS status;
 
-    if (Config->TunIndex == 0 || KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+    if (!Snapshot->HasTunLuid || KeGetCurrentIrql() >= DISPATCH_LEVEL) {
         return BestRouteUnknown;
     }
 
@@ -108,7 +133,7 @@ static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const WINREDIRECT_CONFIG* Config
     if (status != NO_ERROR) {
         return BestRouteUnknown;
     }
-    if (bestRoute.InterfaceIndex == Config->TunIndex) {
+    if (RtlEqualMemory(&bestRoute.InterfaceLuid, &Snapshot->TunLuid, sizeof(NET_LUID))) {
         return BestRouteTun;
     }
     return BestRouteOther;
@@ -118,19 +143,6 @@ typedef struct _LOCAL_REDIRECT_CONTEXT {
     SOCKADDR_STORAGE OriginalRemoteAddressAndPort;
     UINT32 ProcessId;
 } LOCAL_REDIRECT_CONTEXT, *PLOCAL_REDIRECT_CONTEXT;
-
-static WINREDIRECT_CONFIG ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
-{
-    WINREDIRECT_CONFIG config;
-    KIRQL oldIrql;
-
-    RtlZeroMemory(&config, sizeof(config));
-    KeAcquireSpinLock(&Ctx->ConfigLock, &oldIrql);
-    config = Ctx->Config;
-    KeReleaseSpinLock(&Ctx->ConfigLock, oldIrql);
-
-    return config;
-}
 
 static void CancelPendingIoctlRequests(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
 {
@@ -324,10 +336,24 @@ void EvtIoDeviceControl(
     case IOCTL_WINREDIRECT_SET_CONFIG:
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_CONFIG), &inBuf, &inLen);
         if (NT_SUCCESS(status)) {
+            WINREDIRECT_CONFIG* config = (WINREDIRECT_CONFIG*)inBuf;
+            GUID tunGuid;
+            NET_LUID tunLuid;
             KIRQL oldIrql;
-            KeAcquireSpinLock(&ctx->ConfigLock, &oldIrql);
-            RtlCopyMemory(&ctx->Config, inBuf, sizeof(WINREDIRECT_CONFIG));
-            KeReleaseSpinLock(&ctx->ConfigLock, oldIrql);
+            if (IsZeroGuid(config->TunGuid)) {
+                status = STATUS_INVALID_PARAMETER;
+            } else {
+                RtlZeroMemory(&tunGuid, sizeof(tunGuid));
+                RtlCopyMemory(&tunGuid, config->TunGuid, sizeof(tunGuid));
+                status = ConvertInterfaceGuidToLuid(&tunGuid, &tunLuid);
+            }
+            if (NT_SUCCESS(status)) {
+                KeAcquireSpinLock(&ctx->ConfigLock, &oldIrql);
+                RtlCopyMemory(&ctx->Config, config, sizeof(WINREDIRECT_CONFIG));
+                ctx->TunLuid = tunLuid;
+                ctx->HasTunLuid = TRUE;
+                KeReleaseSpinLock(&ctx->ConfigLock, oldIrql);
+            }
         }
         WdfRequestComplete(Request, status);
         break;
@@ -600,7 +626,7 @@ static void ClassifyFnCommon(
         return;
     }
 
-    WINREDIRECT_CONFIG config = ReadConfigSnapshot(ctx);
+    CONFIG_SNAPSHOT snapshot = ReadConfigSnapshot(ctx);
 
 #if (NTDDI_VERSION >= NTDDI_WIN8)
     if (ctx->RedirectHandle &&
@@ -620,9 +646,9 @@ static void ClassifyFnCommon(
     }
 #endif
 
-    if (config.ProxyPID != 0 &&
+    if (snapshot.Config.ProxyPID != 0 &&
         FWPS_IS_METADATA_FIELD_PRESENT(inMetaValues, FWPS_METADATA_FIELD_PROCESS_ID) &&
-        (UINT32)inMetaValues->processId == config.ProxyPID) {
+        (UINT32)inMetaValues->processId == snapshot.Config.ProxyPID) {
         PermitClassify(classifyOut);
         return;
     }
@@ -671,7 +697,7 @@ static void ClassifyFnCommon(
         return;
     }
 
-    if (BestRouteForEntry(&config, entry) == BestRouteOther) {
+    if (BestRouteForEntry(&snapshot, entry) == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
         return;
@@ -837,9 +863,9 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
     FWPS_CONNECT_REQUEST0* connReq = (FWPS_CONNECT_REQUEST0*)Entry->WritableLayerData;
 
     if (Verdict == VERDICT_REDIRECT) {
-        WINREDIRECT_CONFIG config = ReadConfigSnapshot(Ctx);
+        CONFIG_SNAPSHOT snapshot = ReadConfigSnapshot(Ctx);
         if (!connReq ||
-            config.RedirectPort == 0 || config.ProxyPID == 0 || Ctx->RedirectHandle == NULL) {
+            snapshot.Config.RedirectPort == 0 || snapshot.Config.ProxyPID == 0 || Ctx->RedirectHandle == NULL) {
             Verdict = VERDICT_BYPASS;
         } else {
             SOCKADDR_STORAGE* redirectContext =
@@ -852,7 +878,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
                 RtlCopyMemory(&redirectContext[1], &connReq->localAddressAndPort, sizeof(SOCKADDR_STORAGE));
 
                 connReq->localRedirectHandle = Ctx->RedirectHandle;
-                connReq->localRedirectTargetPID = config.ProxyPID;
+                connReq->localRedirectTargetPID = snapshot.Config.ProxyPID;
                 connReq->localRedirectContext = redirectContext;
                 connReq->localRedirectContextSize = sizeof(SOCKADDR_STORAGE) * 2;
 
@@ -865,7 +891,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
                     } else {
                         addr->sin_addr = localAddr->sin_addr;
                     }
-                    addr->sin_port = RtlUshortByteSwap(config.RedirectPort);
+                    addr->sin_port = RtlUshortByteSwap(snapshot.Config.RedirectPort);
                 } else {
                     SOCKADDR_IN6* localAddr = (SOCKADDR_IN6*)&connReq->localAddressAndPort;
                     SOCKADDR_IN6* addr = (SOCKADDR_IN6*)&connReq->remoteAddressAndPort;
@@ -877,7 +903,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
                         *addr = *localAddr;
                         addr->sin6_family = AF_INET6;
                     }
-                    addr->sin6_port = RtlUshortByteSwap(config.RedirectPort);
+                    addr->sin6_port = RtlUshortByteSwap(snapshot.Config.RedirectPort);
                 }
             }
         }

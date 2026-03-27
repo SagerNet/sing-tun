@@ -33,8 +33,14 @@ typedef struct _WINREDIRECT_CONFIG {
     UINT16 RedirectPort;
     UINT8  _pad0[2];
     UINT32 ProxyPID;
-    UINT32 TunIndex;
+    UINT8  TunGuid[16];
 } WINREDIRECT_CONFIG;
+
+typedef struct _CONFIG_SNAPSHOT {
+    WINREDIRECT_CONFIG Config;
+    NET_LUID           TunLuid;
+    BOOLEAN            HasTunLuid;
+} CONFIG_SNAPSHOT, *PCONFIG_SNAPSHOT;
 
 typedef struct _WINREDIRECT_PENDING_CONN {
     UINT64 ConnID;
@@ -91,6 +97,8 @@ typedef struct _DRIVER_CONTEXT {
     // Configuration (protected by ConfigLock)
     KSPIN_LOCK             ConfigLock;
     WINREDIRECT_CONFIG     Config;
+    NET_LUID               TunLuid;
+    BOOLEAN                HasTunLuid;
     volatile LONG          Running;
 
     // Pending connections (protected by PendingLock)
