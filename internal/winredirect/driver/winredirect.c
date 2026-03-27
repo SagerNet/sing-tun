@@ -26,6 +26,49 @@ static void PermitClassify(_Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
     classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
 }
 
+static void BlockClassify(_Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
+{
+    classifyOut->actionType = FWP_ACTION_BLOCK;
+    classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+}
+
+static NTSTATUS ReadFatalStatus(_In_ PDRIVER_CONTEXT Ctx)
+{
+    return (NTSTATUS)InterlockedCompareExchange(&Ctx->FatalStatus, STATUS_SUCCESS, STATUS_SUCCESS);
+}
+
+static NTSTATUS NormalizeFatalStatus(_In_ NTSTATUS Status)
+{
+    if (NT_SUCCESS(Status)) {
+        return STATUS_DRIVER_INTERNAL_ERROR;
+    }
+    return Status;
+}
+
+static NTSTATUS TriggerFatal(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
+{
+    NTSTATUS normalized = NormalizeFatalStatus(Status);
+    NTSTATUS previous = (NTSTATUS)InterlockedCompareExchange(&Ctx->FatalStatus, normalized, STATUS_SUCCESS);
+
+    if (previous == STATUS_SUCCESS) {
+        WdfWorkItemEnqueue(Ctx->FatalWorkItem);
+        return normalized;
+    }
+
+    return previous;
+}
+
+static void FailClosedClassify(
+    _In_ PDRIVER_CONTEXT Ctx,
+    _Inout_ FWPS_CLASSIFY_OUT0* classifyOut,
+    _In_ NTSTATUS Status)
+{
+    if (Ctx) {
+        TriggerFatal(Ctx, Status);
+    }
+    BlockClassify(classifyOut);
+}
+
 static BOOLEAN IsLoopbackAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8* Address)
 {
     if (AddressFamily == AF_INET) {
@@ -63,7 +106,6 @@ static BOOLEAN IsAnyAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8
 }
 
 typedef enum _BEST_ROUTE_RESULT {
-    BestRouteUnknown = 0,
     BestRouteTun = 1,
     BestRouteOther = 2,
 } BEST_ROUTE_RESULT;
@@ -93,7 +135,10 @@ static CONFIG_SNAPSHOT ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
     return snapshot;
 }
 
-static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const CONFIG_SNAPSHOT* Snapshot, _In_ const PENDING_ENTRY* Entry)
+static NTSTATUS BestRouteForEntry(
+    _In_ const CONFIG_SNAPSHOT* Snapshot,
+    _In_ const PENDING_ENTRY* Entry,
+    _Out_ BEST_ROUTE_RESULT* Result)
 {
     SOCKADDR_INET sourceAddress;
     SOCKADDR_INET destinationAddress;
@@ -101,8 +146,11 @@ static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const CONFIG_SNAPSHOT* Snapshot,
     MIB_IPFORWARD_ROW2 bestRoute;
     NETIO_STATUS status;
 
-    if (!Snapshot->HasTunLuid || KeGetCurrentIrql() >= DISPATCH_LEVEL) {
-        return BestRouteUnknown;
+    if (!Snapshot->HasTunLuid) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
+        return STATUS_NOT_SUPPORTED;
     }
 
     RtlZeroMemory(&sourceAddress, sizeof(sourceAddress));
@@ -126,17 +174,19 @@ static BEST_ROUTE_RESULT BestRouteForEntry(_In_ const CONFIG_SNAPSHOT* Snapshot,
             sourceAddressPtr = &sourceAddress;
         }
     } else {
-        return BestRouteUnknown;
+        return STATUS_INVALID_PARAMETER;
     }
 
     status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, NULL);
     if (status != STATUS_SUCCESS) {
-        return BestRouteUnknown;
+        return status;
     }
     if (RtlEqualMemory(&bestRoute.InterfaceLuid, &Snapshot->TunLuid, sizeof(NET_LUID))) {
-        return BestRouteTun;
+        *Result = BestRouteTun;
+        return STATUS_SUCCESS;
     }
-    return BestRouteOther;
+    *Result = BestRouteOther;
+    return STATUS_SUCCESS;
 }
 
 typedef struct _LOCAL_REDIRECT_CONTEXT {
@@ -153,7 +203,20 @@ static void CancelPendingIoctlRequests(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS S
     }
 }
 
-static PPENDING_ENTRY PendingReserveNextUndelivered(_In_ PDRIVER_CONTEXT Ctx)
+static void ShutdownRedirect(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT32 PendingVerdict, _In_ NTSTATUS RequestStatus)
+{
+    if (InterlockedCompareExchange(&Ctx->Running, FALSE, TRUE) == TRUE) {
+        WdfTimerStop(Ctx->TimeoutTimer, TRUE);
+        WdfWorkItemFlush(Ctx->TimeoutWorkItem);
+        WfpCleanup(Ctx);
+        WdfWorkItemFlush(Ctx->PendingDeliveryWorkItem);
+    }
+
+    PendingFlushAll(Ctx, PendingVerdict);
+    CancelPendingIoctlRequests(Ctx, RequestStatus);
+}
+
+static PPENDING_ENTRY PendingReserveNextQueued(_In_ PDRIVER_CONTEXT Ctx)
 {
     PPENDING_ENTRY found = NULL;
     KIRQL oldIrql;
@@ -162,8 +225,8 @@ static PPENDING_ENTRY PendingReserveNextUndelivered(_In_ PDRIVER_CONTEXT Ctx)
     PLIST_ENTRY entry = Ctx->PendingList.Flink;
     while (entry != &Ctx->PendingList) {
         PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-        if (!pending->Delivered) {
-            pending->Delivered = TRUE;
+        if (pending->DeliveryState == PendingDeliveryQueued) {
+            pending->DeliveryState = PendingDeliveryCopying;
             found = pending;
             break;
         }
@@ -174,19 +237,23 @@ static PPENDING_ENTRY PendingReserveNextUndelivered(_In_ PDRIVER_CONTEXT Ctx)
     return found;
 }
 
-static void PendingSetDelivered(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ BOOLEAN Delivered)
+static void PendingSetDeliveryState(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ LONG State)
 {
     KIRQL oldIrql;
 
     KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
-    Entry->Delivered = Delivered;
+    Entry->DeliveryState = State;
     KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
 static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
 {
+    if (ReadFatalStatus(Ctx) != STATUS_SUCCESS) {
+        return;
+    }
+
     for (;;) {
-        PPENDING_ENTRY pending = PendingReserveNextUndelivered(Ctx);
+        PPENDING_ENTRY pending = PendingReserveNextQueued(Ctx);
         if (!pending) {
             break;
         }
@@ -194,14 +261,14 @@ static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
         WDFREQUEST request;
         NTSTATUS status = WdfIoQueueRetrieveNextRequest(Ctx->PendingIoctlQueue, &request);
         if (!NT_SUCCESS(status)) {
-            PendingSetDelivered(Ctx, pending, FALSE);
+            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued);
             break;
         }
 
         PVOID outBuf;
         status = WdfRequestRetrieveOutputBuffer(request, sizeof(WINREDIRECT_PENDING_CONN), &outBuf, NULL);
         if (!NT_SUCCESS(status)) {
-            PendingSetDelivered(Ctx, pending, FALSE);
+            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued);
             WdfRequestComplete(request, status);
             continue;
         }
@@ -215,6 +282,7 @@ static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
         RtlCopyMemory(out->DstAddr, pending->DstAddr, 16);
         out->DstPort = pending->DstPort;
         out->ProcessID = pending->ProcessID;
+        PendingSetDeliveryState(Ctx, pending, PendingDeliveryDelivered);
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(WINREDIRECT_PENDING_CONN));
     }
 }
@@ -304,18 +372,30 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     status = WdfWorkItemCreate(&pendingDeliveryConfig, &pendingDeliveryAttrs, &ctx->PendingDeliveryWorkItem);
     if (!NT_SUCCESS(status)) return status;
 
+    WDF_WORKITEM_CONFIG fatalConfig;
+    WDF_WORKITEM_CONFIG_INIT(&fatalConfig, EvtFatalWorkItem);
+    WDF_OBJECT_ATTRIBUTES fatalAttrs;
+    WDF_OBJECT_ATTRIBUTES_INIT(&fatalAttrs);
+    fatalAttrs.ParentObject = device;
+    status = WdfWorkItemCreate(&fatalConfig, &fatalAttrs, &ctx->FatalWorkItem);
+    if (!NT_SUCCESS(status)) return status;
+
     WdfControlFinishInitializing(device);
     return STATUS_SUCCESS;
 }
 
 void EvtDriverUnload(_In_ WDFDRIVER Driver)
 {
+    NTSTATUS fatalStatus;
+
     UNREFERENCED_PARAMETER(Driver);
     if (g_Ctx) {
-        WfpCleanup(g_Ctx);
-        WdfWorkItemFlush(g_Ctx->PendingDeliveryWorkItem);
-        PendingFlushAll(g_Ctx);
-        CancelPendingIoctlRequests(g_Ctx, STATUS_CANCELLED);
+        WdfWorkItemFlush(g_Ctx->FatalWorkItem);
+        fatalStatus = ReadFatalStatus(g_Ctx);
+        ShutdownRedirect(
+            g_Ctx,
+            fatalStatus != STATUS_SUCCESS ? VERDICT_DROP : VERDICT_BYPASS,
+            fatalStatus != STATUS_SUCCESS ? fatalStatus : STATUS_CANCELLED);
     }
 }
 
@@ -327,20 +407,38 @@ void EvtIoDeviceControl(
     _In_ ULONG IoControlCode)
 {
     UNREFERENCED_PARAMETER(Queue);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    UNREFERENCED_PARAMETER(InputBufferLength);
     PDRIVER_CONTEXT ctx = g_Ctx;
     NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS fatalStatus = STATUS_SUCCESS;
     PVOID inBuf = NULL;
     size_t inLen = 0;
 
+    if (!ctx) {
+        WdfRequestComplete(Request, STATUS_INVALID_DEVICE_STATE);
+        return;
+    }
+
+    fatalStatus = ReadFatalStatus(ctx);
+
     switch (IoControlCode) {
     case IOCTL_WINREDIRECT_SET_CONFIG:
+        if (fatalStatus != STATUS_SUCCESS) {
+            WdfRequestComplete(Request, fatalStatus);
+            break;
+        }
+        if (ctx->Running) {
+            WdfRequestComplete(Request, STATUS_DEVICE_BUSY);
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_CONFIG), &inBuf, &inLen);
         if (NT_SUCCESS(status)) {
             WINREDIRECT_CONFIG* config = (WINREDIRECT_CONFIG*)inBuf;
             GUID tunGuid;
             NET_LUID tunLuid = {0};
             KIRQL oldIrql;
-            if (IsZeroGuid(config->TunGuid)) {
+            if (config->RedirectPort == 0 || config->ProxyPID == 0 || IsZeroGuid(config->TunGuid)) {
                 status = STATUS_INVALID_PARAMETER;
             } else {
                 RtlZeroMemory(&tunGuid, sizeof(tunGuid));
@@ -358,9 +456,20 @@ void EvtIoDeviceControl(
         WdfRequestComplete(Request, status);
         break;
 
-    case IOCTL_WINREDIRECT_START:
+    case IOCTL_WINREDIRECT_START: {
+        CONFIG_SNAPSHOT snapshot;
+        if (fatalStatus != STATUS_SUCCESS) {
+            WdfRequestComplete(Request, fatalStatus);
+            break;
+        }
         if (InterlockedCompareExchange(&ctx->Running, TRUE, FALSE) != FALSE) {
             WdfRequestComplete(Request, STATUS_ALREADY_REGISTERED);
+            break;
+        }
+        snapshot = ReadConfigSnapshot(ctx);
+        if (!snapshot.HasTunLuid || snapshot.Config.RedirectPort == 0 || snapshot.Config.ProxyPID == 0) {
+            InterlockedExchange(&ctx->Running, FALSE);
+            WdfRequestComplete(Request, STATUS_INVALID_DEVICE_STATE);
             break;
         }
         status = WfpSetup(ctx);
@@ -371,20 +480,26 @@ void EvtIoDeviceControl(
         }
         WdfRequestComplete(Request, status);
         break;
+    }
 
     case IOCTL_WINREDIRECT_STOP:
-        if (InterlockedCompareExchange(&ctx->Running, FALSE, TRUE) == TRUE) {
-            WdfTimerStop(ctx->TimeoutTimer, TRUE);
-            WdfWorkItemFlush(ctx->TimeoutWorkItem);
-            WfpCleanup(ctx);
-            WdfWorkItemFlush(ctx->PendingDeliveryWorkItem);
-            PendingFlushAll(ctx);
-            CancelPendingIoctlRequests(ctx, STATUS_CANCELLED);
+        if (fatalStatus != STATUS_SUCCESS) {
+            ShutdownRedirect(ctx, VERDICT_DROP, fatalStatus);
+        } else {
+            ShutdownRedirect(ctx, VERDICT_BYPASS, STATUS_CANCELLED);
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         break;
 
     case IOCTL_WINREDIRECT_GET_PENDING:
+        if (fatalStatus != STATUS_SUCCESS) {
+            WdfRequestComplete(Request, fatalStatus);
+            break;
+        }
+        if (!ctx->Running) {
+            WdfRequestComplete(Request, STATUS_DEVICE_NOT_READY);
+            break;
+        }
         // Forward to manual queue - will be completed when a connection arrives
         status = WdfRequestForwardToIoQueue(Request, ctx->PendingIoctlQueue);
         if (!NT_SUCCESS(status)) {
@@ -395,6 +510,14 @@ void EvtIoDeviceControl(
         break;
 
     case IOCTL_WINREDIRECT_SET_VERDICT: {
+        if (fatalStatus != STATUS_SUCCESS) {
+            WdfRequestComplete(Request, fatalStatus);
+            break;
+        }
+        if (!ctx->Running) {
+            WdfRequestComplete(Request, STATUS_DEVICE_NOT_READY);
+            break;
+        }
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_VERDICT), &inBuf, &inLen);
         if (!NT_SUCCESS(status)) {
             WdfRequestComplete(Request, status);
@@ -433,6 +556,7 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
 {
     UNREFERENCED_PARAMETER(WorkItem);
     if (!g_Ctx) return;
+    if (ReadFatalStatus(g_Ctx) != STATUS_SUCCESS) return;
 
     LARGE_INTEGER now;
     KeQuerySystemTime(&now);
@@ -447,7 +571,11 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
             PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
             entry = entry->Flink;
 
-            // Auto-bypass entries older than 5 seconds
+            if (pending->DeliveryState != PendingDeliveryQueued) {
+                continue;
+            }
+
+            // Auto-bypass queued entries older than 5 seconds.
             LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL; // to seconds
             if (elapsed >= 5) {
                 RemoveEntryList(&pending->ListEntry);
@@ -470,8 +598,23 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
 void EvtPendingDeliveryWorkItem(_In_ WDFWORKITEM WorkItem)
 {
     UNREFERENCED_PARAMETER(WorkItem);
-    if (!g_Ctx || !g_Ctx->Running) return;
+    if (!g_Ctx || !g_Ctx->Running || ReadFatalStatus(g_Ctx) != STATUS_SUCCESS) return;
     TryCompletePendingRequests(g_Ctx);
+}
+
+void EvtFatalWorkItem(_In_ WDFWORKITEM WorkItem)
+{
+    NTSTATUS fatalStatus;
+
+    UNREFERENCED_PARAMETER(WorkItem);
+    if (!g_Ctx) return;
+
+    fatalStatus = ReadFatalStatus(g_Ctx);
+    if (fatalStatus == STATUS_SUCCESS) {
+        return;
+    }
+
+    ShutdownRedirect(g_Ctx, VERDICT_DROP, fatalStatus);
 }
 
 // --- WFP Setup ---
@@ -616,8 +759,24 @@ static void ClassifyFnCommon(
     _In_ UINT32 remotePortIdx)
 {
     PDRIVER_CONTEXT ctx = g_Ctx;
+    NTSTATUS fatalStatus;
+    NTSTATUS status;
+    CONFIG_SNAPSHOT snapshot;
+    PPENDING_ENTRY entry;
+    BEST_ROUTE_RESULT bestRoute;
+    UINT64 classifyHandle;
+
+    UNREFERENCED_PARAMETER(layerData);
+    UNREFERENCED_PARAMETER(flowContext);
+
     if (!ctx || !ctx->Running) {
         PermitClassify(classifyOut);
+        return;
+    }
+
+    fatalStatus = ReadFatalStatus(ctx);
+    if (fatalStatus != STATUS_SUCCESS) {
+        BlockClassify(classifyOut);
         return;
     }
 
@@ -626,7 +785,7 @@ static void ClassifyFnCommon(
         return;
     }
 
-    CONFIG_SNAPSHOT snapshot = ReadConfigSnapshot(ctx);
+    snapshot = ReadConfigSnapshot(ctx);
 
 #if (NTDDI_VERSION >= NTDDI_WIN8)
     if (ctx->RedirectHandle &&
@@ -654,9 +813,9 @@ static void ClassifyFnCommon(
     }
 
     // Allocate pending entry
-    PPENDING_ENTRY entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
+    entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
-        PermitClassify(classifyOut);
+        FailClosedClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES);
         return;
     }
 
@@ -682,9 +841,8 @@ static void ClassifyFnCommon(
         if (dstArr) {
             RtlCopyMemory(entry->DstAddr, dstArr->byteArray16, 16);
         } else {
-            // No destination address available - cannot redirect, bail out
             ExFreePoolWithTag(entry, 'rniW');
-            PermitClassify(classifyOut);
+            FailClosedClassify(ctx, classifyOut, STATUS_INVALID_ADDRESS_COMPONENT);
             return;
         }
     }
@@ -697,7 +855,13 @@ static void ClassifyFnCommon(
         return;
     }
 
-    if (BestRouteForEntry(&snapshot, entry) == BestRouteOther) {
+    status = BestRouteForEntry(&snapshot, entry, &bestRoute);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(entry, 'rniW');
+        FailClosedClassify(ctx, classifyOut, status);
+        return;
+    }
+    if (bestRoute == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
         return;
@@ -710,16 +874,15 @@ static void ClassifyFnCommon(
 
     if (!classifyContext) {
         ExFreePoolWithTag(entry, 'rniW');
-        PermitClassify(classifyOut);
+        FailClosedClassify(ctx, classifyOut, STATUS_INVALID_DEVICE_STATE);
         return;
     }
 
     // Pend the classify
-    UINT64 classifyHandle;
-    NTSTATUS status = FwpsAcquireClassifyHandle0((void*)classifyContext, 0, &classifyHandle);
+    status = FwpsAcquireClassifyHandle0((void*)classifyContext, 0, &classifyHandle);
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(entry, 'rniW');
-        PermitClassify(classifyOut);
+        FailClosedClassify(ctx, classifyOut, status);
         return;
     }
 
@@ -732,7 +895,7 @@ static void ClassifyFnCommon(
     if (!NT_SUCCESS(status) || !entry->WritableLayerData) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        PermitClassify(classifyOut);
+        FailClosedClassify(ctx, classifyOut, !NT_SUCCESS(status) ? status : STATUS_INVALID_DEVICE_STATE);
         return;
     }
 
@@ -744,14 +907,14 @@ static void ClassifyFnCommon(
             FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        PermitClassify(classifyOut);
+        FailClosedClassify(ctx, classifyOut, status);
         return;
     }
 
-    classifyOut->actionType = FWP_ACTION_BLOCK;
-    classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+    BlockClassify(classifyOut);
 
     KeQuerySystemTime(&entry->Timestamp);
+    entry->DeliveryState = PendingDeliveryQueued;
     PendingInsert(ctx, entry);
     WdfWorkItemEnqueue(ctx->PendingDeliveryWorkItem);
 }
@@ -833,7 +996,7 @@ void PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
     KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
-void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx)
+void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT32 Verdict)
 {
     for (;;) {
         KIRQL oldIrql;
@@ -850,7 +1013,7 @@ void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx)
             break;
         }
 
-        ExecuteVerdict(Ctx, pending, VERDICT_BYPASS);
+        ExecuteVerdict(Ctx, pending, Verdict);
         ExFreePoolWithTag(pending, 'rniW');
     }
 }
@@ -861,26 +1024,26 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
 {
     FWPS_CLASSIFY_OUT0 classifyOut = Entry->ClassifyOut;
     FWPS_CONNECT_REQUEST0* connReq = (FWPS_CONNECT_REQUEST0*)Entry->WritableLayerData;
+    NTSTATUS redirectStatus = STATUS_SUCCESS;
+    CONFIG_SNAPSHOT snapshot;
 
     if (Verdict == VERDICT_REDIRECT) {
-        CONFIG_SNAPSHOT snapshot = ReadConfigSnapshot(Ctx);
+        snapshot = ReadConfigSnapshot(Ctx);
         if (!connReq ||
-            snapshot.Config.RedirectPort == 0 || snapshot.Config.ProxyPID == 0 || Ctx->RedirectHandle == NULL) {
-            Verdict = VERDICT_BYPASS;
+            !snapshot.HasTunLuid ||
+            snapshot.Config.RedirectPort == 0 ||
+            snapshot.Config.ProxyPID == 0 ||
+            Ctx->RedirectHandle == NULL) {
+            redirectStatus = STATUS_INVALID_DEVICE_STATE;
         } else {
             SOCKADDR_STORAGE* redirectContext =
                 (SOCKADDR_STORAGE*)ExAllocatePoolWithTag(NonPagedPool, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
             if (!redirectContext) {
-                Verdict = VERDICT_BYPASS;
+                redirectStatus = STATUS_INSUFFICIENT_RESOURCES;
             } else {
                 RtlZeroMemory(redirectContext, sizeof(SOCKADDR_STORAGE) * 2);
                 RtlCopyMemory(&redirectContext[0], &connReq->remoteAddressAndPort, sizeof(SOCKADDR_STORAGE));
                 RtlCopyMemory(&redirectContext[1], &connReq->localAddressAndPort, sizeof(SOCKADDR_STORAGE));
-
-                connReq->localRedirectHandle = Ctx->RedirectHandle;
-                connReq->localRedirectTargetPID = snapshot.Config.ProxyPID;
-                connReq->localRedirectContext = redirectContext;
-                connReq->localRedirectContextSize = sizeof(SOCKADDR_STORAGE) * 2;
 
                 if (Entry->AddressFamily == AF_INET) {
                     SOCKADDR_IN* localAddr = (SOCKADDR_IN*)&connReq->localAddressAndPort;
@@ -892,7 +1055,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
                         addr->sin_addr = localAddr->sin_addr;
                     }
                     addr->sin_port = RtlUshortByteSwap(snapshot.Config.RedirectPort);
-                } else {
+                } else if (Entry->AddressFamily == AF_INET6) {
                     SOCKADDR_IN6* localAddr = (SOCKADDR_IN6*)&connReq->localAddressAndPort;
                     SOCKADDR_IN6* addr = (SOCKADDR_IN6*)&connReq->remoteAddressAndPort;
                     if (IsAnyAddress(AF_INET6, localAddr->sin6_addr.u.Byte)) {
@@ -904,8 +1067,24 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
                         addr->sin6_family = AF_INET6;
                     }
                     addr->sin6_port = RtlUshortByteSwap(snapshot.Config.RedirectPort);
+                } else {
+                    redirectStatus = STATUS_INVALID_PARAMETER;
+                }
+
+                if (NT_SUCCESS(redirectStatus)) {
+                    connReq->localRedirectHandle = Ctx->RedirectHandle;
+                    connReq->localRedirectTargetPID = snapshot.Config.ProxyPID;
+                    connReq->localRedirectContext = redirectContext;
+                    connReq->localRedirectContextSize = sizeof(SOCKADDR_STORAGE) * 2;
+                } else {
+                    ExFreePoolWithTag(redirectContext, 'rniW');
                 }
             }
+        }
+
+        if (!NT_SUCCESS(redirectStatus)) {
+            TriggerFatal(Ctx, redirectStatus);
+            Verdict = VERDICT_DROP;
         }
     }
 

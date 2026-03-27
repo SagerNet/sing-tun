@@ -27,6 +27,7 @@ type AutoRedirectOptions struct {
 	Context                context.Context
 	Handler                Handler
 	Logger                 logger.Logger
+	ErrorHandler           func(error)
 	NetworkMonitor         NetworkUpdateMonitor
 	InterfaceFinder        control.InterfaceFinder
 	TableName              string

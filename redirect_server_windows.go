@@ -19,6 +19,7 @@ type redirectServer struct {
 	ctx        context.Context
 	handler    N.TCPConnectionHandlerEx
 	logger     logger.Logger
+	onFatal    func(error)
 	listenAddr netip.Addr
 	listener   *net.TCPListener
 	connTable  *connMetadataTable
@@ -31,11 +32,12 @@ func (s *redirectServer) logError(args ...any) {
 	}
 }
 
-func newRedirectServerWindows(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
+func newRedirectServerWindows(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr, onFatal func(error)) *redirectServer {
 	return &redirectServer{
 		ctx:        ctx,
 		handler:    handler,
 		logger:     logger,
+		onFatal:    onFatal,
 		listenAddr: listenAddr,
 		connTable:  newConnMetadataTable(),
 	}
@@ -75,7 +77,11 @@ func (s *redirectServer) loopIn() {
 				return
 			}
 			s.listener.Close()
-			s.logError("serve error: ", err)
+			if s.onFatal != nil {
+				s.onFatal(E.Cause(err, "accept redirect connection"))
+			} else {
+				s.logError("serve error: ", err)
+			}
 			return
 		}
 		source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
@@ -29,6 +30,7 @@ type autoRedirect struct {
 	ctx                    context.Context
 	handler                Handler
 	logger                 logger.Logger
+	errorHandler           func(error)
 	networkMonitor         NetworkUpdateMonitor
 	networkListener        *list.Element[NetworkUpdateCallback]
 	interfaceFinder        control.InterfaceFinder
@@ -44,6 +46,11 @@ type autoRedirect struct {
 	localAddresses []netip.Prefix
 
 	workerCount int
+
+	closing   atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
+	fatalOnce sync.Once
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -52,6 +59,7 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		ctx:                    options.Context,
 		handler:                options.Handler,
 		logger:                 options.Logger,
+		errorHandler:           options.ErrorHandler,
 		networkMonitor:         options.NetworkMonitor,
 		interfaceFinder:        options.InterfaceFinder,
 		routeAddressSet:        options.RouteAddressSet,
@@ -77,18 +85,21 @@ func (r *autoRedirect) Start() error {
 	err = manager.Install()
 	if err != nil {
 		manager.Close()
+		r.driverManager = nil
 		return E.Cause(err, "install driver")
 	}
 
 	err = manager.Start()
 	if err != nil {
 		manager.Close()
+		r.driverManager = nil
 		return E.Cause(err, "start driver")
 	}
 
 	err = manager.OpenDevice()
 	if err != nil {
 		manager.Close()
+		r.driverManager = nil
 		return E.Cause(err, "open driver device")
 	}
 
@@ -98,18 +109,22 @@ func (r *autoRedirect) Start() error {
 	} else {
 		listenAddr = netip.IPv4Unspecified()
 	}
-	server := newRedirectServerWindows(r.ctx, r.handler, r.logger, listenAddr)
+	server := newRedirectServerWindows(r.ctx, r.handler, r.logger, listenAddr, r.handleFatalError)
+	r.redirectServer = server
 	err = server.Start()
 	if err != nil {
+		r.redirectServer = nil
 		manager.Close()
+		r.driverManager = nil
 		return E.Cause(err, "start redirect server")
 	}
-	r.redirectServer = server
 
 	tunGUID, err := r.resolveTunInterfaceGUID()
 	if err != nil {
 		server.Close()
 		manager.Close()
+		r.redirectServer = nil
+		r.driverManager = nil
 		return E.Cause(err, "resolve tun interface")
 	}
 
@@ -122,6 +137,8 @@ func (r *autoRedirect) Start() error {
 	if err != nil {
 		server.Close()
 		manager.Close()
+		r.redirectServer = nil
+		r.driverManager = nil
 		return E.Cause(err, "set driver config")
 	}
 
@@ -129,6 +146,8 @@ func (r *autoRedirect) Start() error {
 	if err != nil {
 		server.Close()
 		manager.Close()
+		r.redirectServer = nil
+		r.driverManager = nil
 		return E.Cause(err, "start redirect")
 	}
 
@@ -147,13 +166,18 @@ func (r *autoRedirect) Start() error {
 }
 
 func (r *autoRedirect) Close() error {
-	if r.networkMonitor != nil && r.networkListener != nil {
-		r.networkMonitor.UnregisterCallback(r.networkListener)
-	}
-	return common.Close(
-		common.PtrOrNil(r.redirectServer),
-		common.PtrOrNil(r.driverManager),
-	)
+	r.closing.Store(true)
+	r.closeOnce.Do(func() {
+		if r.networkMonitor != nil && r.networkListener != nil {
+			r.networkMonitor.UnregisterCallback(r.networkListener)
+			r.networkListener = nil
+		}
+		r.closeErr = common.Close(
+			common.PtrOrNil(r.redirectServer),
+			common.PtrOrNil(r.driverManager),
+		)
+	})
+	return r.closeErr
 }
 
 func (r *autoRedirect) UpdateRouteAddressSet() {
@@ -166,14 +190,38 @@ func (r *autoRedirect) preMatchWorker() {
 	for {
 		conn, err := r.driverManager.GetPendingConn()
 		if err != nil {
+			if !r.closing.Load() {
+				r.handleFatalError(E.Cause(err, "get pending connection"))
+			}
 			return
 		}
 		verdict := r.evaluateConnection(conn)
-		r.driverManager.SetVerdict(&winredirect.Verdict{
+		err = r.driverManager.SetVerdict(&winredirect.Verdict{
 			ConnID:  conn.ConnID,
 			Verdict: verdict,
 		})
+		if err != nil {
+			if !r.closing.Load() {
+				r.handleFatalError(E.Cause(err, "set redirect verdict"))
+			}
+			return
+		}
 	}
+}
+
+func (r *autoRedirect) handleFatalError(err error) {
+	if err == nil || r.closing.Load() {
+		return
+	}
+	r.fatalOnce.Do(func() {
+		if r.logger != nil {
+			r.logger.Error("windows auto-redirect fatal error: ", err)
+		}
+		_ = r.Close()
+		if r.errorHandler != nil {
+			r.errorHandler(err)
+		}
+	})
 }
 
 func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 {

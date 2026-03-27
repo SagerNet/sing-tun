@@ -63,6 +63,12 @@ typedef struct _WINREDIRECT_VERDICT {
 
 #pragma pack(pop)
 
+typedef enum _PENDING_DELIVERY_STATE {
+    PendingDeliveryQueued = 0,
+    PendingDeliveryCopying = 1,
+    PendingDeliveryDelivered = 2,
+} PENDING_DELIVERY_STATE;
+
 // Internal pending connection entry
 typedef struct _PENDING_ENTRY {
     LIST_ENTRY  ListEntry;
@@ -71,7 +77,7 @@ typedef struct _PENDING_ENTRY {
     UINT64      FilterId;
     FWPS_CLASSIFY_OUT0 ClassifyOut;
     PVOID       WritableLayerData;
-    BOOLEAN     Delivered;
+    volatile LONG DeliveryState;
     UINT8       AddressFamily;
     UINT8       SrcAddr[16];
     UINT16      SrcPort;
@@ -100,6 +106,7 @@ typedef struct _DRIVER_CONTEXT {
     NET_LUID               TunLuid;
     BOOLEAN                HasTunLuid;
     volatile LONG          Running;
+    volatile LONG          FatalStatus;
 
     // Pending connections (protected by PendingLock)
     LIST_ENTRY             PendingList;
@@ -110,6 +117,7 @@ typedef struct _DRIVER_CONTEXT {
     WDFTIMER               TimeoutTimer;
     WDFWORKITEM            TimeoutWorkItem;
     WDFWORKITEM            PendingDeliveryWorkItem;
+    WDFWORKITEM            FatalWorkItem;
 } DRIVER_CONTEXT, *PDRIVER_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DRIVER_CONTEXT, GetDriverContext)
@@ -122,6 +130,7 @@ EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE EvtIoCanceledOnQueue;
 EVT_WDF_TIMER EvtTimeoutTimer;
 EVT_WDF_WORKITEM EvtTimeoutWorkItem;
 EVT_WDF_WORKITEM EvtPendingDeliveryWorkItem;
+EVT_WDF_WORKITEM EvtFatalWorkItem;
 
 // WFP functions
 NTSTATUS WfpSetup(_In_ PDRIVER_CONTEXT Ctx);
@@ -159,7 +168,7 @@ PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx);
 void           PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry);
 PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID);
 void           PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry);
-void           PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx);
+void           PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT32 Verdict);
 
 // Verdict execution
 void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UINT32 Verdict);
