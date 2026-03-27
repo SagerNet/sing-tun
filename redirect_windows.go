@@ -189,10 +189,17 @@ func (r *autoRedirect) handlePendingConn(conn *winredirect.PendingConn) {
 		Verdict: verdict,
 	})
 	if err != nil {
+		if isStaleVerdictError(err) {
+			return
+		}
 		if !r.closing.Load() {
 			r.handleFatalError(E.Cause(r.enrichDriverError(err), "set redirect verdict"))
 		}
 	}
+}
+
+func isStaleVerdictError(err error) bool {
+	return errors.Is(err, windows.ERROR_NOT_FOUND) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND)
 }
 
 func (r *autoRedirect) enrichDriverError(err error) error {

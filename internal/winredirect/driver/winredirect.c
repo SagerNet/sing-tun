@@ -20,6 +20,9 @@ DEFINE_GUID(WINREDIRECT_CALLOUT_V6_KEY,
 
 static PDRIVER_CONTEXT g_Ctx = NULL;
 
+#define PENDING_QUEUED_TIMEOUT_SECONDS 5
+#define PENDING_DELIVERED_TIMEOUT_SECONDS 15
+
 static void PermitClassify(_Inout_ FWPS_CLASSIFY_OUT0* classifyOut)
 {
     classifyOut->actionType = FWP_ACTION_PERMIT;
@@ -239,12 +242,19 @@ static PPENDING_ENTRY PendingReserveNextQueued(_In_ PDRIVER_CONTEXT Ctx)
     return found;
 }
 
-static void PendingSetDeliveryState(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ LONG State)
+static void PendingSetDeliveryState(
+    _In_ PDRIVER_CONTEXT Ctx,
+    _In_ PPENDING_ENTRY Entry,
+    _In_ LONG State,
+    _In_opt_ const LARGE_INTEGER* Timestamp)
 {
     KIRQL oldIrql;
 
     KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
     Entry->DeliveryState = State;
+    if (Timestamp) {
+        Entry->Timestamp = *Timestamp;
+    }
     KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
@@ -263,14 +273,14 @@ static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
         WDFREQUEST request;
         NTSTATUS status = WdfIoQueueRetrieveNextRequest(Ctx->PendingIoctlQueue, &request);
         if (!NT_SUCCESS(status)) {
-            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued);
+            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued, NULL);
             break;
         }
 
         PVOID outBuf;
         status = WdfRequestRetrieveOutputBuffer(request, sizeof(WINREDIRECT_PENDING_CONN), &outBuf, NULL);
         if (!NT_SUCCESS(status)) {
-            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued);
+            PendingSetDeliveryState(Ctx, pending, PendingDeliveryQueued, NULL);
             WdfRequestComplete(request, status);
             continue;
         }
@@ -284,7 +294,9 @@ static void TryCompletePendingRequests(_In_ PDRIVER_CONTEXT Ctx)
         RtlCopyMemory(out->DstAddr, pending->DstAddr, 16);
         out->DstPort = pending->DstPort;
         out->ProcessID = pending->ProcessID;
-        PendingSetDeliveryState(Ctx, pending, PendingDeliveryDelivered);
+        LARGE_INTEGER now;
+        KeQuerySystemTime(&now);
+        PendingSetDeliveryState(Ctx, pending, PendingDeliveryDelivered, &now);
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(WINREDIRECT_PENDING_CONN));
     }
 }
@@ -574,33 +586,44 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
     if (!g_Ctx) return;
     if (ReadFatalStatus(g_Ctx) != STATUS_SUCCESS) return;
 
-    LARGE_INTEGER now;
-    KeQuerySystemTime(&now);
-    BOOLEAN stuck = FALSE;
-    KIRQL oldIrql;
+    for (;;) {
+        LARGE_INTEGER now;
+        PPENDING_ENTRY expired = NULL;
+        KIRQL oldIrql;
 
-    KeAcquireSpinLock(&g_Ctx->PendingLock, &oldIrql);
+        KeQuerySystemTime(&now);
+        KeAcquireSpinLock(&g_Ctx->PendingLock, &oldIrql);
 
-    PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
-    while (entry != &g_Ctx->PendingList) {
-        PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
-        entry = entry->Flink;
+        PLIST_ENTRY entry = g_Ctx->PendingList.Flink;
+        while (entry != &g_Ctx->PendingList) {
+            PPENDING_ENTRY pending = CONTAINING_RECORD(entry, PENDING_ENTRY, ListEntry);
+            LONGLONG timeoutSeconds = 0;
+            entry = entry->Flink;
 
-        if (pending->DeliveryState == PendingDeliveryCopying) {
-            continue;
+            if (pending->DeliveryState == PendingDeliveryQueued) {
+                timeoutSeconds = PENDING_QUEUED_TIMEOUT_SECONDS;
+            } else if (pending->DeliveryState == PendingDeliveryDelivered) {
+                timeoutSeconds = PENDING_DELIVERED_TIMEOUT_SECONDS;
+            } else {
+                continue;
+            }
+
+            LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL;
+            if (elapsed >= timeoutSeconds) {
+                RemoveEntryList(&pending->ListEntry);
+                expired = pending;
+                break;
+            }
         }
 
-        LONGLONG elapsed = (now.QuadPart - pending->Timestamp.QuadPart) / 10000000LL;
-        if (elapsed >= 15) {
-            stuck = TRUE;
+        KeReleaseSpinLock(&g_Ctx->PendingLock, oldIrql);
+
+        if (!expired) {
             break;
         }
-    }
 
-    KeReleaseSpinLock(&g_Ctx->PendingLock, oldIrql);
-
-    if (stuck) {
-        TriggerFatal(g_Ctx, STATUS_DRIVER_INTERNAL_ERROR, "pending entry timed out without verdict");
+        ExecuteVerdict(g_Ctx, expired, VERDICT_BYPASS);
+        ExFreePoolWithTag(expired, 'rniW');
     }
 }
 
