@@ -196,11 +196,6 @@ static NTSTATUS BestRouteForEntry(
     return STATUS_SUCCESS;
 }
 
-typedef struct _LOCAL_REDIRECT_CONTEXT {
-    SOCKADDR_STORAGE OriginalRemoteAddressAndPort;
-    UINT32 ProcessId;
-} LOCAL_REDIRECT_CONTEXT, *PLOCAL_REDIRECT_CONTEXT;
-
 static void CancelPendingIoctlRequests(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
 {
     WDFREQUEST request;
@@ -837,7 +832,6 @@ static void ClassifyFnCommon(
     entry->ConnID = InterlockedIncrement64(&ctx->NextConnID);
     entry->AddressFamily = addressFamily;
     entry->FilterId = filter->filterId;
-    entry->ClassifyOut = *classifyOut;
 
     // Extract addresses with NULL checks for IPv6 pointers
     if (addressFamily == AF_INET) {
@@ -968,12 +962,6 @@ void NTAPI ClassifyFnV6(
 
 // --- Pending connection management ---
 
-PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx)
-{
-    UNREFERENCED_PARAMETER(Ctx);
-    return (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
-}
-
 void PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
 {
     KIRQL oldIrql;
@@ -999,14 +987,6 @@ PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID)
     }
     KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
     return found;
-}
-
-void PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry)
-{
-    KIRQL oldIrql;
-    KeAcquireSpinLock(&Ctx->PendingLock, &oldIrql);
-    RemoveEntryList(&Entry->ListEntry);
-    KeReleaseSpinLock(&Ctx->PendingLock, oldIrql);
 }
 
 void PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT32 Verdict)

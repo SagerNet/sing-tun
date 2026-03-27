@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
 	"github.com/sagernet/sing-tun/internal/winredirect"
+	"github.com/sagernet/sing-tun/internal/winsys"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -398,7 +399,7 @@ func pendingConnDst(conn *winredirect.PendingConn) M.Socksaddr {
 }
 
 func pendingAddr(af uint8, raw [16]byte) netip.Addr {
-	if af == 2 { // AF_INET
+	if af == winsys.AF_INET {
 		return netip.AddrFrom4([4]byte(raw[:4]))
 	}
 	return netip.AddrFrom16(raw)

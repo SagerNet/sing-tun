@@ -38,12 +38,6 @@ typedef struct _WINREDIRECT_CONFIG {
     UINT8  TunGuid[16];
 } WINREDIRECT_CONFIG;
 
-typedef struct _CONFIG_SNAPSHOT {
-    WINREDIRECT_CONFIG Config;
-    NET_LUID           TunLuid;
-    BOOLEAN            HasTunLuid;
-} CONFIG_SNAPSHOT, *PCONFIG_SNAPSHOT;
-
 typedef struct _WINREDIRECT_PENDING_CONN {
     UINT64 ConnID;
     UINT8  AddressFamily;
@@ -69,6 +63,12 @@ typedef struct _WINREDIRECT_FATAL_INFO {
 } WINREDIRECT_FATAL_INFO;
 
 #pragma pack(pop)
+
+typedef struct _CONFIG_SNAPSHOT {
+    WINREDIRECT_CONFIG Config;
+    NET_LUID           TunLuid;
+    BOOLEAN            HasTunLuid;
+} CONFIG_SNAPSHOT, *PCONFIG_SNAPSHOT;
 
 typedef enum _PENDING_DELIVERY_STATE {
     PendingDeliveryQueued = 0,
@@ -172,10 +172,8 @@ NTSTATUS NTAPI NotifyFn(
 );
 
 // Pending management
-PPENDING_ENTRY PendingAllocate(_In_ PDRIVER_CONTEXT Ctx);
 void           PendingInsert(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry);
 PPENDING_ENTRY PendingFindByID(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT64 ConnID);
-void           PendingRemove(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry);
 void           PendingFlushAll(_In_ PDRIVER_CONTEXT Ctx, _In_ UINT32 Verdict);
 
 // Verdict execution
