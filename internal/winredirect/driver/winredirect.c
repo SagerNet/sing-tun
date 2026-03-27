@@ -152,6 +152,9 @@ static NTSTATUS BestRouteForEntry(
     if (!Snapshot->HasTunLuid) {
         return STATUS_INVALID_DEVICE_STATE;
     }
+    // GetBestRoute2 requires IRQL < DISPATCH_LEVEL. We do not currently
+    // characterize every runtime context where route lookup can be unavailable,
+    // so report a normal lookup failure and let the caller decide the fallback.
     if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
         return STATUS_NOT_SUPPORTED;
     }
@@ -874,6 +877,10 @@ static void ClassifyFnCommon(
     }
 
     status = BestRouteForEntry(&snapshot, entry, &bestRoute);
+    // Windows auto-redirect is best-effort: only redirect connections that are
+    // positively identified as already routed to the TUN. If route lookup says
+    // "not TUN" or fails for a context we do not currently characterize, leave
+    // the original connect alone instead of redirecting or blocking unknown traffic.
     if (!NT_SUCCESS(status) || bestRoute == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
