@@ -7,7 +7,8 @@ const (
 	ioctlStart      = (0x00120000 | (0x801 << 2)) // IOCTL_WINREDIRECT_START
 	ioctlStop       = (0x00120000 | (0x802 << 2)) // IOCTL_WINREDIRECT_STOP
 	ioctlGetPending = (0x00120000 | (0x803 << 2)) // IOCTL_WINREDIRECT_GET_PENDING
-	ioctlSetVerdict = (0x00120000 | (0x804 << 2)) // IOCTL_WINREDIRECT_SET_VERDICT
+	ioctlSetVerdict    = (0x00120000 | (0x804 << 2)) // IOCTL_WINREDIRECT_SET_VERDICT
+	ioctlGetFatalInfo  = (0x00120000 | (0x805 << 2)) // IOCTL_WINREDIRECT_GET_FATAL_INFO
 )
 
 const (
@@ -46,4 +47,11 @@ type Verdict struct {
 	ConnID  uint64
 	Verdict uint32
 	_       [4]byte // padding for alignment
+}
+
+// FatalInfo is received from the driver via IOCTL_GET_FATAL_INFO.
+// Must match WINREDIRECT_FATAL_INFO in the driver.
+type FatalInfo struct {
+	Status  uint32
+	Message [128]byte
 }

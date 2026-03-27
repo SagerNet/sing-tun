@@ -193,7 +193,7 @@ func (r *autoRedirect) preMatchWorker() {
 		conn, err := r.driverManager.GetPendingConn()
 		if err != nil {
 			if !r.closing.Load() {
-				r.handleFatalError(E.Cause(err, "get pending connection"))
+				r.handleFatalError(E.Cause(r.enrichDriverError(err), "get pending connection"))
 			}
 			return
 		}
@@ -204,11 +204,23 @@ func (r *autoRedirect) preMatchWorker() {
 		})
 		if err != nil {
 			if !r.closing.Load() {
-				r.handleFatalError(E.Cause(err, "set redirect verdict"))
+				r.handleFatalError(E.Cause(r.enrichDriverError(err), "set redirect verdict"))
 			}
 			return
 		}
 	}
+}
+
+func (r *autoRedirect) enrichDriverError(err error) error {
+	fatalInfo, infoErr := r.driverManager.GetFatalInfo()
+	if infoErr != nil || fatalInfo.Status == 0 {
+		return err
+	}
+	message := strings.TrimRight(string(fatalInfo.Message[:]), "\x00")
+	if message == "" {
+		return err
+	}
+	return E.Cause(windows.Errno(fatalInfo.Status), message)
 }
 
 func (r *autoRedirect) handleFatalError(err error) {

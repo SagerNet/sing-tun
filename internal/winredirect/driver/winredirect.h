@@ -8,6 +8,7 @@
 #include <fwpmk.h>
 #include <mstcpip.h>
 #include <netioapi.h>
+#include <ntstrsafe.h>
 
 // Device names
 #define DEVICE_NAME     L"\\Device\\WinRedirect"
@@ -18,7 +19,8 @@
 #define IOCTL_WINREDIRECT_START       CTL_CODE(FILE_DEVICE_NETWORK, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_WINREDIRECT_STOP        CTL_CODE(FILE_DEVICE_NETWORK, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_WINREDIRECT_GET_PENDING CTL_CODE(FILE_DEVICE_NETWORK, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
-#define IOCTL_WINREDIRECT_SET_VERDICT CTL_CODE(FILE_DEVICE_NETWORK, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_WINREDIRECT_SET_VERDICT    CTL_CODE(FILE_DEVICE_NETWORK, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_WINREDIRECT_GET_FATAL_INFO CTL_CODE(FILE_DEVICE_NETWORK, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 // Verdict values
 #define VERDICT_REDIRECT 0
@@ -60,6 +62,11 @@ typedef struct _WINREDIRECT_VERDICT {
     UINT32 Verdict;
     UINT8  _pad0[4];
 } WINREDIRECT_VERDICT;
+
+typedef struct _WINREDIRECT_FATAL_INFO {
+    UINT32 Status;
+    CHAR   Message[128];
+} WINREDIRECT_FATAL_INFO;
 
 #pragma pack(pop)
 
@@ -107,6 +114,7 @@ typedef struct _DRIVER_CONTEXT {
     BOOLEAN                HasTunLuid;
     volatile LONG          Running;
     volatile LONG          FatalStatus;
+    CHAR                   FatalMessage[128];
 
     // Pending connections (protected by PendingLock)
     LIST_ENTRY             PendingList;

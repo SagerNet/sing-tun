@@ -45,12 +45,13 @@ static NTSTATUS NormalizeFatalStatus(_In_ NTSTATUS Status)
     return Status;
 }
 
-static NTSTATUS TriggerFatal(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
+static NTSTATUS TriggerFatal(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status, _In_ const char* Message)
 {
     NTSTATUS normalized = NormalizeFatalStatus(Status);
     NTSTATUS previous = (NTSTATUS)InterlockedCompareExchange(&Ctx->FatalStatus, normalized, STATUS_SUCCESS);
 
     if (previous == STATUS_SUCCESS) {
+        RtlStringCbCopyA(Ctx->FatalMessage, sizeof(Ctx->FatalMessage), Message);
         WdfWorkItemEnqueue(Ctx->FatalWorkItem);
         return normalized;
     }
@@ -61,10 +62,11 @@ static NTSTATUS TriggerFatal(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
 static void FailClosedClassify(
     _In_ PDRIVER_CONTEXT Ctx,
     _Inout_ FWPS_CLASSIFY_OUT0* classifyOut,
-    _In_ NTSTATUS Status)
+    _In_ NTSTATUS Status,
+    _In_ const char* Message)
 {
     if (Ctx) {
-        TriggerFatal(Ctx, Status);
+        TriggerFatal(Ctx, Status, Message);
     }
     BlockClassify(classifyOut);
 }
@@ -142,6 +144,7 @@ static NTSTATUS BestRouteForEntry(
 {
     SOCKADDR_INET sourceAddress;
     SOCKADDR_INET destinationAddress;
+    SOCKADDR_INET bestSourceAddress;
     SOCKADDR_INET* sourceAddressPtr = NULL;
     MIB_IPFORWARD_ROW2 bestRoute;
     NETIO_STATUS status;
@@ -155,6 +158,7 @@ static NTSTATUS BestRouteForEntry(
 
     RtlZeroMemory(&sourceAddress, sizeof(sourceAddress));
     RtlZeroMemory(&destinationAddress, sizeof(destinationAddress));
+    RtlZeroMemory(&bestSourceAddress, sizeof(bestSourceAddress));
     RtlZeroMemory(&bestRoute, sizeof(bestRoute));
 
     if (Entry->AddressFamily == AF_INET) {
@@ -177,7 +181,7 @@ static NTSTATUS BestRouteForEntry(
         return STATUS_INVALID_PARAMETER;
     }
 
-    status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, NULL);
+    status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, &bestSourceAddress);
     if (status != STATUS_SUCCESS) {
         return status;
     }
@@ -533,6 +537,20 @@ void EvtIoDeviceControl(
         break;
     }
 
+    case IOCTL_WINREDIRECT_GET_FATAL_INFO: {
+        PVOID outBuf;
+        status = WdfRequestRetrieveOutputBuffer(Request, sizeof(WINREDIRECT_FATAL_INFO), &outBuf, NULL);
+        if (!NT_SUCCESS(status)) {
+            WdfRequestComplete(Request, status);
+            break;
+        }
+        WINREDIRECT_FATAL_INFO* info = (WINREDIRECT_FATAL_INFO*)outBuf;
+        info->Status = (UINT32)ReadFatalStatus(ctx);
+        RtlStringCbCopyA(info->Message, sizeof(info->Message), ctx->FatalMessage);
+        WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, sizeof(WINREDIRECT_FATAL_INFO));
+        break;
+    }
+
     default:
         WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
         break;
@@ -815,7 +833,7 @@ static void ClassifyFnCommon(
     // Allocate pending entry
     entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
-        FailClosedClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES);
+        FailClosedClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES, "allocate pending entry");
         return;
     }
 
@@ -842,7 +860,7 @@ static void ClassifyFnCommon(
             RtlCopyMemory(entry->DstAddr, dstArr->byteArray16, 16);
         } else {
             ExFreePoolWithTag(entry, 'rniW');
-            FailClosedClassify(ctx, classifyOut, STATUS_INVALID_ADDRESS_COMPONENT);
+            FailClosedClassify(ctx, classifyOut, STATUS_INVALID_ADDRESS_COMPONENT, "ipv6 null destination");
             return;
         }
     }
@@ -856,12 +874,7 @@ static void ClassifyFnCommon(
     }
 
     status = BestRouteForEntry(&snapshot, entry, &bestRoute);
-    if (!NT_SUCCESS(status)) {
-        ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, status);
-        return;
-    }
-    if (bestRoute == BestRouteOther) {
+    if (!NT_SUCCESS(status) || bestRoute == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
         return;
@@ -874,7 +887,7 @@ static void ClassifyFnCommon(
 
     if (!classifyContext) {
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, STATUS_INVALID_DEVICE_STATE);
+        FailClosedClassify(ctx, classifyOut, STATUS_INVALID_DEVICE_STATE, "no classify context");
         return;
     }
 
@@ -882,7 +895,7 @@ static void ClassifyFnCommon(
     status = FwpsAcquireClassifyHandle0((void*)classifyContext, 0, &classifyHandle);
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, status);
+        FailClosedClassify(ctx, classifyOut, status, "acquire classify handle");
         return;
     }
 
@@ -895,7 +908,7 @@ static void ClassifyFnCommon(
     if (!NT_SUCCESS(status) || !entry->WritableLayerData) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, !NT_SUCCESS(status) ? status : STATUS_INVALID_DEVICE_STATE);
+        FailClosedClassify(ctx, classifyOut, !NT_SUCCESS(status) ? status : STATUS_INVALID_DEVICE_STATE, "acquire writable layer data");
         return;
     }
 
@@ -907,7 +920,7 @@ static void ClassifyFnCommon(
             FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, status);
+        FailClosedClassify(ctx, classifyOut, status, "pend classify");
         return;
     }
 
@@ -1083,7 +1096,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
         }
 
         if (!NT_SUCCESS(redirectStatus)) {
-            TriggerFatal(Ctx, redirectStatus);
+            TriggerFatal(Ctx, redirectStatus, "execute redirect");
             Verdict = VERDICT_DROP;
         }
     }
