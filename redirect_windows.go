@@ -259,6 +259,10 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 		return winredirect.VerdictDrop
 	}
 	if errors.Is(err, ErrReset) {
+		// Pending entries reaching userspace here have already been identified as
+		// TUN-bound by the driver. Bypass means "do not locally redirect to the
+		// Windows redirect listener"; the original connect continues into the TUN,
+		// where reset semantics are enforced by the TUN stack.
 		return winredirect.VerdictBypass
 	}
 	if err != nil && !errors.Is(err, ErrBypass) && r.logger != nil {
