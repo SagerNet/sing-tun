@@ -21,25 +21,23 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 
-	"go4.org/netipx"
 	"golang.org/x/sys/windows"
 )
 
 type autoRedirect struct {
-	tunOptions             *Options
-	ctx                    context.Context
-	connContext            func(context.Context) context.Context
-	handler                Handler
-	logger                 logger.Logger
-	errorHandler           func(error)
-	networkMonitor         NetworkUpdateMonitor
-	networkListener        *list.Element[NetworkUpdateCallback]
-	interfaceFinder        control.InterfaceFinder
-	driverManager          *winredirect.Manager
-	redirectServer         *redirectServer
-	routeAddressSet        *[]*netipx.IPSet
-	routeExcludeAddressSet *[]*netipx.IPSet
+	tunOptions      *Options
+	ctx             context.Context
+	connContext     func(context.Context) context.Context
+	handler         Handler
+	logger          logger.Logger
+	errorHandler    func(error)
+	networkMonitor  NetworkUpdateMonitor
+	networkListener *list.Element[NetworkUpdateCallback]
+	interfaceFinder control.InterfaceFinder
+	driverManager   *winredirect.Manager
+	redirectServer  *redirectServer
 
+	selfPID    uint32
 	enableIPv4 bool
 	enableIPv6 bool
 
@@ -56,22 +54,21 @@ type autoRedirect struct {
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 	r := &autoRedirect{
-		tunOptions:             options.TunOptions,
-		ctx:                    options.Context,
-		connContext:            options.ConnContext,
-		handler:                options.Handler,
-		logger:                 options.Logger,
-		errorHandler:           options.ErrorHandler,
-		networkMonitor:         options.NetworkMonitor,
-		interfaceFinder:        options.InterfaceFinder,
-		routeAddressSet:        options.RouteAddressSet,
-		routeExcludeAddressSet: options.RouteExcludeAddressSet,
-		workerCount:            1,
+		tunOptions:      options.TunOptions,
+		ctx:             options.Context,
+		connContext:     options.ConnContext,
+		handler:         options.Handler,
+		logger:          options.Logger,
+		errorHandler:    options.ErrorHandler,
+		networkMonitor:  options.NetworkMonitor,
+		interfaceFinder: options.InterfaceFinder,
+		workerCount:     1,
 	}
 	return r, nil
 }
 
 func (r *autoRedirect) Start() error {
+	r.selfPID = uint32(os.Getpid())
 	r.enableIPv4 = len(r.tunOptions.Inet4Address) > 0
 	r.enableIPv6 = len(r.tunOptions.Inet6Address) > 0
 	if !r.enableIPv4 && !r.enableIPv6 {
@@ -142,7 +139,7 @@ func (r *autoRedirect) startRedirect() error {
 	redirectPort := M.AddrPortFromNet(server.listener.Addr()).Port()
 	err = manager.SetConfig(&winredirect.Config{
 		RedirectPort: redirectPort,
-		ProxyPID:     uint32(os.Getpid()),
+		ProxyPID:     r.selfPID,
 		TunGUID:      tunGUID,
 	})
 	if err != nil {
@@ -173,9 +170,6 @@ func (r *autoRedirect) Close() error {
 }
 
 func (r *autoRedirect) UpdateRouteAddressSet() {
-	// Dynamic route address sets are updated via pointer indirection.
-	// The IPSet pointers are swapped atomically by the caller.
-	// No driver communication needed — all filtering is in Go.
 }
 
 func (r *autoRedirect) preMatchWorker() {
@@ -233,38 +227,33 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 	src := pendingConnSrc(conn)
 
 	// Proxy process outbound connections must never be redirected back into itself.
-	if conn.ProcessID == uint32(os.Getpid()) {
+	if conn.ProcessID == r.selfPID {
 		return winredirect.VerdictBypass
 	}
 
-	// 1. Loopback destinations
 	if dst.Addr.IsLoopback() {
 		return winredirect.VerdictBypass
 	}
 
-	// DNS hijack: port 53 from local network → redirect to DNS server
 	if !r.tunOptions.EXP_DisableDNSHijack && dst.Port == 53 {
 		if r.isLocalAddress(src.Addr) {
 			dnsServer := r.dnsServerForFamily(dst.Addr)
 			if dnsServer.IsValid() {
 				metadata := r.resolveMetadata(conn)
 				ctx := r.newConnContext(metadata)
-				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), ctx, metadata)
+				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), ctx)
 				return winredirect.VerdictRedirect
 			}
 		}
 	}
 
-	// Strict route: reject disabled address family
 	if r.tunOptions.StrictRoute && r.isDisabledFamily(dst.Addr) {
 		return winredirect.VerdictDrop
 	}
 
-	// Resolve PID → process path
 	metadata := r.resolveMetadata(conn)
 	ctx := r.newConnContext(metadata)
 
-	// PrepareConnection (NFQUEUE equivalent)
 	_, err := r.handler.PrepareConnection(ctx, "tcp", src, dst, nil, 0)
 	if errors.Is(err, ErrDrop) {
 		return winredirect.VerdictDrop
@@ -276,8 +265,7 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 		r.logger.Warn("prepare connection fallback to redirect: ", err)
 	}
 
-	// Store metadata for redirect server
-	r.redirectServer.connTable.Store(src, dst, ctx, metadata)
+	r.redirectServer.connTable.Store(src, dst, ctx)
 
 	return winredirect.VerdictRedirect
 }

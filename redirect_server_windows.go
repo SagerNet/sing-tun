@@ -57,6 +57,9 @@ func (s *redirectServer) Start() error {
 
 func (s *redirectServer) Close() error {
 	s.inShutdown.Store(true)
+	if s.connTable != nil {
+		s.connTable.Close()
+	}
 	if s.listener != nil {
 		return s.listener.Close()
 	}
@@ -104,12 +107,10 @@ func (s *redirectServer) loopIn() {
 	}
 }
 
-// connMetadataTable maps source address → connection metadata.
-// Entries are populated by pre-match workers before sending redirect verdicts,
-// and consumed by the redirect server upon accepting connections.
 type connMetadataTable struct {
 	mu      sync.Mutex
 	entries map[connKey]*connEntry
+	done    chan struct{}
 }
 
 type connKey struct {
@@ -120,7 +121,6 @@ type connKey struct {
 type connEntry struct {
 	Destination M.Socksaddr
 	Context     context.Context
-	Metadata    *AutoRedirectMetadata
 	IsDNS       bool
 	DNSServer   M.Socksaddr
 	CreatedAt   time.Time
@@ -129,31 +129,38 @@ type connEntry struct {
 func newConnMetadataTable() *connMetadataTable {
 	t := &connMetadataTable{
 		entries: make(map[connKey]*connEntry),
+		done:    make(chan struct{}),
 	}
 	go t.cleanupLoop()
 	return t
 }
 
-func (t *connMetadataTable) Store(src M.Socksaddr, dst M.Socksaddr, ctx context.Context, metadata *AutoRedirectMetadata) {
+func (t *connMetadataTable) Close() {
+	select {
+	case <-t.done:
+	default:
+		close(t.done)
+	}
+}
+
+func (t *connMetadataTable) Store(src M.Socksaddr, dst M.Socksaddr, ctx context.Context) {
 	key := connKey{Addr: src.Addr, Port: src.Port}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[key] = &connEntry{
 		Destination: dst,
 		Context:     ctx,
-		Metadata:    metadata,
 		CreatedAt:   time.Now(),
 	}
 }
 
-func (t *connMetadataTable) StoreDNS(src M.Socksaddr, originalDst M.Socksaddr, dnsServer M.Socksaddr, ctx context.Context, metadata *AutoRedirectMetadata) {
+func (t *connMetadataTable) StoreDNS(src M.Socksaddr, originalDst M.Socksaddr, dnsServer M.Socksaddr, ctx context.Context) {
 	key := connKey{Addr: src.Addr, Port: src.Port}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[key] = &connEntry{
 		Destination: originalDst,
 		Context:     ctx,
-		Metadata:    metadata,
 		IsDNS:       true,
 		DNSServer:   dnsServer,
 		CreatedAt:   time.Now(),
@@ -192,14 +199,19 @@ func (t *connMetadataTable) Lookup(src M.Socksaddr) (*connEntry, bool) {
 func (t *connMetadataTable) cleanupLoop() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		t.mu.Lock()
-		now := time.Now()
-		for key, entry := range t.entries {
-			if now.Sub(entry.CreatedAt) > 30*time.Second {
-				delete(t.entries, key)
+	for {
+		select {
+		case <-t.done:
+			return
+		case <-ticker.C:
+			t.mu.Lock()
+			now := time.Now()
+			for key, entry := range t.entries {
+				if now.Sub(entry.CreatedAt) > 30*time.Second {
+					delete(t.entries, key)
+				}
 			}
+			t.mu.Unlock()
 		}
-		t.mu.Unlock()
 	}
 }

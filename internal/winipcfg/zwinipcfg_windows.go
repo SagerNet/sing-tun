@@ -53,7 +53,6 @@ var (
 	procFreeMibTable                    = modiphlpapi.NewProc("FreeMibTable")
 	procGetAnycastIpAddressEntry        = modiphlpapi.NewProc("GetAnycastIpAddressEntry")
 	procGetAnycastIpAddressTable        = modiphlpapi.NewProc("GetAnycastIpAddressTable")
-	procGetBestRoute2                   = modiphlpapi.NewProc("GetBestRoute2")
 	procGetIfEntry2                     = modiphlpapi.NewProc("GetIfEntry2")
 	procGetIfTable2Ex                   = modiphlpapi.NewProc("GetIfTable2Ex")
 	procGetIpForwardEntry2              = modiphlpapi.NewProc("GetIpForwardEntry2")
@@ -169,14 +168,6 @@ func getAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
 
 func getAnycastIPAddressTable(family AddressFamily, table **mibAnycastIPAddressTable) (ret error) {
 	r0, _, _ := syscall.SyscallN(procGetAnycastIpAddressTable.Addr(), uintptr(family), uintptr(unsafe.Pointer(table)))
-	if r0 != 0 {
-		ret = syscall.Errno(r0)
-	}
-	return
-}
-
-func getBestRoute2(interfaceLUID *LUID, interfaceIndex uint32, sourceAddress *RawSockaddrInet, destinationAddress *RawSockaddrInet, sortOptions uint32, bestRoute *MibIPforwardRow2, bestSourceAddress *RawSockaddrInet) (ret error) {
-	r0, _, _ := syscall.SyscallN(procGetBestRoute2.Addr(), uintptr(unsafe.Pointer(interfaceLUID)), uintptr(interfaceIndex), uintptr(unsafe.Pointer(sourceAddress)), uintptr(unsafe.Pointer(destinationAddress)), uintptr(sortOptions), uintptr(unsafe.Pointer(bestRoute)), uintptr(unsafe.Pointer(bestSourceAddress)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}

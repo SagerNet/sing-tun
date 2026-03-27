@@ -3,12 +3,12 @@ package winredirect
 // IOCTL codes matching the kernel driver definitions.
 // CTL_CODE(FILE_DEVICE_NETWORK=0x12, function, METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)
 const (
-	ioctlSetConfig  = (0x00120000 | (0x800 << 2)) // IOCTL_WINREDIRECT_SET_CONFIG
-	ioctlStart      = (0x00120000 | (0x801 << 2)) // IOCTL_WINREDIRECT_START
-	ioctlStop       = (0x00120000 | (0x802 << 2)) // IOCTL_WINREDIRECT_STOP
-	ioctlGetPending = (0x00120000 | (0x803 << 2)) // IOCTL_WINREDIRECT_GET_PENDING
-	ioctlSetVerdict    = (0x00120000 | (0x804 << 2)) // IOCTL_WINREDIRECT_SET_VERDICT
-	ioctlGetFatalInfo  = (0x00120000 | (0x805 << 2)) // IOCTL_WINREDIRECT_GET_FATAL_INFO
+	ioctlSetConfig    = (0x00120000 | (0x800 << 2)) // IOCTL_WINREDIRECT_SET_CONFIG
+	ioctlStart        = (0x00120000 | (0x801 << 2)) // IOCTL_WINREDIRECT_START
+	ioctlStop         = (0x00120000 | (0x802 << 2)) // IOCTL_WINREDIRECT_STOP
+	ioctlGetPending   = (0x00120000 | (0x803 << 2)) // IOCTL_WINREDIRECT_GET_PENDING
+	ioctlSetVerdict   = (0x00120000 | (0x804 << 2)) // IOCTL_WINREDIRECT_SET_VERDICT
+	ioctlGetFatalInfo = (0x00120000 | (0x805 << 2)) // IOCTL_WINREDIRECT_GET_FATAL_INFO
 )
 
 const (
