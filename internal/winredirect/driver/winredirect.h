@@ -35,7 +35,7 @@ typedef struct _WINREDIRECT_CONFIG {
     UINT16 RedirectPort;
     UINT8  _pad0[2];
     UINT32 ProxyPID;
-    UINT8  TunGuid[16];
+    GUID   TunGuid;
 } WINREDIRECT_CONFIG;
 
 typedef struct _WINREDIRECT_PENDING_CONN {

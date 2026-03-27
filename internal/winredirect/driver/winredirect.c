@@ -1,4 +1,3 @@
-#pragma warning(disable: 4996) // ExAllocatePoolWithTag deprecation
 
 #include "winredirect.h"
 
@@ -115,16 +114,6 @@ typedef enum _BEST_ROUTE_RESULT {
     BestRouteOther = 2,
 } BEST_ROUTE_RESULT;
 
-static BOOLEAN IsZeroGuid(_In_reads_(16) const UINT8* GuidBytes)
-{
-    for (UINT32 i = 0; i < sizeof(GUID); i++) {
-        if (GuidBytes[i] != 0) {
-            return FALSE;
-        }
-    }
-    return TRUE;
-}
-
 static CONFIG_SNAPSHOT ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
 {
     CONFIG_SNAPSHOT snapshot;
@@ -191,7 +180,7 @@ static NTSTATUS BestRouteForEntry(
     if (status != STATUS_SUCCESS) {
         return status;
     }
-    if (RtlEqualMemory(&bestRoute.InterfaceLuid, &Snapshot->TunLuid, sizeof(NET_LUID))) {
+    if (bestRoute.InterfaceLuid.Value == Snapshot->TunLuid.Value) {
         *Result = BestRouteTun;
         return STATUS_SUCCESS;
     }
@@ -449,15 +438,12 @@ void EvtIoDeviceControl(
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(WINREDIRECT_CONFIG), &inBuf, &inLen);
         if (NT_SUCCESS(status)) {
             WINREDIRECT_CONFIG* config = (WINREDIRECT_CONFIG*)inBuf;
-            GUID tunGuid;
             NET_LUID tunLuid = {0};
             KIRQL oldIrql;
-            if (config->RedirectPort == 0 || config->ProxyPID == 0 || IsZeroGuid(config->TunGuid)) {
+            if (config->RedirectPort == 0 || config->ProxyPID == 0 || InlineIsEqualGUID(&GUID_NULL, &config->TunGuid)) {
                 status = STATUS_INVALID_PARAMETER;
             } else {
-                RtlZeroMemory(&tunGuid, sizeof(tunGuid));
-                RtlCopyMemory(&tunGuid, config->TunGuid, sizeof(tunGuid));
-                status = ConvertInterfaceGuidToLuid(&tunGuid, &tunLuid);
+                status = ConvertInterfaceGuidToLuid(&config->TunGuid, &tunLuid);
             }
             if (NT_SUCCESS(status)) {
                 KeAcquireSpinLock(&ctx->ConfigLock, &oldIrql);
@@ -845,13 +831,11 @@ static void ClassifyFnCommon(
     }
 
     // Allocate pending entry
-    entry = (PPENDING_ENTRY)ExAllocatePoolWithTag(NonPagedPool, sizeof(PENDING_ENTRY), 'rniW');
+    entry = (PPENDING_ENTRY)ExAllocatePoolZero(PagedPool, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
         FailClosedClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES, "allocate pending entry");
         return;
     }
-
-    RtlZeroMemory(entry, sizeof(PENDING_ENTRY));
     entry->ConnID = InterlockedIncrement64(&ctx->NextConnID);
     entry->AddressFamily = addressFamily;
     entry->FilterId = filter->filterId;
@@ -1053,11 +1037,10 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
             redirectStatus = STATUS_INVALID_DEVICE_STATE;
         } else {
             SOCKADDR_STORAGE* redirectContext =
-                (SOCKADDR_STORAGE*)ExAllocatePoolWithTag(NonPagedPool, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
+                (SOCKADDR_STORAGE*)ExAllocatePoolZero(PagedPool, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
             if (!redirectContext) {
                 redirectStatus = STATUS_INSUFFICIENT_RESOURCES;
             } else {
-                RtlZeroMemory(redirectContext, sizeof(SOCKADDR_STORAGE) * 2);
                 RtlCopyMemory(&redirectContext[0], &connReq->remoteAddressAndPort, sizeof(SOCKADDR_STORAGE));
                 RtlCopyMemory(&redirectContext[1], &connReq->localAddressAndPort, sizeof(SOCKADDR_STORAGE));
 
