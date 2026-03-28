@@ -100,6 +100,15 @@ jobs:
             }
           }
 
+          function Show-FileHash([string] $label, [string] $path) {
+            if (Test-Path $path) {
+              $hash = (Get-FileHash $path -Algorithm SHA256).Hash
+              Write-Host "$label sha256: $hash"
+            } else {
+              Write-Host "$label sha256: missing ($path)"
+            }
+          }
+
           if ($vs) {
             Write-Host "VS installation name: $($vs.installationName)"
             Write-Host "VS installation version: $($vs.installationVersion)"
@@ -123,6 +132,13 @@ jobs:
           Show-FileVersion 'cl Hostx64 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\arm64\cl.exe")
           Show-FileVersion 'link Hostx64 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\x64\link.exe")
           Show-FileVersion 'link Hostx64 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\arm64\link.exe")
+
+          Show-FileHash 'arm64rt.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\um\arm64\arm64rt.lib'
+          Show-FileHash 'BufferOverflowFastFailK.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\km\arm64\BufferOverflowFastFailK.lib'
+          Show-FileHash 'netio.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\km\arm64\netio.lib'
+          Show-FileHash 'ntoskrnl.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\km\arm64\ntoskrnl.lib'
+          Show-FileHash 'WdfLdr.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\wdf\kmdf\arm64\1.15\WdfLdr.lib'
+          Show-FileHash 'WdfDriverEntry.lib' 'C:\Program Files (x86)\Windows Kits\10\lib\wdf\kmdf\arm64\1.15\WdfDriverEntry.lib'
 
           Write-Host 'Windows Kits include directories:'
           Get-ChildItem $kitsRoot | Sort-Object Name | ForEach-Object { Write-Host "  $($_.Name)" }
