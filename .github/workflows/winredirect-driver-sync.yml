@@ -78,7 +78,7 @@ jobs:
               msvc-wine:local \
               /opt/msvc/bin/"$1"/msbuild \
               internal/winredirect/driver/winredirect.vcxproj \
-              /t:Rebuild /p:Configuration=Release /p:SpectreMitigation=false /v:minimal
+              /t:Rebuild /p:Configuration=Release /p:SpectreMitigation=false /p:TrackFileAccess=false /v:minimal
           }
 
           for i in "${!arches[@]}"; do
