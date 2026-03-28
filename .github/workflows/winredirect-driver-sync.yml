@@ -127,8 +127,8 @@ jobs:
               0)
                 echo "${arch} matches the tracked driver after stripping Authenticode data."
                 ;;
-              1)
-                echo "${arch} differs beyond signing metadata; replacing tracked driver."
+              1|2)
+                echo "${arch} differs beyond signing metadata (rc=${rc}); replacing tracked driver."
                 cp "$run2" "$tracked_file"
                 git add -- "$tracked_file"
                 changed=true
