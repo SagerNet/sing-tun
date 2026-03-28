@@ -104,6 +104,10 @@ jobs:
           Write-Host "VC tools root: $vcToolsRoot"
           Write-Host "VC tools version: $vcToolsVersion"
 
+          Show-FileVersion 'cl Hostx86 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx86\x64\cl.exe")
+          Show-FileVersion 'cl Hostx86 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx86\arm64\cl.exe")
+          Show-FileVersion 'link Hostx86 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx86\x64\link.exe")
+          Show-FileVersion 'link Hostx86 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx86\arm64\link.exe")
           Show-FileVersion 'cl Hostx64 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\x64\cl.exe")
           Show-FileVersion 'cl Hostx64 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\arm64\cl.exe")
           Show-FileVersion 'link Hostx64 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\x64\link.exe")
@@ -134,10 +138,18 @@ jobs:
           Remove-Item -LiteralPath $artifactDir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
 
-          function Invoke-DriverBuild([string] $platform) {
+          function Invoke-DriverBuild([string] $platform, [string] $buildTag) {
             Remove-Item -LiteralPath "internal/winredirect/driver/build/$platform" -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath "internal/winredirect/driver/intermediate/$platform" -Recurse -Force -ErrorAction SilentlyContinue
-            & $msbuild 'internal/winredirect/driver/winredirect.vcxproj' '/t:Rebuild' '/p:Configuration=Release' "/p:Platform=$platform" '/p:SpectreMitigation=false' '/v:minimal'
+            if ($platform -eq 'ARM64') {
+              $diagDir = Join-Path $artifactDir 'arm64-diag'
+              New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
+              $diagLog = Join-Path $diagDir "$buildTag.log"
+              $diagBinlog = Join-Path $diagDir "$buildTag.binlog"
+              & $msbuild 'internal/winredirect/driver/winredirect.vcxproj' '/t:Rebuild' '/p:Configuration=Release' "/p:Platform=$platform" '/p:SpectreMitigation=false' '/v:diag' "/bl:$diagBinlog" 2>&1 | Tee-Object -FilePath $diagLog
+            } else {
+              & $msbuild 'internal/winredirect/driver/winredirect.vcxproj' '/t:Rebuild' '/p:Configuration=Release' "/p:Platform=$platform" '/p:SpectreMitigation=false' '/v:minimal'
+            }
             if ($LASTEXITCODE -ne 0) {
               throw "MSBuild failed for $platform with exit code $LASTEXITCODE"
             }
@@ -158,10 +170,10 @@ jobs:
             $run1 = Join-Path $artifactDir "$platform-run1.sys"
             $run2 = Join-Path $artifactDir "$platform-run2.sys"
 
-            Invoke-DriverBuild $platform
+            Invoke-DriverBuild $platform "$platform-run1"
             Copy-Item -LiteralPath $buildOutput -Destination $run1 -Force
 
-            Invoke-DriverBuild $platform
+            Invoke-DriverBuild $platform "$platform-run2"
             Copy-Item -LiteralPath $buildOutput -Destination $run2 -Force
 
             & python '.github/scripts/compare_signed_pe.py' $run1 $run2
@@ -208,7 +220,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: winredirect-repro-failure-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}\winredirect-driver-sync\failure\*.sys
+          path: |
+            ${{ runner.temp }}\winredirect-driver-sync\failure\*.sys
+            ${{ runner.temp }}\winredirect-driver-sync\arm64-diag\*.log
+            ${{ runner.temp }}\winredirect-driver-sync\arm64-diag\*.binlog
           if-no-files-found: warn
 
       - name: Commit and push refreshed drivers
