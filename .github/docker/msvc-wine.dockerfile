@@ -60,7 +60,7 @@ RUN PYTHONUNBUFFERED=1 ./vsdownload.py --accept-license --only-download --cache 
 
 FROM wine AS builder
 RUN <<-EOF
-	microdnf install -y msitools perl
+	microdnf install -y git msitools perl
 	microdnf clean all
 EOF
 COPY --from=fetch-msvc /builddir/cache/ ./cache/
