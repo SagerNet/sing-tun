@@ -1,5 +1,5 @@
 # Cross-compiles Windows kernel drivers using msvc-wine.
-# Toolchain: MSVC 17.13 (14.43) + SDK/WDK 10.0.22621
+# Toolchain: MSVC 18.0 + SDK/WDK 10.0.22621
 # Architectures: x86, x64, ARM, ARM64
 FROM alpine:3.21 AS msvc-wine
 RUN apk add --no-cache git
@@ -56,11 +56,11 @@ FROM python:3.14-slim AS fetch-msvc
 WORKDIR /builddir
 COPY --from=msvc-wine /msvc-wine/vsdownload.py ./
 RUN PYTHONUNBUFFERED=1 ./vsdownload.py --accept-license --only-download --cache cache \
-    --major=17 --msvc-version=17.13 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
+    --major=18 --msvc-version=18.0 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
 
 FROM wine AS builder
 RUN <<-EOF
-	microdnf install -y git msitools perl
+	microdnf install -y msitools perl
 	microdnf clean all
 EOF
 COPY --from=fetch-msvc /builddir/cache/ ./cache/
@@ -68,7 +68,7 @@ COPY --from=fetch-wdk /builddir/wdk/Installers/ ./wdk/Installers/
 COPY --from=msvc-wine /msvc-wine/vsdownload.py ./
 COPY --from=msvc-wine /msvc-wine/patches/ ./patches/
 RUN PYTHONUNBUFFERED=1 python3 ./vsdownload.py --accept-license --cache cache --dest /opt/msvc \
-    --msvc-version=17.13 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
+    --msvc-version=18.0 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
 COPY --from=msvc-wine /msvc-wine/lowercase /msvc-wine/fixinclude /msvc-wine/install.sh /msvc-wine/msvctricks.cpp ./
 COPY --from=msvc-wine /msvc-wine/wrappers/ ./wrappers/
 RUN bash -x ./install.sh /opt/msvc
