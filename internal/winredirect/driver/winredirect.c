@@ -61,7 +61,7 @@ static NTSTATUS TriggerFatal(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status, _In
     return previous;
 }
 
-static void FailClosedClassify(
+static void TriggerFatalAndPermitClassify(
     _In_ PDRIVER_CONTEXT Ctx,
     _Inout_ FWPS_CLASSIFY_OUT0* classifyOut,
     _In_ NTSTATUS Status,
@@ -70,7 +70,7 @@ static void FailClosedClassify(
     if (Ctx) {
         TriggerFatal(Ctx, Status, Message);
     }
-    BlockClassify(classifyOut);
+    PermitClassify(classifyOut);
 }
 
 static BOOLEAN IsLoopbackAddress(_In_ UINT8 AddressFamily, _In_reads_(16) const UINT8* Address)
@@ -129,7 +129,7 @@ static CONFIG_SNAPSHOT ReadConfigSnapshot(_In_ PDRIVER_CONTEXT Ctx)
     return snapshot;
 }
 
-static NTSTATUS BestRouteForEntry(
+static BOOLEAN TryBestRouteForEntry(
     _In_ const CONFIG_SNAPSHOT* Snapshot,
     _In_ const PENDING_ENTRY* Entry,
     _Out_ BEST_ROUTE_RESULT* Result)
@@ -142,13 +142,13 @@ static NTSTATUS BestRouteForEntry(
     NETIO_STATUS status;
 
     if (!Snapshot->HasTunLuid) {
-        return STATUS_INVALID_DEVICE_STATE;
+        return FALSE;
     }
     // GetBestRoute2 requires IRQL < DISPATCH_LEVEL. We do not currently
     // characterize every runtime context where route lookup can be unavailable,
     // so report a normal lookup failure and let the caller decide the fallback.
     if (KeGetCurrentIrql() >= DISPATCH_LEVEL) {
-        return STATUS_NOT_SUPPORTED;
+        return FALSE;
     }
 
     RtlZeroMemory(&sourceAddress, sizeof(sourceAddress));
@@ -173,19 +173,19 @@ static NTSTATUS BestRouteForEntry(
             sourceAddressPtr = &sourceAddress;
         }
     } else {
-        return STATUS_INVALID_PARAMETER;
+        return FALSE;
     }
 
     status = GetBestRoute2(NULL, 0, sourceAddressPtr, &destinationAddress, 0, &bestRoute, &bestSourceAddress);
-    if (status != STATUS_SUCCESS) {
-        return status;
+    if (status != 0) {
+        return FALSE;
     }
     if (bestRoute.InterfaceLuid.Value == Snapshot->TunLuid.Value) {
         *Result = BestRouteTun;
-        return STATUS_SUCCESS;
+        return TRUE;
     }
     *Result = BestRouteOther;
-    return STATUS_SUCCESS;
+    return TRUE;
 }
 
 static void CancelPendingIoctlRequests(_In_ PDRIVER_CONTEXT Ctx, _In_ NTSTATUS Status)
@@ -321,6 +321,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     if (!NT_SUCCESS(status)) { WdfDeviceInitFree(deviceInit); return status; }
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttrs, DRIVER_CONTEXT);
+    deviceAttrs.ExecutionLevel = WdfExecutionLevelPassive;
     status = WdfDeviceCreate(&deviceInit, &deviceAttrs, &device);
     if (!NT_SUCCESS(status)) return status;
 
@@ -397,7 +398,7 @@ void EvtDriverUnload(_In_ WDFDRIVER Driver)
         fatalStatus = ReadFatalStatus(g_Ctx);
         ShutdownRedirect(
             g_Ctx,
-            fatalStatus != STATUS_SUCCESS ? VERDICT_DROP : VERDICT_BYPASS,
+            VERDICT_PERMIT,
             fatalStatus != STATUS_SUCCESS ? fatalStatus : STATUS_CANCELLED);
     }
 }
@@ -485,9 +486,9 @@ void EvtIoDeviceControl(
 
     case IOCTL_WINREDIRECT_STOP:
         if (fatalStatus != STATUS_SUCCESS) {
-            ShutdownRedirect(ctx, VERDICT_DROP, fatalStatus);
+            ShutdownRedirect(ctx, VERDICT_PERMIT, fatalStatus);
         } else {
-            ShutdownRedirect(ctx, VERDICT_BYPASS, STATUS_CANCELLED);
+            ShutdownRedirect(ctx, VERDICT_PERMIT, STATUS_CANCELLED);
         }
         WdfRequestComplete(Request, STATUS_SUCCESS);
         break;
@@ -525,6 +526,10 @@ void EvtIoDeviceControl(
             break;
         }
         WINREDIRECT_VERDICT* v = (WINREDIRECT_VERDICT*)inBuf;
+        if (v->Verdict != VERDICT_REDIRECT && v->Verdict != VERDICT_PERMIT) {
+            WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
+            break;
+        }
         PPENDING_ENTRY entry = PendingFindByID(ctx, v->ConnID);
         if (entry) {
             ExecuteVerdict(ctx, entry, v->Verdict);
@@ -609,7 +614,7 @@ void EvtTimeoutWorkItem(_In_ WDFWORKITEM WorkItem)
             break;
         }
 
-        ExecuteVerdict(g_Ctx, expired, VERDICT_BYPASS);
+        ExecuteVerdict(g_Ctx, expired, VERDICT_PERMIT);
         ExFreePoolWithTag(expired, 'rniW');
     }
 }
@@ -633,7 +638,7 @@ void EvtFatalWorkItem(_In_ WDFWORKITEM WorkItem)
         return;
     }
 
-    ShutdownRedirect(g_Ctx, VERDICT_DROP, fatalStatus);
+    ShutdownRedirect(g_Ctx, VERDICT_PERMIT, fatalStatus);
 }
 
 // --- WFP Setup ---
@@ -732,10 +737,6 @@ cleanup:
 
 void WfpCleanup(_In_ PDRIVER_CONTEXT Ctx)
 {
-    if (Ctx->RedirectHandle) {
-        FwpsRedirectHandleDestroy0(Ctx->RedirectHandle);
-        Ctx->RedirectHandle = NULL;
-    }
     if (Ctx->CalloutIdV4) {
         FwpsCalloutUnregisterById0(Ctx->CalloutIdV4);
         Ctx->CalloutIdV4 = 0;
@@ -743,6 +744,10 @@ void WfpCleanup(_In_ PDRIVER_CONTEXT Ctx)
     if (Ctx->CalloutIdV6) {
         FwpsCalloutUnregisterById0(Ctx->CalloutIdV6);
         Ctx->CalloutIdV6 = 0;
+    }
+    if (Ctx->RedirectHandle) {
+        FwpsRedirectHandleDestroy0(Ctx->RedirectHandle);
+        Ctx->RedirectHandle = NULL;
     }
     if (Ctx->EngineHandle) {
         FwpmEngineClose0(Ctx->EngineHandle);
@@ -795,7 +800,7 @@ static void ClassifyFnCommon(
 
     fatalStatus = ReadFatalStatus(ctx);
     if (fatalStatus != STATUS_SUCCESS) {
-        BlockClassify(classifyOut);
+        PermitClassify(classifyOut);
         return;
     }
 
@@ -832,9 +837,9 @@ static void ClassifyFnCommon(
     }
 
     // Allocate pending entry
-    entry = (PPENDING_ENTRY)ExAllocatePoolZero(PagedPool, sizeof(PENDING_ENTRY), 'rniW');
+    entry = (PPENDING_ENTRY)ExAllocatePoolZero(NonPagedPoolNx, sizeof(PENDING_ENTRY), 'rniW');
     if (!entry) {
-        FailClosedClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES, "allocate pending entry");
+        TriggerFatalAndPermitClassify(ctx, classifyOut, STATUS_INSUFFICIENT_RESOURCES, "allocate pending entry");
         return;
     }
     entry->ConnID = InterlockedIncrement64(&ctx->NextConnID);
@@ -858,7 +863,7 @@ static void ClassifyFnCommon(
             RtlCopyMemory(entry->DstAddr, dstArr->byteArray16, 16);
         } else {
             ExFreePoolWithTag(entry, 'rniW');
-            FailClosedClassify(ctx, classifyOut, STATUS_INVALID_ADDRESS_COMPONENT, "ipv6 null destination");
+            TriggerFatalAndPermitClassify(ctx, classifyOut, STATUS_INVALID_ADDRESS_COMPONENT, "ipv6 null destination");
             return;
         }
     }
@@ -871,16 +876,15 @@ static void ClassifyFnCommon(
         return;
     }
 
-    status = BestRouteForEntry(&snapshot, entry, &bestRoute);
-    // Windows auto-redirect is best-effort: only redirect connections that are
-    // positively identified as already routed to the TUN. If route lookup says
-    // "not TUN" or fails for a context we do not currently characterize, leave
-    // the original connect alone instead of redirecting or blocking unknown traffic.
-    if (!NT_SUCCESS(status) || bestRoute == BestRouteOther) {
+    if (!TryBestRouteForEntry(&snapshot, entry, &bestRoute) || bestRoute == BestRouteOther) {
         ExFreePoolWithTag(entry, 'rniW');
         PermitClassify(classifyOut);
         return;
     }
+    // Windows auto-redirect is best-effort: only redirect connections that are
+    // positively identified as already routed to the TUN. If route lookup says
+    // "not TUN" or fails for a context we do not currently characterize, leave
+    // the original connect alone instead of redirecting unknown traffic.
 
     // Extract PID from metadata
     if (FWPS_IS_METADATA_FIELD_PRESENT(inMetaValues, FWPS_METADATA_FIELD_PROCESS_ID)) {
@@ -889,7 +893,7 @@ static void ClassifyFnCommon(
 
     if (!classifyContext) {
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, STATUS_INVALID_DEVICE_STATE, "no classify context");
+        TriggerFatalAndPermitClassify(ctx, classifyOut, STATUS_INVALID_DEVICE_STATE, "no classify context");
         return;
     }
 
@@ -897,7 +901,7 @@ static void ClassifyFnCommon(
     status = FwpsAcquireClassifyHandle0((void*)classifyContext, 0, &classifyHandle);
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, status, "acquire classify handle");
+        TriggerFatalAndPermitClassify(ctx, classifyOut, status, "acquire classify handle");
         return;
     }
 
@@ -910,7 +914,7 @@ static void ClassifyFnCommon(
     if (!NT_SUCCESS(status) || !entry->WritableLayerData) {
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, !NT_SUCCESS(status) ? status : STATUS_INVALID_DEVICE_STATE, "acquire writable layer data");
+        TriggerFatalAndPermitClassify(ctx, classifyOut, !NT_SUCCESS(status) ? status : STATUS_INVALID_DEVICE_STATE, "acquire writable layer data");
         return;
     }
 
@@ -922,7 +926,7 @@ static void ClassifyFnCommon(
             FWPS_CLASSIFY_FLAG_REAUTHORIZE_IF_MODIFIED_BY_OTHERS);
         FwpsReleaseClassifyHandle0(classifyHandle);
         ExFreePoolWithTag(entry, 'rniW');
-        FailClosedClassify(ctx, classifyOut, status, "pend classify");
+        TriggerFatalAndPermitClassify(ctx, classifyOut, status, "pend classify");
         return;
     }
 
@@ -1038,7 +1042,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
             redirectStatus = STATUS_INVALID_DEVICE_STATE;
         } else {
             SOCKADDR_STORAGE* redirectContext =
-                (SOCKADDR_STORAGE*)ExAllocatePoolZero(PagedPool, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
+                (SOCKADDR_STORAGE*)ExAllocatePoolZero(NonPagedPoolNx, sizeof(SOCKADDR_STORAGE) * 2, 'rniW');
             if (!redirectContext) {
                 redirectStatus = STATUS_INSUFFICIENT_RESOURCES;
             } else {
@@ -1084,7 +1088,7 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
 
         if (!NT_SUCCESS(redirectStatus)) {
             TriggerFatal(Ctx, redirectStatus, "execute redirect");
-            Verdict = VERDICT_DROP;
+            Verdict = VERDICT_PERMIT;
         }
     }
 
@@ -1096,13 +1100,8 @@ void ExecuteVerdict(_In_ PDRIVER_CONTEXT Ctx, _In_ PPENDING_ENTRY Entry, _In_ UI
         Entry->WritableLayerData = NULL;
     }
 
-    if (Verdict == VERDICT_REDIRECT || Verdict == VERDICT_BYPASS) {
-        classifyOut.actionType = FWP_ACTION_PERMIT;
-        classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
-    } else { // VERDICT_DROP
-        classifyOut.actionType = FWP_ACTION_BLOCK;
-        classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
-    }
+    classifyOut.actionType = FWP_ACTION_PERMIT;
+    classifyOut.rights &= ~FWPS_RIGHT_ACTION_WRITE;
 
     FwpsCompleteClassify0(Entry->ClassifyHandle, 0, &classifyOut);
     FwpsReleaseClassifyHandle0(Entry->ClassifyHandle);

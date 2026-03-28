@@ -13,8 +13,9 @@ const (
 
 const (
 	VerdictRedirect = 0
-	VerdictBypass   = 1
-	VerdictDrop     = 2
+	// VerdictPermit allows the original TUN-bound connect to continue
+	// without local redirection.
+	VerdictPermit = 1
 )
 
 // Config is sent to the driver via IOCTL_SET_CONFIG.

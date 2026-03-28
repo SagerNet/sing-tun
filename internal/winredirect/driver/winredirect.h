@@ -24,8 +24,7 @@
 
 // Verdict values
 #define VERDICT_REDIRECT 0
-#define VERDICT_BYPASS   1
-#define VERDICT_DROP     2
+#define VERDICT_PERMIT   1
 
 // Shared structures - must match Go types_windows.go layout
 

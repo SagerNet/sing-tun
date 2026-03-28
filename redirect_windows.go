@@ -235,11 +235,11 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 
 	// Proxy process outbound connections must never be redirected back into itself.
 	if conn.ProcessID == r.selfPID {
-		return winredirect.VerdictBypass
+		return winredirect.VerdictPermit
 	}
 
 	if dst.Addr.IsLoopback() {
-		return winredirect.VerdictBypass
+		return winredirect.VerdictPermit
 	}
 
 	if !r.tunOptions.EXP_DisableDNSHijack && dst.Port == 53 {
@@ -250,7 +250,7 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 				ctx := r.newConnContext(metadata)
 				_, err := r.handler.PrepareConnection(ctx, "tcp", src, dst, nil, 0)
 				if errors.Is(err, ErrDrop) {
-					return winredirect.VerdictDrop
+					return winredirect.VerdictPermit
 				}
 				r.redirectServer.connTable.StoreDNS(src, dst, M.SocksaddrFrom(dnsServer, 53), ctx)
 				return winredirect.VerdictRedirect
@@ -259,7 +259,7 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 	}
 
 	if r.tunOptions.StrictRoute && r.isDisabledFamily(dst.Addr) {
-		return winredirect.VerdictDrop
+		return winredirect.VerdictPermit
 	}
 
 	metadata := r.resolveMetadata(conn)
@@ -267,14 +267,14 @@ func (r *autoRedirect) evaluateConnection(conn *winredirect.PendingConn) uint32 
 
 	_, err := r.handler.PrepareConnection(ctx, N.NetworkTCP, src, dst, nil, 0)
 	if errors.Is(err, ErrDrop) {
-		return winredirect.VerdictDrop
+		return winredirect.VerdictPermit
 	}
 	if errors.Is(err, ErrReset) {
 		// Pending entries reaching userspace here have already been identified as
-		// TUN-bound by the driver. Bypass means "do not locally redirect to the
+		// TUN-bound by the driver. Permit means "do not locally redirect to the
 		// Windows redirect listener"; the original connect continues into the TUN,
 		// where reset semantics are enforced by the TUN stack.
-		return winredirect.VerdictBypass
+		return winredirect.VerdictPermit
 	}
 	if errors.Is(err, ErrBypass) && r.logger != nil {
 		r.logger.Debug("bypass not supported on Windows, redirecting: ", src, " -> ", dst)
