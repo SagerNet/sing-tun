@@ -48,9 +48,9 @@ jobs:
           echo "SDK/WDK include versions:"
           docker run --rm msvc-wine:local ls /opt/msvc/kits/10/include/
           echo "WDK km lib architectures:"
-          docker run --rm msvc-wine:local ls /opt/msvc/kits/10/lib/10.0.22621.0/km/ 2>/dev/null || true
-          echo "WindowsDriver.common.targets line 230-240:"
-          docker run --rm msvc-wine:local sed -n '230,240p' '/opt/msvc/kits/10/build/10.0.22621.0/WindowsDriver.common.targets' 2>/dev/null || true
+          docker run --rm msvc-wine:local sh -c 'ls /opt/msvc/kits/10/lib/*/km/ 2>/dev/null' || true
+          echo "WindowsDriver.common.targets (arch validation):"
+          docker run --rm msvc-wine:local sh -c 'find /opt/msvc -name "WindowsDriver.common.targets" -exec grep -n -i "valid architecture\|_SUPPORTED" {} +' 2>/dev/null || true
 
       - name: Build, verify reproducibility, and refresh tracked drivers
         id: sync
