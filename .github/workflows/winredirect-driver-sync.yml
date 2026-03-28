@@ -73,6 +73,8 @@ jobs:
         shell: pwsh
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsInstances = & $vswhere -all -products * -format json | ConvertFrom-Json
+          $vs = $vsInstances | Select-Object -First 1
           $vsInstall = & $vswhere -latest -products * -property installationPath | Select-Object -First 1
           $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $vsInstall) {
@@ -98,6 +100,15 @@ jobs:
             }
           }
 
+          if ($vs) {
+            Write-Host "VS installation name: $($vs.installationName)"
+            Write-Host "VS installation version: $($vs.installationVersion)"
+            Write-Host "VS channel id: $($vs.channelId)"
+            Write-Host "VS channel manifest id: $($vs.properties.channelManifestId)"
+            Write-Host "VS catalog product display version: $($vs.catalog.productDisplayVersion)"
+            Write-Host "VS catalog product semantic version: $($vs.catalog.productSemanticVersion)"
+            Write-Host "VS catalog build version: $($vs.catalog.buildVersion)"
+          }
           Write-Host "Visual Studio install: $vsInstall"
           Write-Host "MSBuild path: $msbuild"
           & $msbuild -version
