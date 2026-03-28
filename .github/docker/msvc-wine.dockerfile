@@ -68,7 +68,7 @@ COPY --from=fetch-wdk /builddir/wdk/Installers/ ./wdk/Installers/
 COPY --from=msvc-wine /msvc-wine/vsdownload.py ./
 COPY --from=msvc-wine /msvc-wine/patches/ ./patches/
 RUN PYTHONUNBUFFERED=1 python3 ./vsdownload.py --accept-license --cache cache --dest /opt/msvc \
-    --msvc-version=18.0 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
+    --major=18 --msvc-version=18.0 --sdk-version=10.0.22621 --with-wdk-installer wdk/Installers
 COPY --from=msvc-wine /msvc-wine/lowercase /msvc-wine/fixinclude /msvc-wine/install.sh /msvc-wine/msvctricks.cpp ./
 COPY --from=msvc-wine /msvc-wine/wrappers/ ./wrappers/
 RUN bash -x ./install.sh /opt/msvc
