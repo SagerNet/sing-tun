@@ -439,8 +439,9 @@ void EvtIoDeviceControl(
         if (NT_SUCCESS(status)) {
             WINREDIRECT_CONFIG* config = (WINREDIRECT_CONFIG*)inBuf;
             NET_LUID tunLuid = {0};
+            const GUID nullGuid = {0};
             KIRQL oldIrql;
-            if (config->RedirectPort == 0 || config->ProxyPID == 0 || InlineIsEqualGUID(&GUID_NULL, &config->TunGuid)) {
+            if (config->RedirectPort == 0 || config->ProxyPID == 0 || InlineIsEqualGUID(&nullGuid, &config->TunGuid)) {
                 status = STATUS_INVALID_PARAMETER;
             } else {
                 status = ConvertInterfaceGuidToLuid(&config->TunGuid, &tunLuid);

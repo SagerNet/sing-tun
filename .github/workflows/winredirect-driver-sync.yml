@@ -1,0 +1,228 @@
+name: sync winredirect driver
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - '.github/scripts/compare_signed_pe.py'
+      - '.github/workflows/winredirect-driver-sync.yml'
+      - 'internal/winredirect/driver/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: winredirect-driver-${{ github.event.pull_request.head.repo.full_name }}-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Refresh bundled drivers
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    env:
+      REPO_DIR: C:\Users\sekai\Projects\sing-tun
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Install Windows SDK and WDK
+        shell: pwsh
+        run: |
+          $sdkHeader = 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um\Windows.h'
+          $wdkHeader = 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\ntddk.h'
+
+          if (-not (Test-Path $sdkHeader)) {
+            winget install --source winget --exact --id Microsoft.WindowsSDK.10.0.26100 --accept-source-agreements --accept-package-agreements --disable-interactivity --log "$env:RUNNER_TEMP\sdk-install.log"
+            Write-Host "Windows SDK install exit code: $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $wdkHeader)) {
+            winget install --source winget --exact --id Microsoft.WindowsWDK.10.0.26100 --accept-source-agreements --accept-package-agreements --disable-interactivity --log "$env:RUNNER_TEMP\wdk-install.log"
+            Write-Host "WDK install exit code: $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $sdkHeader)) {
+            throw "Windows SDK header not found after installation: $sdkHeader"
+          }
+          if (-not (Test-Path $wdkHeader)) {
+            throw "WDK header not found after installation: $wdkHeader"
+          }
+
+      - name: Mirror repository to stable Windows path
+        shell: pwsh
+        run: |
+          if (Test-Path $env:REPO_DIR) {
+            Remove-Item -LiteralPath $env:REPO_DIR -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path (Split-Path -Parent $env:REPO_DIR) -Force | Out-Null
+          robocopy $env:GITHUB_WORKSPACE $env:REPO_DIR /MIR /NFL /NDL /NJH /NJS /NP
+          $robocopyExitCode = $LASTEXITCODE
+          if ($robocopyExitCode -gt 7) {
+            throw "robocopy failed with exit code $robocopyExitCode"
+          }
+          Write-Host "robocopy completed with exit code $robocopyExitCode"
+          exit 0
+
+      - name: Print toolchain versions
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsInstall = & $vswhere -latest -products * -property installationPath | Select-Object -First 1
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $vsInstall) {
+            throw 'Visual Studio installation path not found'
+          }
+          if (-not $msbuild) {
+            throw 'MSBuild.exe not found'
+          }
+
+          $vcToolsRoot = Join-Path $vsInstall 'VC\Tools\MSVC'
+          $vcToolsVersion = (Get-ChildItem $vcToolsRoot | Sort-Object Name | Select-Object -Last 1).Name
+          $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+          $sdkHeader = 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um\Windows.h'
+          $wdkHeader = 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\ntddk.h'
+
+          function Show-FileVersion([string] $label, [string] $path) {
+            if (Test-Path $path) {
+              $item = Get-Item $path
+              Write-Host "$label path: $path"
+              Write-Host "$label version: $($item.VersionInfo.FileVersion)"
+            } else {
+              Write-Host "$label path: missing ($path)"
+            }
+          }
+
+          Write-Host "Visual Studio install: $vsInstall"
+          Write-Host "MSBuild path: $msbuild"
+          & $msbuild -version
+          Write-Host "VC tools root: $vcToolsRoot"
+          Write-Host "VC tools version: $vcToolsVersion"
+
+          Show-FileVersion 'cl Hostx64 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\x64\cl.exe")
+          Show-FileVersion 'cl Hostx64 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\arm64\cl.exe")
+          Show-FileVersion 'link Hostx64 x64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\x64\link.exe")
+          Show-FileVersion 'link Hostx64 ARM64' (Join-Path $vcToolsRoot "$vcToolsVersion\bin\Hostx64\arm64\link.exe")
+
+          Write-Host 'Windows Kits include directories:'
+          Get-ChildItem $kitsRoot | Sort-Object Name | ForEach-Object { Write-Host "  $($_.Name)" }
+          Write-Host "Windows SDK header present: $(Test-Path $sdkHeader)"
+          Write-Host "WDK header present: $(Test-Path $wdkHeader)"
+
+      - name: Build, verify reproducibility, and refresh tracked drivers
+        id: sync
+        shell: pwsh
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          git config --global --add safe.directory $env:REPO_DIR
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) {
+            throw 'MSBuild.exe not found'
+          }
+
+          $env:CL = '/Brepro'
+          $env:LINK = '/Brepro'
+          $artifactDir = Join-Path $env:RUNNER_TEMP 'winredirect-driver-sync'
+          $failureDir = Join-Path $artifactDir 'failure'
+          Remove-Item -LiteralPath $artifactDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          function Invoke-DriverBuild([string] $platform) {
+            Remove-Item -LiteralPath "internal/winredirect/driver/build/$platform" -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "internal/winredirect/driver/intermediate/$platform" -Recurse -Force -ErrorAction SilentlyContinue
+            & $msbuild 'internal/winredirect/driver/winredirect.vcxproj' '/t:Rebuild' '/p:Configuration=Release' "/p:Platform=$platform" '/p:SpectreMitigation=false' '/v:minimal'
+            if ($LASTEXITCODE -ne 0) {
+              throw "MSBuild failed for $platform with exit code $LASTEXITCODE"
+            }
+          }
+
+          $targets = @(
+            @{ platform = 'x64'; repo = 'internal/winredirect/amd64/winredirect.sys' },
+            @{ platform = 'ARM64'; repo = 'internal/winredirect/arm64/winredirect.sys' }
+          )
+
+          Write-Host 'ARM and x86 are intentionally skipped here: WDK 10.0.26100 on GitHub-hosted CI does not support them.'
+
+          $changed = $false
+          foreach ($target in $targets) {
+            $platform = $target.platform
+            $tracked = $target.repo
+            $buildOutput = "internal/winredirect/driver/build/$platform/Release/winredirect.sys"
+            $run1 = Join-Path $artifactDir "$platform-run1.sys"
+            $run2 = Join-Path $artifactDir "$platform-run2.sys"
+
+            Invoke-DriverBuild $platform
+            Copy-Item -LiteralPath $buildOutput -Destination $run1 -Force
+
+            Invoke-DriverBuild $platform
+            Copy-Item -LiteralPath $buildOutput -Destination $run2 -Force
+
+            & python '.github/scripts/compare_signed_pe.py' $run1 $run2
+            switch ($LASTEXITCODE) {
+              0 {
+                Write-Host "$platform reproduced after stripping Authenticode data."
+              }
+              1 {
+                New-Item -ItemType Directory -Path $failureDir -Force | Out-Null
+                Copy-Item -LiteralPath $run1 -Destination (Join-Path $failureDir "$platform-run1.sys") -Force
+                Copy-Item -LiteralPath $run2 -Destination (Join-Path $failureDir "$platform-run2.sys") -Force
+                throw "$platform build is not reproducible beyond signing metadata."
+              }
+              default {
+                throw "reproducibility comparison failed for $platform with exit code $LASTEXITCODE"
+              }
+            }
+
+            & python '.github/scripts/compare_signed_pe.py' $run2 $tracked
+            switch ($LASTEXITCODE) {
+              0 {
+                Write-Host "$platform matches the tracked driver after stripping Authenticode data."
+              }
+              1 {
+                Write-Host "$platform differs beyond signing metadata; replacing tracked driver."
+                Copy-Item -LiteralPath $run2 -Destination $tracked -Force
+                git add -- $tracked
+                $changed = $true
+              }
+              default {
+                throw "comparison failed for $platform with exit code $LASTEXITCODE"
+              }
+            }
+          }
+
+          if ($changed) {
+            "changed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            "changed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Upload failed reproducibility artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winredirect-repro-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\winredirect-driver-sync\failure\*.sys
+          if-no-files-found: warn
+
+      - name: Commit and push refreshed drivers
+        if: steps.sync.outputs.changed == 'true'
+        shell: pwsh
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            exit 0
+          }
+
+          git commit -m 'winredirect: update bundled drivers'
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
