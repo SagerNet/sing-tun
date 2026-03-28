@@ -77,7 +77,7 @@ RUN bash -x ./install.sh /opt/msvc
 # WDK 22621 MSBuild targets reject Win32/ARM for km drivers (removed in Windows 11).
 # The km libraries for these arches are present; only the validation blocks them.
 RUN find -L /opt/msvc -iname 'windowsdriver.common.targets' \
-    -exec sed -i '/not a valid architecture for Kernel mode/d' {} +
+    -exec sed -i 's/\(.*not a valid architecture for Kernel mode.*\)/<!-- \1 -->/' {} +
 
 FROM wine
 COPY --from=builder /opt/msvc /opt/msvc
