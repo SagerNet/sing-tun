@@ -17,8 +17,8 @@ package header
 import (
 	"encoding/binary"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip"
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/gtcpip"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
 )
 
 // ICMPv6 represents an ICMPv6 header stored in a byte array.
