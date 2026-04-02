@@ -11,7 +11,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing/common"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
