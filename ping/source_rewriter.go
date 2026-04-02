@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/sing-tun"
-	"github.com/sagernet/sing-tun/internal/gtcpip/header"
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/logger"
 )
 

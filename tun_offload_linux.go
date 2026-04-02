@@ -14,9 +14,9 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip"
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
-	"github.com/sagernet/sing-tun/internal/gtcpip/header"
+	"github.com/sagernet/sing-tun/gtcpip"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/gtcpip/header"
 
 	"golang.org/x/sys/unix"
 )
