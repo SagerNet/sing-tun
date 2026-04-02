@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip"
+	"github.com/sagernet/sing-tun/gtcpip"
 	"github.com/sagernet/sing/common"
 )
 
