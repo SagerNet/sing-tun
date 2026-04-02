@@ -10,8 +10,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-tun"
-	"github.com/sagernet/sing-tun/internal/gtcpip/header"
-	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -30,7 +29,6 @@ type Destination struct {
 	destination   netip.Addr
 	routeContext  tun.DirectRouteContext
 	timeout       time.Duration
-	lastActive    common.TypedValue[time.Time]
 	requestAccess sync.Mutex
 	requests      map[pingRequest]time.Time
 }
@@ -75,7 +73,6 @@ func ConnectDestination(
 		timeout:      timeout,
 		requests:     make(map[pingRequest]time.Time),
 	}
-	d.lastActive.Store(time.Now())
 	go d.loopRead()
 	return d, nil
 }
@@ -83,21 +80,14 @@ func ConnectDestination(
 func (d *Destination) loopRead() {
 	defer d.Close()
 	for {
-		deadline := d.lastActive.Load().Add(d.timeout)
-		if !time.Now().Before(deadline) {
-			return
-		}
-		err := d.conn.SetReadDeadline(deadline)
+		buffer := buf.NewSize(maxICMPPacketSize)
+		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
 		}
-		buffer := buf.NewSize(maxICMPPacketSize)
 		err = d.conn.ReadIP(buffer)
 		if err != nil {
 			buffer.Release()
-			if E.IsTimeout(err) {
-				continue
-			}
 			if !E.IsClosed(err) {
 				d.logger.ErrorContext(d.ctx, E.Cause(err, "receive ICMP echo reply"))
 			}
@@ -168,7 +158,6 @@ func (d *Destination) loopRead() {
 			}
 			d.logger.TraceContext(d.ctx, "read ICMPv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 		}
-		d.lastActive.Store(time.Now())
 		err = d.routeContext.WritePacket(buffer.Bytes())
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP echo reply"))
@@ -178,7 +167,6 @@ func (d *Destination) loopRead() {
 }
 
 func (d *Destination) WritePacket(packet *buf.Buffer) error {
-	d.lastActive.Store(time.Now())
 	if !d.destination.Is6() {
 		ipHdr := header.IPv4(packet.Bytes())
 		if !ipHdr.IsValid(packet.Len()) {
