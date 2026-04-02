@@ -14,7 +14,7 @@
 
 package header
 
-import "github.com/sagernet/sing-tun/internal/gtcpip"
+import "github.com/sagernet/sing-tun/gtcpip"
 
 // NDPNeighborAdvert is an NDP Neighbor Advertisement message. It will
 // only contain the body of an ICMPv6 packet.
