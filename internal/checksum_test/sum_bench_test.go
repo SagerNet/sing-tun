@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/sagernet/sing-tun/internal/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/internal/tschecksum"
 )
 
