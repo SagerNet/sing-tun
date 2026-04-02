@@ -12,9 +12,8 @@ import (
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/nftables/userdata"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/ranges"
-
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/ranges"
 
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
