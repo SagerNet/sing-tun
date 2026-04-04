@@ -26,6 +26,12 @@ type redirectServer struct {
 	inShutdown atomic.Bool
 }
 
+func (s *redirectServer) logError(args ...any) {
+	if s.logger != nil {
+		s.logger.Error(args...)
+	}
+}
+
 func newRedirectServer(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
 	return &redirectServer{
 		ctx:        ctx,
@@ -60,14 +66,14 @@ func (s *redirectServer) loopIn() {
 			var netError net.Error
 			//nolint:staticcheck
 			if errors.As(err, &netError) && netError.Temporary() {
-				s.logger.Error(err)
+				s.logError(err)
 				continue
 			}
 			if s.inShutdown.Load() && E.IsClosed(err) {
 				return
 			}
 			s.listener.Close()
-			s.logger.Error("serve error: ", err)
+			s.logError("serve error: ", err)
 			continue
 		}
 		source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
@@ -75,7 +81,7 @@ func (s *redirectServer) loopIn() {
 		if err != nil {
 			_ = conn.SetLinger(0)
 			_ = conn.Close()
-			s.logger.Error("process redirect connection from ", source, ": invalid connection: ", err)
+			s.logError("process redirect connection from ", source, ": invalid connection: ", err)
 			continue
 		}
 		go s.handler.NewConnectionEx(s.ctx, conn, source, M.SocksaddrFromNetIP(destination).Unwrap(), nil)

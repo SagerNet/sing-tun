@@ -1,0 +1,160 @@
+name: sync winredirect driver
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+    paths:
+      - '.github/docker/msvc-wine.dockerfile'
+      - '.github/scripts/compare_signed_pe.py'
+      - '.github/workflows/winredirect-driver-sync.yml'
+      - 'internal/winredirect/driver/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: winredirect-driver-${{ github.event.pull_request.head.repo.full_name }}-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Refresh bundled drivers
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build msvc-wine image
+        uses: docker/build-push-action@v6
+        with:
+          file: .github/docker/msvc-wine.dockerfile
+          load: true
+          tags: msvc-wine:local
+          cache-from: type=gha,scope=msvc-wine
+          cache-to: type=gha,mode=max,scope=msvc-wine
+
+      - name: Print toolchain versions
+        run: |
+          docker run --rm msvc-wine:local /opt/msvc/bin/x64/cl 2>&1 | head -2 || true
+          echo "SDK/WDK include versions:"
+          docker run --rm msvc-wine:local ls /opt/msvc/kits/10/include/
+          echo "WDK km lib architectures:"
+          docker run --rm msvc-wine:local sh -c 'ls /opt/msvc/kits/10/lib/*/km/ 2>/dev/null' || true
+          echo "WindowsDriver.common.targets (arch validation):"
+          docker run --rm msvc-wine:local sh -c 'find /opt/msvc -name "WindowsDriver.common.targets" -exec grep -n -i "valid architecture\|_SUPPORTED" {} +' 2>/dev/null || true
+
+      - name: Build, verify reproducibility, and refresh tracked drivers
+        id: sync
+        run: |
+          set -euo pipefail
+
+          arches=(x64  arm64  x86)
+          platforms=(x64 ARM64  Win32)
+          tracked=(
+            internal/winredirect/amd64/winredirect.sys
+            internal/winredirect/arm64/winredirect.sys
+            internal/winredirect/x86/winredirect.sys
+          )
+
+          changed=false
+          artifact_dir="${RUNNER_TEMP}/winredirect-driver-sync"
+          failure_dir="${artifact_dir}/failure"
+          mkdir -p "$artifact_dir"
+
+          build_driver() {
+            docker run --rm \
+              -v "$PWD:/src" -w /src \
+              -e CL=/Brepro -e LINK=/Brepro \
+              msvc-wine:local \
+              /opt/msvc/bin/"$1"/msbuild \
+              internal/winredirect/driver/winredirect.vcxproj \
+              /t:Rebuild /p:Configuration=Release /p:SpectreMitigation=false /p:TrackFileAccess=false /v:minimal
+          }
+
+          for i in "${!arches[@]}"; do
+            arch="${arches[$i]}"
+            platform="${platforms[$i]}"
+            tracked_file="${tracked[$i]}"
+            build_output="internal/winredirect/driver/build/${platform}/Release/winredirect.sys"
+            run1="${artifact_dir}/${arch}-run1.sys"
+            run2="${artifact_dir}/${arch}-run2.sys"
+
+            echo "::group::Build ${arch} run 1"
+            build_driver "$arch"
+            cp "$build_output" "$run1"
+            echo "::endgroup::"
+
+            echo "::group::Build ${arch} run 2"
+            build_driver "$arch"
+            cp "$build_output" "$run2"
+            echo "::endgroup::"
+
+            echo "::group::Verify ${arch} reproducibility"
+            rc=0
+            python3 .github/scripts/compare_signed_pe.py "$run1" "$run2" || rc=$?
+            case $rc in
+              0)
+                echo "${arch} reproduced after stripping Authenticode data."
+                ;;
+              1)
+                mkdir -p "$failure_dir"
+                cp "$run1" "${failure_dir}/${arch}-run1.sys"
+                cp "$run2" "${failure_dir}/${arch}-run2.sys"
+                echo "::error::${arch} build is not reproducible beyond signing metadata."
+                exit 1
+                ;;
+              *)
+                echo "::error::Reproducibility comparison failed for ${arch} with exit code ${rc}"
+                exit "$rc"
+                ;;
+            esac
+            echo "::endgroup::"
+
+            echo "::group::Compare ${arch} with tracked driver"
+            rc=0
+            python3 .github/scripts/compare_signed_pe.py "$run2" "$tracked_file" || rc=$?
+            case $rc in
+              0)
+                echo "${arch} matches the tracked driver after stripping Authenticode data."
+                ;;
+              1|2)
+                echo "${arch} differs beyond signing metadata (rc=${rc}); replacing tracked driver."
+                cp "$run2" "$tracked_file"
+                git add -- "$tracked_file"
+                changed=true
+                ;;
+              *)
+                echo "::error::Comparison failed for ${arch} with exit code ${rc}"
+                exit "$rc"
+                ;;
+            esac
+            echo "::endgroup::"
+          done
+
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload failed reproducibility artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winredirect-repro-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/winredirect-driver-sync/failure/*.sys
+          if-no-files-found: warn
+
+      - name: Commit and push refreshed drivers
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --quiet && exit 0
+          git commit -m 'winredirect: update bundled drivers'
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"

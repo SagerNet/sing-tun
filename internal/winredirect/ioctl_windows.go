@@ -49,3 +49,17 @@ func (m *Manager) SetVerdict(v *Verdict) error {
 	)
 	return err
 }
+
+func (m *Manager) GetFatalInfo() (*FatalInfo, error) {
+	var info FatalInfo
+	_, err := m.ioctl(
+		ioctlGetFatalInfo,
+		nil, 0,
+		unsafe.Pointer(&info),
+		uint32(unsafe.Sizeof(info)),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
