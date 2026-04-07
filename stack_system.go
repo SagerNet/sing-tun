@@ -281,6 +281,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 		for _, buffer := range buffers {
 			packetSize := buffer.Len()
 			if packetSize < header.IPv4MinimumSize {
+				buffer.Release()
 				continue
 			}
 			if s.processPacket(buffer.Bytes()) {
@@ -294,6 +295,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 			if err != nil {
 				s.logger.Trace(E.Cause(err, "batch write packet"))
 			}
+			buf.ReleaseMulti(writeBuffers)
 		}
 	}
 }
