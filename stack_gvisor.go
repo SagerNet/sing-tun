@@ -87,7 +87,7 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
-	ipStack, err := NewGVisorStackWithOptions(linkEndpoint, nicOptions, false)
+	ipStack, err := newGVisorStack(linkEndpoint, nicOptions, false, true)
 	if err != nil {
 		return err
 	}
@@ -135,6 +135,10 @@ func NewGVisorStack(ep stack.LinkEndpoint) (*stack.Stack, error) {
 }
 
 func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions, allowRawEndpoint bool) (*stack.Stack, error) {
+	return newGVisorStack(ep, opts, allowRawEndpoint, false)
+}
+
+func newGVisorStack(ep stack.LinkEndpoint, opts stack.NICOptions, allowRawEndpoint bool, isLocalStack bool) (*stack.Stack, error) {
 	stackOptions := stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol,
@@ -175,23 +179,46 @@ func NewGVisorStackWithOptions(ep stack.LinkEndpoint, opts stack.NICOptions, all
 		tcpRecoveryOpt := tcpip.TCPRecovery(0)
 		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRecoveryOpt)
 	}
-	tcpRXBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     tcpRXBufMinSize,
-		Default: tcpRXBufDefSize,
-		Max:     tcpRXBufMaxSize,
-	}
-	err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRXBufOpt)
-	if err != nil {
-		return nil, gonet.TranslateNetstackError(err)
-	}
-	tcpTXBufOpt := tcpip.TCPSendBufferSizeRangeOption{
-		Min:     tcpTXBufMinSize,
-		Default: tcpTXBufDefSize,
-		Max:     tcpTXBufMaxSize,
-	}
-	err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTXBufOpt)
-	if err != nil {
-		return nil, gonet.TranslateNetstackError(err)
+	if isLocalStack || runtime.GOOS == "ios" {
+		const iOSBufferDefault = 1 << 15
+		const iOSBufferMax = 1 << 17
+		tcpRXBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{
+			Min:     tcpRXBufMinSize,
+			Default: iOSBufferDefault,
+			Max:     iOSBufferMax,
+		}
+		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRXBufOpt)
+		if err != nil {
+			return nil, gonet.TranslateNetstackError(err)
+		}
+		tcpTXBufOpt := tcpip.TCPSendBufferSizeRangeOption{
+			Min:     tcpTXBufMinSize,
+			Default: iOSBufferDefault,
+			Max:     iOSBufferMax,
+		}
+		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTXBufOpt)
+		if err != nil {
+			return nil, gonet.TranslateNetstackError(err)
+		}
+	} else {
+		tcpRXBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{
+			Min:     tcpRXBufMinSize,
+			Default: tcpRXBufDefSize,
+			Max:     tcpRXBufMaxSize,
+		}
+		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRXBufOpt)
+		if err != nil {
+			return nil, gonet.TranslateNetstackError(err)
+		}
+		tcpTXBufOpt := tcpip.TCPSendBufferSizeRangeOption{
+			Min:     tcpTXBufMinSize,
+			Default: tcpTXBufDefSize,
+			Max:     tcpTXBufMaxSize,
+		}
+		err = ipStack.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpTXBufOpt)
+		if err != nil {
+			return nil, gonet.TranslateNetstackError(err)
+		}
 	}
 	return ipStack, nil
 }
