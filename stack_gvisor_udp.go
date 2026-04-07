@@ -46,7 +46,7 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 	source := M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
 	bufferRange := pkt.Data().AsRange()
-	bufferSlices := make([][]byte, bufferRange.Size())
+	var bufferSlices [][]byte
 	rangeIterate(bufferRange, func(view *buffer.View) {
 		bufferSlices = append(bufferSlices, view.AsSlice())
 	})
