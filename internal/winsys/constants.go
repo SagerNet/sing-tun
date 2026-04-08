@@ -132,7 +132,28 @@ var FWPM_CONDITION_ALE_APP_ID = windows.GUID{
 }
 
 const (
+	IPPROTO_TCP uint32 = 6
 	IPPROTO_UDP uint32 = 17
+)
+
+// https://learn.microsoft.com/en-us/windows-hardware/drivers/network/ale-connect-redirect-layers
+var FWPM_LAYER_ALE_CONNECT_REDIRECT_V4 = windows.GUID{
+	Data1: 0xc4f7e4c3,
+	Data2: 0x3455,
+	Data3: 0x4c3a,
+	Data4: [8]byte{0xa2, 0x17, 0x31, 0x7c, 0x8f, 0xc8, 0xf0, 0xd1},
+}
+
+var FWPM_LAYER_ALE_CONNECT_REDIRECT_V6 = windows.GUID{
+	Data1: 0x587e54a7,
+	Data2: 0x8440,
+	Data3: 0x4b2a,
+	Data4: [8]byte{0xa3, 0x53, 0x2e, 0x45, 0xd8, 0x80, 0x25, 0x4f},
+}
+
+const (
+	FWP_ACTION_FLAG_CALLOUT        uint32 = 0x00004000
+	FWP_ACTION_CALLOUT_TERMINATING uint32 = (0x00000003 | FWP_ACTION_FLAG_CALLOUT | FWP_ACTION_FLAG_TERMINATING)
 )
 
 const (

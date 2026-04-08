@@ -74,7 +74,7 @@ var (
 )
 
 func cancelMibChangeNotify2(notificationHandle windows.Handle) (ret error) {
-	r0, _, _ := syscall.Syscall(procCancelMibChangeNotify2.Addr(), 1, uintptr(notificationHandle), 0, 0)
+	r0, _, _ := syscall.SyscallN(procCancelMibChangeNotify2.Addr(), uintptr(notificationHandle))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -82,7 +82,7 @@ func cancelMibChangeNotify2(notificationHandle windows.Handle) (ret error) {
 }
 
 func convertInterfaceGUIDToLUID(interfaceGUID *windows.GUID, interfaceLUID *LUID) (ret error) {
-	r0, _, _ := syscall.Syscall(procConvertInterfaceGuidToLuid.Addr(), 2, uintptr(unsafe.Pointer(interfaceGUID)), uintptr(unsafe.Pointer(interfaceLUID)), 0)
+	r0, _, _ := syscall.SyscallN(procConvertInterfaceGuidToLuid.Addr(), uintptr(unsafe.Pointer(interfaceGUID)), uintptr(unsafe.Pointer(interfaceLUID)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -90,7 +90,7 @@ func convertInterfaceGUIDToLUID(interfaceGUID *windows.GUID, interfaceLUID *LUID
 }
 
 func convertInterfaceIndexToLUID(interfaceIndex uint32, interfaceLUID *LUID) (ret error) {
-	r0, _, _ := syscall.Syscall(procConvertInterfaceIndexToLuid.Addr(), 2, uintptr(interfaceIndex), uintptr(unsafe.Pointer(interfaceLUID)), 0)
+	r0, _, _ := syscall.SyscallN(procConvertInterfaceIndexToLuid.Addr(), uintptr(interfaceIndex), uintptr(unsafe.Pointer(interfaceLUID)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -98,7 +98,7 @@ func convertInterfaceIndexToLUID(interfaceIndex uint32, interfaceLUID *LUID) (re
 }
 
 func convertInterfaceLUIDToGUID(interfaceLUID *LUID, interfaceGUID *windows.GUID) (ret error) {
-	r0, _, _ := syscall.Syscall(procConvertInterfaceLuidToGuid.Addr(), 2, uintptr(unsafe.Pointer(interfaceLUID)), uintptr(unsafe.Pointer(interfaceGUID)), 0)
+	r0, _, _ := syscall.SyscallN(procConvertInterfaceLuidToGuid.Addr(), uintptr(unsafe.Pointer(interfaceLUID)), uintptr(unsafe.Pointer(interfaceGUID)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -106,7 +106,7 @@ func convertInterfaceLUIDToGUID(interfaceLUID *LUID, interfaceGUID *windows.GUID
 }
 
 func createAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procCreateAnycastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procCreateAnycastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -114,7 +114,7 @@ func createAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
 }
 
 func createIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
-	r0, _, _ := syscall.Syscall(procCreateIpForwardEntry2.Addr(), 1, uintptr(unsafe.Pointer(route)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procCreateIpForwardEntry2.Addr(), uintptr(unsafe.Pointer(route)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -122,7 +122,7 @@ func createIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
 }
 
 func createUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procCreateUnicastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procCreateUnicastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -130,7 +130,7 @@ func createUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
 }
 
 func deleteAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procDeleteAnycastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procDeleteAnycastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -138,7 +138,7 @@ func deleteAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
 }
 
 func deleteIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
-	r0, _, _ := syscall.Syscall(procDeleteIpForwardEntry2.Addr(), 1, uintptr(unsafe.Pointer(route)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procDeleteIpForwardEntry2.Addr(), uintptr(unsafe.Pointer(route)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -146,7 +146,7 @@ func deleteIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
 }
 
 func deleteUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procDeleteUnicastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procDeleteUnicastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -154,12 +154,12 @@ func deleteUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
 }
 
 func freeMibTable(memory unsafe.Pointer) {
-	syscall.Syscall(procFreeMibTable.Addr(), 1, uintptr(memory), 0, 0)
+	syscall.SyscallN(procFreeMibTable.Addr(), uintptr(memory))
 	return
 }
 
 func getAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetAnycastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procGetAnycastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -167,7 +167,7 @@ func getAnycastIPAddressEntry(row *MibAnycastIPAddressRow) (ret error) {
 }
 
 func getAnycastIPAddressTable(family AddressFamily, table **mibAnycastIPAddressTable) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetAnycastIpAddressTable.Addr(), 2, uintptr(family), uintptr(unsafe.Pointer(table)), 0)
+	r0, _, _ := syscall.SyscallN(procGetAnycastIpAddressTable.Addr(), uintptr(family), uintptr(unsafe.Pointer(table)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -175,7 +175,7 @@ func getAnycastIPAddressTable(family AddressFamily, table **mibAnycastIPAddressT
 }
 
 func getIfEntry2(row *MibIfRow2) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIfEntry2.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procGetIfEntry2.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -183,7 +183,7 @@ func getIfEntry2(row *MibIfRow2) (ret error) {
 }
 
 func getIfTable2Ex(level MibIfEntryLevel, table **mibIfTable2) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIfTable2Ex.Addr(), 2, uintptr(level), uintptr(unsafe.Pointer(table)), 0)
+	r0, _, _ := syscall.SyscallN(procGetIfTable2Ex.Addr(), uintptr(level), uintptr(unsafe.Pointer(table)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -191,7 +191,7 @@ func getIfTable2Ex(level MibIfEntryLevel, table **mibIfTable2) (ret error) {
 }
 
 func getIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIpForwardEntry2.Addr(), 1, uintptr(unsafe.Pointer(route)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procGetIpForwardEntry2.Addr(), uintptr(unsafe.Pointer(route)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -199,7 +199,7 @@ func getIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
 }
 
 func getIPForwardTable2(family AddressFamily, table **mibIPforwardTable2) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIpForwardTable2.Addr(), 2, uintptr(family), uintptr(unsafe.Pointer(table)), 0)
+	r0, _, _ := syscall.SyscallN(procGetIpForwardTable2.Addr(), uintptr(family), uintptr(unsafe.Pointer(table)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -207,7 +207,7 @@ func getIPForwardTable2(family AddressFamily, table **mibIPforwardTable2) (ret e
 }
 
 func getIPInterfaceEntry(row *MibIPInterfaceRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIpInterfaceEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procGetIpInterfaceEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -215,7 +215,7 @@ func getIPInterfaceEntry(row *MibIPInterfaceRow) (ret error) {
 }
 
 func getIPInterfaceTable(family AddressFamily, table **mibIPInterfaceTable) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetIpInterfaceTable.Addr(), 2, uintptr(family), uintptr(unsafe.Pointer(table)), 0)
+	r0, _, _ := syscall.SyscallN(procGetIpInterfaceTable.Addr(), uintptr(family), uintptr(unsafe.Pointer(table)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -223,7 +223,7 @@ func getIPInterfaceTable(family AddressFamily, table **mibIPInterfaceTable) (ret
 }
 
 func getUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetUnicastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procGetUnicastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -231,7 +231,7 @@ func getUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
 }
 
 func getUnicastIPAddressTable(family AddressFamily, table **mibUnicastIPAddressTable) (ret error) {
-	r0, _, _ := syscall.Syscall(procGetUnicastIpAddressTable.Addr(), 2, uintptr(family), uintptr(unsafe.Pointer(table)), 0)
+	r0, _, _ := syscall.SyscallN(procGetUnicastIpAddressTable.Addr(), uintptr(family), uintptr(unsafe.Pointer(table)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -239,17 +239,17 @@ func getUnicastIPAddressTable(family AddressFamily, table **mibUnicastIPAddressT
 }
 
 func initializeIPForwardEntry(route *MibIPforwardRow2) {
-	syscall.Syscall(procInitializeIpForwardEntry.Addr(), 1, uintptr(unsafe.Pointer(route)), 0, 0)
+	syscall.SyscallN(procInitializeIpForwardEntry.Addr(), uintptr(unsafe.Pointer(route)))
 	return
 }
 
 func initializeIPInterfaceEntry(row *MibIPInterfaceRow) {
-	syscall.Syscall(procInitializeIpInterfaceEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	syscall.SyscallN(procInitializeIpInterfaceEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	return
 }
 
 func initializeUnicastIPAddressEntry(row *MibUnicastIPAddressRow) {
-	syscall.Syscall(procInitializeUnicastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	syscall.SyscallN(procInitializeUnicastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	return
 }
 
@@ -258,7 +258,7 @@ func notifyIPInterfaceChange(family AddressFamily, callback uintptr, callerConte
 	if initialNotification {
 		_p0 = 1
 	}
-	r0, _, _ := syscall.Syscall6(procNotifyIpInterfaceChange.Addr(), 5, uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)), 0)
+	r0, _, _ := syscall.SyscallN(procNotifyIpInterfaceChange.Addr(), uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -270,7 +270,7 @@ func notifyRouteChange2(family AddressFamily, callback uintptr, callerContext ui
 	if initialNotification {
 		_p0 = 1
 	}
-	r0, _, _ := syscall.Syscall6(procNotifyRouteChange2.Addr(), 5, uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)), 0)
+	r0, _, _ := syscall.SyscallN(procNotifyRouteChange2.Addr(), uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -282,31 +282,7 @@ func notifyUnicastIPAddressChange(family AddressFamily, callback uintptr, caller
 	if initialNotification {
 		_p0 = 1
 	}
-	r0, _, _ := syscall.Syscall6(procNotifyUnicastIpAddressChange.Addr(), 5, uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)), 0)
-	if r0 != 0 {
-		ret = syscall.Errno(r0)
-	}
-	return
-}
-
-func setInterfaceDnsSettingsByDwords(guid1 uintptr, guid2 uintptr, guid3 uintptr, guid4 uintptr, settings *DnsInterfaceSettings) (ret error) {
-	ret = procSetInterfaceDnsSettings.Find()
-	if ret != nil {
-		return
-	}
-	r0, _, _ := syscall.Syscall6(procSetInterfaceDnsSettings.Addr(), 5, uintptr(guid1), uintptr(guid2), uintptr(guid3), uintptr(guid4), uintptr(unsafe.Pointer(settings)), 0)
-	if r0 != 0 {
-		ret = syscall.Errno(r0)
-	}
-	return
-}
-
-func setInterfaceDnsSettingsByQwords(guid1 uintptr, guid2 uintptr, settings *DnsInterfaceSettings) (ret error) {
-	ret = procSetInterfaceDnsSettings.Find()
-	if ret != nil {
-		return
-	}
-	r0, _, _ := syscall.Syscall(procSetInterfaceDnsSettings.Addr(), 3, uintptr(guid1), uintptr(guid2), uintptr(unsafe.Pointer(settings)))
+	r0, _, _ := syscall.SyscallN(procNotifyUnicastIpAddressChange.Addr(), uintptr(family), uintptr(callback), uintptr(callerContext), uintptr(_p0), uintptr(unsafe.Pointer(notificationHandle)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -318,7 +294,31 @@ func setInterfaceDnsSettingsByPtr(guid *windows.GUID, settings *DnsInterfaceSett
 	if ret != nil {
 		return
 	}
-	r0, _, _ := syscall.Syscall(procSetInterfaceDnsSettings.Addr(), 2, uintptr(unsafe.Pointer(guid)), uintptr(unsafe.Pointer(settings)), 0)
+	r0, _, _ := syscall.SyscallN(procSetInterfaceDnsSettings.Addr(), uintptr(unsafe.Pointer(guid)), uintptr(unsafe.Pointer(settings)))
+	if r0 != 0 {
+		ret = syscall.Errno(r0)
+	}
+	return
+}
+
+func setInterfaceDnsSettingsByQwords(guid1 uintptr, guid2 uintptr, settings *DnsInterfaceSettings) (ret error) {
+	ret = procSetInterfaceDnsSettings.Find()
+	if ret != nil {
+		return
+	}
+	r0, _, _ := syscall.SyscallN(procSetInterfaceDnsSettings.Addr(), uintptr(guid1), uintptr(guid2), uintptr(unsafe.Pointer(settings)))
+	if r0 != 0 {
+		ret = syscall.Errno(r0)
+	}
+	return
+}
+
+func setInterfaceDnsSettingsByDwords(guid1 uintptr, guid2 uintptr, guid3 uintptr, guid4 uintptr, settings *DnsInterfaceSettings) (ret error) {
+	ret = procSetInterfaceDnsSettings.Find()
+	if ret != nil {
+		return
+	}
+	r0, _, _ := syscall.SyscallN(procSetInterfaceDnsSettings.Addr(), uintptr(guid1), uintptr(guid2), uintptr(guid3), uintptr(guid4), uintptr(unsafe.Pointer(settings)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -326,7 +326,7 @@ func setInterfaceDnsSettingsByPtr(guid *windows.GUID, settings *DnsInterfaceSett
 }
 
 func setIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
-	r0, _, _ := syscall.Syscall(procSetIpForwardEntry2.Addr(), 1, uintptr(unsafe.Pointer(route)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procSetIpForwardEntry2.Addr(), uintptr(unsafe.Pointer(route)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -334,7 +334,7 @@ func setIPForwardEntry2(route *MibIPforwardRow2) (ret error) {
 }
 
 func setIPInterfaceEntry(row *MibIPInterfaceRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procSetIpInterfaceEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procSetIpInterfaceEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}
@@ -342,7 +342,7 @@ func setIPInterfaceEntry(row *MibIPInterfaceRow) (ret error) {
 }
 
 func setUnicastIPAddressEntry(row *MibUnicastIPAddressRow) (ret error) {
-	r0, _, _ := syscall.Syscall(procSetUnicastIpAddressEntry.Addr(), 1, uintptr(unsafe.Pointer(row)), 0, 0)
+	r0, _, _ := syscall.SyscallN(procSetUnicastIpAddressEntry.Addr(), uintptr(unsafe.Pointer(row)))
 	if r0 != 0 {
 		ret = syscall.Errno(r0)
 	}

@@ -1,0 +1,59 @@
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = WFPCALLOUTDRIVER
+ClassGuid   = {57465043-616C-6C6F-7574-5F636C617373}
+Provider    = %ProviderString%
+CatalogFile = winredirect.cat
+DriverVer   =
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir     = 13
+WinRedirect.Files  = 13
+
+[DefaultInstall.NTamd64]
+CopyFiles = WinRedirect.Files
+
+[DefaultInstall.NTarm64]
+CopyFiles = WinRedirect.Files
+
+[DefaultInstall.NTarm]
+CopyFiles = WinRedirect.Files
+
+[DefaultInstall.NTx86]
+CopyFiles = WinRedirect.Files
+
+[DefaultInstall.NTamd64.Services]
+AddService = WinRedirect,,WinRedirect.Service
+
+[DefaultInstall.NTarm64.Services]
+AddService = WinRedirect,,WinRedirect.Service
+
+[DefaultInstall.NTarm.Services]
+AddService = WinRedirect,,WinRedirect.Service
+
+[DefaultInstall.NTx86.Services]
+AddService = WinRedirect,,WinRedirect.Service
+
+[WinRedirect.Service]
+DisplayName   = %ServiceName%
+Description   = %ServiceDesc%
+ServiceBinary = %13%\winredirect.sys
+ServiceType   = 1  ; SERVICE_KERNEL_DRIVER
+StartType     = 3  ; SERVICE_DEMAND_START
+ErrorControl  = 1  ; SERVICE_ERROR_NORMAL
+
+[WinRedirect.Files]
+winredirect.sys
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+winredirect.sys = 1
+
+[Strings]
+ProviderString = "sing-tun"
+ServiceName    = "WinRedirect"
+ServiceDesc    = "WFP TCP Connection Redirect Driver"
+DiskName       = "WinRedirect Installation Disk"
