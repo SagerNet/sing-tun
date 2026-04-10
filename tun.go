@@ -99,6 +99,8 @@ type Options struct {
 	ExcludeInterface                      []string
 	IncludeUID                            []ranges.Range[uint32]
 	ExcludeUID                            []ranges.Range[uint32]
+	ExcludeSrcPort                        []ranges.Range[uint16]
+	ExcludeDstPort                        []ranges.Range[uint16]
 	IncludeAndroidUser                    []int
 	IncludePackage                        []string
 	ExcludePackage                        []string
