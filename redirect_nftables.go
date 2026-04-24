@@ -283,10 +283,14 @@ func (r *autoRedirect) setupNFTables() error {
 	if err != nil {
 		return E.Cause(err, "configure openwrt firewall4")
 	}
-
 	err = nft.Flush()
 	if err != nil {
 		return E.Cause(err, "flush nftables")
+	}
+	r.startDockerFirewallMonitor()
+	err = r.configureDockerFirewall(false)
+	if err != nil && r.logger != nil {
+		r.logger.Warn("configure docker firewall: ", err)
 	}
 
 	r.networkListener = r.networkMonitor.RegisterCallback(func() {
@@ -361,6 +365,7 @@ func (r *autoRedirect) cleanupNFTables() {
 	if r.networkListener != nil {
 		r.networkMonitor.UnregisterCallback(r.networkListener)
 	}
+	r.stopDockerFirewallMonitor()
 	nft, err := nftables.New()
 	if err != nil {
 		return
@@ -372,6 +377,10 @@ func (r *autoRedirect) cleanupNFTables() {
 	_ = r.configureOpenWRTFirewall4(nft, true)
 	_ = nft.Flush()
 	_ = nft.CloseLasting()
+	err = r.configureDockerFirewall(true)
+	if err != nil && r.logger != nil {
+		r.logger.Warn("cleanup docker firewall: ", err)
+	}
 }
 
 func (r *autoRedirect) nftablesCreatePreMatchChains(nft *nftables.Conn, table *nftables.Table) error {
