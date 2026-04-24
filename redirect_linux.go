@@ -44,6 +44,8 @@ type autoRedirect struct {
 	nfqueueEnabled          bool
 	redirectRouteTableIndex int
 	redirectInterfaces      []control.Interface
+	dockerFirewallMonitor   *nftables.Monitor
+	dockerFirewallDone      chan struct{}
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
