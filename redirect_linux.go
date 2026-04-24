@@ -46,6 +46,8 @@ type autoRedirect struct {
 	redirectRouteTableIndex int
 	redirectRouteAccess     sync.Mutex
 	redirectRoutesActive    bool
+	dockerFirewallMonitor   *nftables.Monitor
+	dockerFirewallDone      chan struct{}
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
