@@ -19,7 +19,7 @@ import (
 )
 
 type gLazyConn struct {
-	tcpConn         *gonet.TCPConn
+	tcpConn         *gTCPConn
 	parentCtx       context.Context
 	stack           *stack.Stack
 	request         *tcp.ForwarderRequest
@@ -31,9 +31,6 @@ type gLazyConn struct {
 }
 
 func (c *gLazyConn) HandshakeContext(ctx context.Context) error {
-	if c.handshakeDone {
-		return c.handshakeErr
-	}
 	c.handshakeAccess.Lock()
 	defer c.handshakeAccess.Unlock()
 	if c.handshakeDone {
@@ -66,15 +63,12 @@ func (c *gLazyConn) HandshakeContext(ctx context.Context) error {
 	endpoint.SocketOptions().SetKeepAlive(true)
 	endpoint.SetSockOpt(common.Ptr(tcpip.KeepaliveIdleOption(15 * time.Second)))
 	endpoint.SetSockOpt(common.Ptr(tcpip.KeepaliveIntervalOption(15 * time.Second)))
-	tcpConn := gonet.NewTCPConn(&wq, endpoint)
+	tcpConn := newGTCPConn(&wq, endpoint, c.localAddr, c.remoteAddr)
 	c.tcpConn = tcpConn
 	return nil
 }
 
 func (c *gLazyConn) HandshakeFailure(err error) error {
-	if c.handshakeDone {
-		return os.ErrInvalid
-	}
 	c.handshakeAccess.Lock()
 	defer c.handshakeAccess.Unlock()
 	if c.handshakeDone {
@@ -88,6 +82,18 @@ func (c *gLazyConn) HandshakeFailure(err error) error {
 
 func (c *gLazyConn) HandshakeSuccess() error {
 	return c.HandshakeContext(context.Background())
+}
+
+func (c *gLazyConn) NeedHandshakeForRead() bool {
+	c.handshakeAccess.Lock()
+	defer c.handshakeAccess.Unlock()
+	return !c.handshakeDone
+}
+
+func (c *gLazyConn) NeedHandshakeForWrite() bool {
+	c.handshakeAccess.Lock()
+	defer c.handshakeAccess.Unlock()
+	return !c.handshakeDone
 }
 
 func (c *gLazyConn) Read(b []byte) (n int, err error) {
@@ -139,57 +145,38 @@ func (c *gLazyConn) SetWriteDeadline(t time.Time) error {
 }
 
 func (c *gLazyConn) Close() error {
-	if !c.handshakeDone {
-		c.handshakeAccess.Lock()
-		if !c.handshakeDone {
-			c.request.Complete(true)
-			c.handshakeErr = net.ErrClosed
-			c.handshakeDone = true
-			return nil
-		} else if c.handshakeErr != nil {
-			return nil
-		}
-		c.handshakeAccess.Unlock()
-	} else if c.handshakeErr != nil {
+	if c.closeBeforeHandshake() {
 		return nil
 	}
 	return c.tcpConn.Close()
 }
 
 func (c *gLazyConn) CloseRead() error {
-	if !c.handshakeDone {
-		c.handshakeAccess.Lock()
-		if !c.handshakeDone {
-			c.request.Complete(true)
-			c.handshakeErr = net.ErrClosed
-			c.handshakeDone = true
-			return nil
-		} else if c.handshakeErr != nil {
-			return nil
-		}
-		c.handshakeAccess.Unlock()
-	} else if c.handshakeErr != nil {
+	if c.closeBeforeHandshake() {
 		return nil
 	}
 	return c.tcpConn.CloseRead()
 }
 
 func (c *gLazyConn) CloseWrite() error {
-	if !c.handshakeDone {
-		c.handshakeAccess.Lock()
-		if !c.handshakeDone {
-			c.request.Complete(true)
-			c.handshakeErr = net.ErrClosed
-			c.handshakeDone = true
-			return nil
-		} else if c.handshakeErr != nil {
-			return nil
-		}
-		c.handshakeAccess.Unlock()
-	} else if c.handshakeErr != nil {
+	if c.closeBeforeHandshake() {
 		return nil
 	}
-	return c.tcpConn.CloseRead()
+	return c.tcpConn.CloseWrite()
+}
+
+func (c *gLazyConn) closeBeforeHandshake() bool {
+	c.handshakeAccess.Lock()
+	defer c.handshakeAccess.Unlock()
+	if !c.handshakeDone {
+		if c.request != nil {
+			c.request.Complete(true)
+		}
+		c.handshakeErr = net.ErrClosed
+		c.handshakeDone = true
+		return true
+	}
+	return c.handshakeErr != nil
 }
 
 func (c *gLazyConn) ReaderReplaceable() bool {
