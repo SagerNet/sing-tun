@@ -4,14 +4,12 @@ package tun
 
 import (
 	"errors"
-	"net"
-	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 )
 
@@ -37,36 +35,33 @@ func (m *networkUpdateMonitor) emit() {
 }
 
 type defaultInterfaceMonitor struct {
-	options               DefaultInterfaceMonitorOptions
-	networkAddresses      []networkAddress
-	defaultInterfaceName  string
-	defaultInterfaceIndex int
+	interfaceFinder       control.InterfaceFinder
+	overrideAndroidVPN    bool
+	underNetworkExtension bool
+	defaultInterface      atomic.Pointer[control.Interface]
 	androidVPNEnabled     bool
+	noRoute               bool
 	networkMonitor        NetworkUpdateMonitor
+	logger                logger.Logger
 	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
-	logger                logger.Logger
-}
-
-type networkAddress struct {
-	interfaceName  string
-	interfaceIndex int
-	addresses      []netip.Prefix
+	myInterface           string
 }
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
 	return &defaultInterfaceMonitor{
-		options:               options,
+		interfaceFinder:       options.InterfaceFinder,
+		overrideAndroidVPN:    options.OverrideAndroidVPN,
+		underNetworkExtension: options.UnderNetworkExtension,
 		networkMonitor:        networkMonitor,
-		defaultInterfaceIndex: -1,
 		logger:                logger,
 	}, nil
 }
 
 func (m *defaultInterfaceMonitor) Start() error {
-	_ = m.checkUpdate()
+	m.postCheckUpdate()
 	m.element = m.networkMonitor.RegisterCallback(m.delayCheckUpdate)
 	return nil
 }
@@ -80,46 +75,23 @@ func (m *defaultInterfaceMonitor) delayCheckUpdate() {
 }
 
 func (m *defaultInterfaceMonitor) postCheckUpdate() {
-	err := m.updateInterfaces()
+	err := m.interfaceFinder.Update()
 	if err != nil {
-		m.logger.Error("update interfaces: ", err)
+		m.logger.Error("update interface: ", err)
+		return
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
-		m.defaultInterfaceName = ""
-		m.defaultInterfaceIndex = -1
-		m.emit(EventNoRoute)
+		if !m.noRoute {
+			m.noRoute = true
+			m.defaultInterface.Store(nil)
+			m.emit(nil, 0)
+		}
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
+	} else {
+		m.noRoute = false
 	}
-}
-
-func (m *defaultInterfaceMonitor) updateInterfaces() error {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return err
-	}
-	var addresses []networkAddress
-	for _, iif := range interfaces {
-		var netAddresses []net.Addr
-		netAddresses, err = iif.Addrs()
-		if err != nil {
-			return err
-		}
-		var address networkAddress
-		address.interfaceName = iif.Name
-		address.interfaceIndex = iif.Index
-		address.addresses = common.Map(common.FilterIsInstance(netAddresses, func(it net.Addr) (*net.IPNet, bool) {
-			value, loaded := it.(*net.IPNet)
-			return value, loaded
-		}), func(it *net.IPNet) netip.Prefix {
-			bits, _ := it.Mask.Size()
-			return netip.PrefixFrom(M.AddrFromIP(it.IP), bits)
-		})
-		addresses = append(addresses, address)
-	}
-	m.networkAddresses = addresses
-	return nil
 }
 
 func (m *defaultInterfaceMonitor) Close() error {
@@ -129,41 +101,12 @@ func (m *defaultInterfaceMonitor) Close() error {
 	return nil
 }
 
-func (m *defaultInterfaceMonitor) DefaultInterfaceName(destination netip.Addr) string {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
-			if prefix.Contains(destination) {
-				return address.interfaceName
-			}
-		}
-	}
-	return m.defaultInterfaceName
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterfaceIndex(destination netip.Addr) int {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
-			if prefix.Contains(destination) {
-				return address.interfaceIndex
-			}
-		}
-	}
-	return m.defaultInterfaceIndex
-}
-
-func (m *defaultInterfaceMonitor) DefaultInterface(destination netip.Addr) (string, int) {
-	for _, address := range m.networkAddresses {
-		for _, prefix := range address.addresses {
-			if prefix.Contains(destination) {
-				return address.interfaceName, address.interfaceIndex
-			}
-		}
-	}
-	return m.defaultInterfaceName, m.defaultInterfaceIndex
+func (m *defaultInterfaceMonitor) DefaultInterface() *control.Interface {
+	return m.defaultInterface.Load()
 }
 
 func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
-	return m.options.OverrideAndroidVPN
+	return m.overrideAndroidVPN
 }
 
 func (m *defaultInterfaceMonitor) AndroidVPNEnabled() bool {
@@ -182,11 +125,23 @@ func (m *defaultInterfaceMonitor) UnregisterCallback(element *list.Element[Defau
 	m.callbacks.Remove(element)
 }
 
-func (m *defaultInterfaceMonitor) emit(event int) {
+func (m *defaultInterfaceMonitor) emit(defaultInterface *control.Interface, flags int) {
 	m.access.Lock()
 	callbacks := m.callbacks.Array()
 	m.access.Unlock()
 	for _, callback := range callbacks {
-		callback(event)
+		callback(defaultInterface, flags)
 	}
+}
+
+func (m *defaultInterfaceMonitor) RegisterMyInterface(interfaceName string) {
+	m.access.Lock()
+	defer m.access.Unlock()
+	m.myInterface = interfaceName
+}
+
+func (m *defaultInterfaceMonitor) MyInterface() string {
+	m.access.Lock()
+	defer m.access.Unlock()
+	return m.myInterface
 }

@@ -3,27 +3,25 @@
 package tun
 
 import (
-	"time"
+	"errors"
+	"syscall"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
-	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
-	"github.com/sagernet/gvisor/pkg/tcpip/header"
+	"github.com/sagernet/gvisor/pkg/tcpip"
+	gHdr "github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/link/channel"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
-	"github.com/sagernet/gvisor/pkg/waiter"
-	"github.com/sagernet/sing-tun/internal/clashtcpip"
-	"github.com/sagernet/sing/common/bufio"
-	"github.com/sagernet/sing/common/canceler"
+	"github.com/sagernet/sing-tun/gtcpip/header"
+	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
 )
 
 type Mixed struct {
 	*System
-	endpointIndependentNat bool
-	stack                  *stack.Stack
-	endpoint               *channel.Endpoint
+	tun      GVisorTun
+	stack    *stack.Stack
+	endpoint *channel.Endpoint
 }
 
 func NewMixed(
@@ -34,8 +32,8 @@ func NewMixed(
 		return nil, err
 	}
 	return &Mixed{
-		System:                 system.(*System),
-		endpointIndependentNat: options.EndpointIndependentNat,
+		System: system.(*System),
+		tun:    system.(*System).tun.(GVisorTun),
 	}, nil
 }
 
@@ -45,45 +43,28 @@ func (m *Mixed) Start() error {
 		return err
 	}
 	endpoint := channel.New(1024, uint32(m.mtu), "")
-	ipStack, err := newGVisorStack(endpoint)
+	ipStack, err := NewGVisorStack(endpoint)
 	if err != nil {
 		return err
 	}
-	if !m.endpointIndependentNat {
-		udpForwarder := udp.NewForwarder(ipStack, func(request *udp.ForwarderRequest) {
-			var wq waiter.Queue
-			endpoint, err := request.CreateEndpoint(&wq)
-			if err != nil {
-				return
-			}
-			udpConn := gonet.NewUDPConn(&wq, endpoint)
-			lAddr := udpConn.RemoteAddr()
-			rAddr := udpConn.LocalAddr()
-			if lAddr == nil || rAddr == nil {
-				endpoint.Abort()
-				return
-			}
-			gConn := &gUDPConn{UDPConn: udpConn}
-			go func() {
-				var metadata M.Metadata
-				metadata.Source = M.SocksaddrFromNet(lAddr)
-				metadata.Destination = M.SocksaddrFromNet(rAddr)
-				ctx, conn := canceler.NewPacketConn(m.ctx, bufio.NewUnbindPacketConnWithAddr(gConn, metadata.Destination), time.Duration(m.udpTimeout)*time.Second)
-				hErr := m.handler.NewPacketConnection(ctx, conn, metadata)
-				if hErr != nil {
-					endpoint.Abort()
-				}
-			}()
-		})
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
-	} else {
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
-	}
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(m.ctx, ipStack, m.handler, m.udpTimeout).HandlePacket)
 	m.stack = ipStack
 	m.endpoint = endpoint
 	go m.tunLoop()
 	go m.packetLoop()
 	return nil
+}
+
+func (m *Mixed) Close() error {
+	if m.stack == nil {
+		return nil
+	}
+	m.endpoint.Attach(nil)
+	m.stack.Close()
+	for _, endpoint := range m.stack.CleanupEndpoints() {
+		endpoint.Abort()
+	}
+	return m.System.Close()
 }
 
 func (m *Mixed) tunLoop() {
@@ -96,9 +77,13 @@ func (m *Mixed) tunLoop() {
 		m.txChecksumOffload = linuxTUN.TXChecksumOffload()
 		batchSize := linuxTUN.BatchSize()
 		if batchSize > 1 {
-			m.batchLoop(linuxTUN, batchSize)
+			m.batchLoopLinux(linuxTUN, batchSize)
 			return
 		}
+	}
+	if darwinTUN, isDarwinTUN := m.tun.(DarwinTUN); isDarwinTUN && m.multiPendingPackets {
+		m.batchLoopDarwin(darwinTUN)
+		return
 	}
 	packetBuffer := make([]byte, m.mtu+PacketOffset)
 	for {
@@ -109,7 +94,7 @@ func (m *Mixed) tunLoop() {
 			}
 			m.logger.Error(E.Cause(err, "read packet"))
 		}
-		if n < clashtcpip.IPv4PacketMinLength {
+		if n < header.IPv4MinimumSize {
 			continue
 		}
 		rawPacket := packetBuffer[:n]
@@ -129,7 +114,7 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 		if err != nil {
 			return
 		}
-		if len(packet) < clashtcpip.IPv4PacketMinLength {
+		if len(packet) < header.IPv4MinimumSize {
 			release()
 			continue
 		}
@@ -143,12 +128,12 @@ func (m *Mixed) wintunLoop(winTun WinTun) {
 	}
 }
 
-func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
+func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
 	writeBuffers := make([][]byte, batchSize)
 	packetSizes := make([]int, batchSize)
 	for i := range packetBuffers {
-		packetBuffers[i] = make([]byte, m.mtu+m.frontHeadroom)
+		packetBuffers[i] = make([]byte, m.mtu+PacketOffset+m.frontHeadroom)
 	}
 	for {
 		n, err := linuxTUN.BatchRead(packetBuffers, m.frontHeadroom, packetSizes)
@@ -163,7 +148,7 @@ func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 		}
 		for i := 0; i < n; i++ {
 			packetSize := packetSizes[i]
-			if packetSize < clashtcpip.IPv4PacketMinLength {
+			if packetSize < header.IPv4MinimumSize {
 				continue
 			}
 			packetBuffer := packetBuffers[i]
@@ -173,11 +158,47 @@ func (m *Mixed) batchLoop(linuxTUN LinuxTUN, batchSize int) {
 			}
 		}
 		if len(writeBuffers) > 0 {
-			err = linuxTUN.BatchWrite(writeBuffers, m.frontHeadroom)
+			_, err = linuxTUN.BatchWrite(writeBuffers, m.frontHeadroom)
 			if err != nil {
 				m.logger.Trace(E.Cause(err, "batch write packet"))
 			}
 			writeBuffers = writeBuffers[:0]
+		}
+	}
+}
+
+func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
+	var writeBuffers []*buf.Buffer
+	for {
+		buffers, err := darwinTUN.BatchRead()
+		if err != nil {
+			if E.IsClosed(err) || errors.Is(err, syscall.EBADF) {
+				return
+			}
+			m.logger.Error(E.Cause(err, "batch read packet"))
+		}
+		if len(buffers) == 0 {
+			continue
+		}
+		writeBuffers = writeBuffers[:0]
+		for _, buffer := range buffers {
+			packetSize := buffer.Len()
+			if packetSize < header.IPv4MinimumSize {
+				buffer.Release()
+				continue
+			}
+			if m.processPacket(buffer.Bytes()) {
+				writeBuffers = append(writeBuffers, buffer)
+			} else {
+				buffer.Release()
+			}
+		}
+		if len(writeBuffers) > 0 {
+			err = darwinTUN.BatchWrite(writeBuffers)
+			if err != nil {
+				m.logger.Trace(E.Cause(err, "batch write packet"))
+			}
+			buf.ReleaseMulti(writeBuffers)
 		}
 	}
 }
@@ -187,10 +208,10 @@ func (m *Mixed) processPacket(packet []byte) bool {
 		writeBack bool
 		err       error
 	)
-	switch ipVersion := packet[0] >> 4; ipVersion {
-	case 4:
+	switch ipVersion := header.IPVersion(packet); ipVersion {
+	case header.IPv4Version:
 		writeBack, err = m.processIPv4(packet)
-	case 6:
+	case header.IPv6Version:
 		writeBack, err = m.processIPv6(packet)
 	default:
 		err = E.New("ip: unknown version: ", ipVersion)
@@ -202,68 +223,59 @@ func (m *Mixed) processPacket(packet []byte) bool {
 	return writeBack
 }
 
-func (m *Mixed) processIPv4(packet clashtcpip.IPv4Packet) (writeBack bool, err error) {
+func (m *Mixed) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 	writeBack = true
-	destination := packet.DestinationIP()
+	destination := ipHdr.DestinationAddr()
 	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
 		return
 	}
-	switch packet.Protocol() {
-	case clashtcpip.TCP:
-		err = m.processIPv4TCP(packet, packet.Payload())
-	case clashtcpip.UDP:
+	switch ipHdr.TransportProtocol() {
+	case header.TCPProtocolNumber:
+		writeBack, err = m.processIPv4TCP(ipHdr, ipHdr.Payload())
+	case header.UDPProtocolNumber:
 		writeBack = false
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer.MakeWithData(packet),
+			Payload:           buffer.MakeWithData(ipHdr),
 			IsForwardedPacket: true,
 		})
-		m.endpoint.InjectInbound(header.IPv4ProtocolNumber, pkt)
+		m.endpoint.InjectInbound(gHdr.IPv4ProtocolNumber, pkt)
 		pkt.DecRef()
 		return
-	case clashtcpip.ICMP:
-		err = m.processIPv4ICMP(packet, packet.Payload())
+	case header.ICMPv4ProtocolNumber:
+		writeBack, err = m.processIPv4ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
 
-func (m *Mixed) processIPv6(packet clashtcpip.IPv6Packet) (writeBack bool, err error) {
+func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 	writeBack = true
-	if !packet.DestinationIP().IsGlobalUnicast() {
+	if !ipHdr.DestinationAddr().IsGlobalUnicast() {
 		return
 	}
-	switch packet.Protocol() {
-	case clashtcpip.TCP:
-		err = m.processIPv6TCP(packet, packet.Payload())
-	case clashtcpip.UDP:
+	switch ipHdr.TransportProtocol() {
+	case header.TCPProtocolNumber:
+		writeBack, err = m.processIPv6TCP(ipHdr, ipHdr.Payload())
+	case header.UDPProtocolNumber:
 		writeBack = false
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload:           buffer.MakeWithData(packet),
+			Payload:           buffer.MakeWithData(ipHdr),
 			IsForwardedPacket: true,
 		})
-		m.endpoint.InjectInbound(header.IPv6ProtocolNumber, pkt)
+		m.endpoint.InjectInbound(tcpip.NetworkProtocolNumber(header.IPv6ProtocolNumber), pkt)
 		pkt.DecRef()
-	case clashtcpip.ICMPv6:
-		err = m.processIPv6ICMP(packet, packet.Payload())
+	case header.ICMPv6ProtocolNumber:
+		writeBack, err = m.processIPv6ICMP(ipHdr, ipHdr.Payload())
 	}
 	return
 }
 
 func (m *Mixed) packetLoop() {
 	for {
-		packet := m.endpoint.ReadContext(m.ctx)
-		if packet == nil {
+		pkt := m.endpoint.ReadContext(m.ctx)
+		if pkt == nil {
 			break
 		}
-		bufio.WriteVectorised(m.tun, packet.AsSlices())
-		packet.DecRef()
+		m.tun.WritePacket(pkt)
+		pkt.DecRef()
 	}
-}
-
-func (m *Mixed) Close() error {
-	m.endpoint.Attach(nil)
-	m.stack.Close()
-	for _, endpoint := range m.stack.CleanupEndpoints() {
-		endpoint.Abort()
-	}
-	return m.System.Close()
 }

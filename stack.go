@@ -5,10 +5,17 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
+)
+
+var (
+	ErrDrop   = E.New("drop by rule")
+	ErrReset  = E.New("reset by rule")
+	ErrBypass = E.New("bypass by rule")
 )
 
 type Stack interface {
@@ -20,8 +27,7 @@ type StackOptions struct {
 	Context                context.Context
 	Tun                    Tun
 	TunOptions             Options
-	EndpointIndependentNat bool
-	UDPTimeout             int64
+	UDPTimeout             time.Duration
 	Handler                Handler
 	Logger                 logger.Logger
 	ForwarderBindInterface bool
@@ -57,6 +63,14 @@ func NewStack(
 	default:
 		return nil, E.New("unknown stack: ", stack)
 	}
+}
+
+func HasNextAddress(prefix netip.Prefix, count int) bool {
+	checkAddr := prefix.Addr()
+	for i := 0; i < count; i++ {
+		checkAddr = checkAddr.Next()
+	}
+	return prefix.Contains(checkAddr)
 }
 
 func BroadcastAddr(inet4Address []netip.Prefix) netip.Addr {

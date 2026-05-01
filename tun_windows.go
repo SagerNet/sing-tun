@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -16,8 +17,6 @@ import (
 	"github.com/sagernet/sing-tun/internal/winsys"
 	"github.com/sagernet/sing-tun/internal/wintun"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/atomic"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/windnsapi"
 
@@ -66,15 +65,31 @@ func New(options Options) (WinTun, error) {
 }
 
 func (t *NativeTun) configure() error {
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
 	luid := winipcfg.LUID(t.adapter.LUID())
 	if len(t.options.Inet4Address) > 0 {
 		err := luid.SetIPAddressesForFamily(winipcfg.AddressFamily(windows.AF_INET), t.options.Inet4Address)
 		if err != nil {
 			return E.Cause(err, "set ipv4 address")
 		}
-		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), []netip.Addr{t.options.Inet4Address[0].Addr().Next()}, nil)
-		if err != nil {
-			return E.Cause(err, "set ipv4 dns")
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
+			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is4)
+			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
+				dnsServers = []netip.Addr{t.options.Inet4Address[0].Addr().Next()}
+			}
+			if len(dnsServers) > 0 {
+				err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), dnsServers, nil)
+				if err != nil {
+					return E.Cause(err, "set ipv4 dns")
+				}
+			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv4 dns")
+			}
 		}
 	}
 	if len(t.options.Inet6Address) > 0 {
@@ -82,30 +97,26 @@ func (t *NativeTun) configure() error {
 		if err != nil {
 			return E.Cause(err, "set ipv6 address")
 		}
-		err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), []netip.Addr{t.options.Inet6Address[0].Addr().Next()}, nil)
-		if err != nil {
-			return E.Cause(err, "set ipv6 dns")
+		if t.options.AutoRoute && !t.options.EXP_DisableDNSHijack {
+			dnsServers := common.Filter(t.options.DNSServers, netip.Addr.Is6)
+			if len(dnsServers) == 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
+				dnsServers = []netip.Addr{t.options.Inet6Address[0].Addr().Next()}
+			}
+			if len(dnsServers) > 0 {
+				err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), dnsServers, nil)
+				if err != nil {
+					return E.Cause(err, "set ipv6 dns")
+				}
+			}
+		} else {
+			err = luid.SetDNS(winipcfg.AddressFamily(windows.AF_INET6), nil, nil)
+			if err != nil {
+				return E.Cause(err, "set ipv6 dns")
+			}
 		}
 	}
 	if len(t.options.Inet4Address) > 0 || len(t.options.Inet6Address) > 0 {
 		_ = luid.DisableDNSRegistration()
-	}
-	if t.options.AutoRoute {
-		routeRanges, err := t.options.BuildAutoRouteRanges(false)
-		if err != nil {
-			return err
-		}
-		for _, routeRange := range routeRanges {
-			if routeRange.Addr().Is4() {
-				err = luid.AddRoute(routeRange, netip.IPv4Unspecified(), 0)
-			} else {
-				err = luid.AddRoute(routeRange, netip.IPv6Unspecified(), 0)
-			}
-		}
-		err = windnsapi.FlushResolverCache()
-		if err != nil {
-			return err
-		}
 	}
 	if len(t.options.Inet4Address) > 0 {
 		inetIf, err := luid.IPInterface(winipcfg.AddressFamily(windows.AF_INET))
@@ -146,8 +157,40 @@ func (t *NativeTun) configure() error {
 			return E.Cause(err, "set ipv6 options")
 		}
 	}
+	return nil
+}
 
-	if t.options.AutoRoute && t.options.StrictRoute {
+func (t *NativeTun) Name() (string, error) {
+	return t.options.Name, nil
+}
+
+func (t *NativeTun) Start() error {
+	if t.options.EXP_ExternalConfiguration || !t.options.AutoRoute {
+		return nil
+	}
+	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+	luid := winipcfg.LUID(t.adapter.LUID())
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
+	if err != nil {
+		return err
+	}
+	err = windnsapi.FlushResolverCache()
+	if err != nil {
+		return err
+	}
+	if t.options.StrictRoute {
+		major, _, _ := windows.RtlGetNtVersionNumbers()
+		if major < 10 {
+			if t.options.Logger != nil {
+				t.options.Logger.Warn("strict routing is not supported on Windows versions below 10")
+			}
+			return nil
+		}
 		var engine uintptr
 		session := &winsys.FWPM_SESSION0{Flags: winsys.FWPM_SESSION_FLAG_DYNAMIC}
 		err := winsys.FwpmEngineOpen0(nil, winsys.RPC_C_AUTHN_DEFAULT, nil, session, unsafe.Pointer(&engine))
@@ -284,71 +327,66 @@ func (t *NativeTun) configure() error {
 			}
 		}
 
-		blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 2)
-		blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_PROTOCOL
-		blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
-		blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT8
-		blockDNSCondition[0].ConditionValue.Value = uintptr(uint8(winsys.IPPROTO_UDP))
-		blockDNSCondition[1].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
-		blockDNSCondition[1].MatchType = winsys.FWP_MATCH_EQUAL
-		blockDNSCondition[1].ConditionValue.Type = winsys.FWP_UINT16
-		blockDNSCondition[1].ConditionValue.Value = uintptr(uint16(53))
+		if !t.options.EXP_DisableDNSHijack {
+			blockDNSCondition := make([]winsys.FWPM_FILTER_CONDITION0, 1)
+			blockDNSCondition[0].FieldKey = winsys.FWPM_CONDITION_IP_REMOTE_PORT
+			blockDNSCondition[0].MatchType = winsys.FWP_MATCH_EQUAL
+			blockDNSCondition[0].ConditionValue.Type = winsys.FWP_UINT16
+			blockDNSCondition[0].ConditionValue.Value = uintptr(uint16(53))
 
-		blockDNSFilter4 := winsys.FWPM_FILTER0{}
-		blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
-		blockDNSFilter4.NumFilterConditions = 2
-		blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
-		blockDNSFilter4.SubLayerKey = subLayerKey
-		blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
-		blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
-		blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
-		blockDNSFilter4.Weight.Value = uintptr(10)
-		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
-		if err != nil {
-			return os.NewSyscallError("FwpmFilterAdd0", err)
-		}
+			blockDNSFilter4 := winsys.FWPM_FILTER0{}
+			blockDNSFilter4.FilterCondition = &blockDNSCondition[0]
+			blockDNSFilter4.NumFilterConditions = 1
+			blockDNSFilter4.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv4 dns")
+			blockDNSFilter4.SubLayerKey = subLayerKey
+			blockDNSFilter4.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V4
+			blockDNSFilter4.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockDNSFilter4.Weight.Type = winsys.FWP_UINT8
+			blockDNSFilter4.Weight.Value = uintptr(10)
+			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter4, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
 
-		blockDNSFilter6 := winsys.FWPM_FILTER0{}
-		blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
-		blockDNSFilter6.NumFilterConditions = 2
-		blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
-		blockDNSFilter6.SubLayerKey = subLayerKey
-		blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
-		blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
-		blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
-		blockDNSFilter6.Weight.Value = uintptr(10)
-		err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
-		if err != nil {
-			return os.NewSyscallError("FwpmFilterAdd0", err)
+			blockDNSFilter6 := winsys.FWPM_FILTER0{}
+			blockDNSFilter6.FilterCondition = &blockDNSCondition[0]
+			blockDNSFilter6.NumFilterConditions = 1
+			blockDNSFilter6.DisplayData = winsys.CreateDisplayData(TunnelType, "block ipv6 dns")
+			blockDNSFilter6.SubLayerKey = subLayerKey
+			blockDNSFilter6.LayerKey = winsys.FWPM_LAYER_ALE_AUTH_CONNECT_V6
+			blockDNSFilter6.Action.Type = winsys.FWP_ACTION_BLOCK
+			blockDNSFilter6.Weight.Type = winsys.FWP_UINT8
+			blockDNSFilter6.Weight.Value = uintptr(10)
+			err = winsys.FwpmFilterAdd0(engine, &blockDNSFilter6, 0, &filterId)
+			if err != nil {
+				return os.NewSyscallError("FwpmFilterAdd0", err)
+			}
 		}
 	}
-
 	return nil
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	return 0, os.ErrInvalid
-}
-
-func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
 	t.running.Add(1)
 	defer t.running.Done()
 retry:
 	if t.close.Load() == 1 {
-		return nil, nil, os.ErrClosed
+		return 0, os.ErrClosed
 	}
 	start := nanotime()
 	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
 	for {
 		if t.close.Load() == 1 {
-			return nil, nil, os.ErrClosed
+			return 0, os.ErrClosed
 		}
-		packet, err := t.session.ReceivePacket()
+		var packet []byte
+		packet, err = t.session.ReceivePacket()
 		switch err {
 		case nil:
-			packetSize := len(packet)
-			t.rate.update(uint64(packetSize))
-			return packet, func() { t.session.ReleaseReceivePacket(packet) }, nil
+			n = copy(p, packet)
+			t.session.ReleaseReceivePacket(packet)
+			t.rate.update(uint64(n))
+			return
 		case windows.ERROR_NO_MORE_ITEMS:
 			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
 				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
@@ -357,10 +395,67 @@ retry:
 			procyield(1)
 			continue
 		case windows.ERROR_HANDLE_EOF:
+			return 0, os.ErrClosed
+		case windows.ERROR_INVALID_DATA:
+			return 0, errors.New("send ring corrupt")
+		}
+		return 0, fmt.Errorf("read failed: %w", err)
+	}
+}
+
+func (t *NativeTun) MTU() (int, error) {
+	return int(t.options.MTU), nil
+}
+
+func (t *NativeTun) ForceMTU(mtu int) {
+	if mtu <= 0 {
+		return
+	}
+	t.options.MTU = uint32(mtu)
+}
+
+func (t *NativeTun) LUID() uint64 {
+	return t.adapter.LUID()
+}
+
+func (t *NativeTun) ReadPacket() ([]byte, func(), error) {
+	t.running.Add(1)
+retry:
+	if t.close.Load() == 1 {
+		t.running.Done()
+		return nil, nil, os.ErrClosed
+	}
+	start := nanotime()
+	shouldSpin := t.rate.current.Load() >= spinloopRateThreshold && uint64(start-t.rate.nextStartTime.Load()) <= rateMeasurementGranularity*2
+	for {
+		if t.close.Load() == 1 {
+			t.running.Done()
+			return nil, nil, os.ErrClosed
+		}
+		packet, err := t.session.ReceivePacket()
+		switch err {
+		case nil:
+			packetSize := len(packet)
+			t.rate.update(uint64(packetSize))
+			return packet, func() {
+				t.session.ReleaseReceivePacket(packet)
+				t.running.Done()
+			}, nil
+		case windows.ERROR_NO_MORE_ITEMS:
+			if !shouldSpin || uint64(nanotime()-start) >= spinloopDuration {
+				windows.WaitForSingleObject(t.readWait, windows.INFINITE)
+				goto retry
+			}
+			procyield(1)
+			continue
+		case windows.ERROR_HANDLE_EOF:
+			t.running.Done()
 			return nil, nil, os.ErrClosed
 		case windows.ERROR_INVALID_DATA:
+			t.running.Done()
 			return nil, nil, errors.New("send ring corrupt")
 		}
+		t.running.Done()
 		return nil, nil, fmt.Errorf("read failed: %w", err)
 	}
 }
@@ -453,11 +548,6 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 	return 0, fmt.Errorf("write failed: %w", err)
 }
 
-func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	defer buf.ReleaseMulti(buffers)
-	return common.Error(t.write(buf.ToSliceMulti(buffers)))
-}
-
 func (t *NativeTun) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
@@ -474,6 +564,66 @@ func (t *NativeTun) Close() error {
 		}
 	})
 	return err
+}
+
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	t.options = tunOptions
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
+	if !t.options.AutoRoute {
+		return nil
+	}
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	luid := winipcfg.LUID(t.adapter.LUID())
+	err = luid.FlushRoutes(windows.AF_UNSPEC)
+	if err != nil {
+		return err
+	}
+	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
+	if err != nil {
+		return err
+	}
+	err = windnsapi.FlushResolverCache()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func addRouteList(luid winipcfg.LUID, destinations []netip.Prefix, gateway4 netip.Addr, gateway6 netip.Addr, metric uint32) error {
+	row := winipcfg.MibIPforwardRow2{}
+	row.Init()
+	row.InterfaceLUID = luid
+	row.Metric = metric
+	nextHop4 := row.NextHop
+	nextHop6 := row.NextHop
+	if gateway4.IsValid() {
+		nextHop4.SetAddr(gateway4)
+	}
+	if gateway6.IsValid() {
+		nextHop6.SetAddr(gateway6)
+	}
+	for _, destination := range destinations {
+		err := row.DestinationPrefix.SetPrefix(destination)
+		if err != nil {
+			return err
+		}
+		if destination.Addr().Is4() {
+			row.NextHop = nextHop4
+		} else {
+			row.NextHop = nextHop6
+		}
+		err = row.Create()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func generateGUIDByDeviceName(name string) *windows.GUID {

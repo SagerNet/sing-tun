@@ -1,6 +1,8 @@
 package tun
 
 import (
+	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"net/netip"
@@ -12,11 +14,11 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/netlink"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/bufio"
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
-	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/rw"
 	"github.com/sagernet/sing/common/shell"
 	"github.com/sagernet/sing/common/x/list"
@@ -27,20 +29,23 @@ import (
 var _ LinuxTUN = (*NativeTun)(nil)
 
 type NativeTun struct {
-	tunFd             int
-	tunFile           *os.File
-	tunWriter         N.VectorisedWriter
-	interfaceCallback *list.Element[DefaultInterfaceUpdateCallback]
-	options           Options
-	ruleIndex6        []int
-	gsoEnabled        bool
-	gsoBuffer         []byte
-	gsoToWrite        []int
-	gsoReadAccess     sync.Mutex
-	tcpGROAccess      sync.Mutex
-	tcp4GROTable      *tcpGROTable
-	tcp6GROTable      *tcpGROTable
-	txChecksumOffload bool
+	tunFd               int
+	tunFile             *os.File
+	iovecsOutputDefault []unix.Iovec
+	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
+	options             Options
+	ruleIndex6          []int
+	readAccess          sync.Mutex
+	writeAccess         sync.Mutex
+	vnetHdr             bool
+	writeBuffer         []byte
+	vnetHdrWriteBuf     []byte
+	gsoToWrite          []int
+	tcpGROTable         *tcpGROTable
+	udpGroAccess        sync.Mutex
+	udpGROTable         *udpGROTable
+	gro                 groDisablementFlags
+	txChecksumOffload   bool
 }
 
 func New(options Options) (Tun, error) {
@@ -48,7 +53,7 @@ func New(options Options) (Tun, error) {
 	if options.FileDescriptor == 0 {
 		tunFd, err := open(options.Name, options.GSO)
 		if err != nil {
-			return nil, err
+			return nil, E.Cause(err, "open tun")
 		}
 		tunLink, err := netlink.LinkByName(options.Name)
 		if err != nil {
@@ -70,111 +75,7 @@ func New(options Options) (Tun, error) {
 			options: options,
 		}
 	}
-	var ok bool
-	nativeTun.tunWriter, ok = bufio.CreateVectorisedWriter(nativeTun.tunFile)
-	if !ok {
-		panic("create vectorised writer")
-	}
 	return nativeTun, nil
-}
-
-func (t *NativeTun) FrontHeadroom() int {
-	if t.gsoEnabled {
-		return virtioNetHdrLen
-	}
-	return 0
-}
-
-func (t *NativeTun) Read(p []byte) (n int, err error) {
-	if t.gsoEnabled {
-		n, err = t.tunFile.Read(t.gsoBuffer)
-		if err != nil {
-			return
-		}
-		var sizes [1]int
-		n, err = handleVirtioRead(t.gsoBuffer[:n], [][]byte{p}, sizes[:], 0)
-		if err != nil {
-			return
-		}
-		if n == 0 {
-			return
-		}
-		n = sizes[0]
-		return
-	} else {
-		return t.tunFile.Read(p)
-	}
-}
-
-func (t *NativeTun) Write(p []byte) (n int, err error) {
-	if t.gsoEnabled {
-		err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
-		if err != nil {
-			return
-		}
-		n = len(p)
-		return
-	}
-	return t.tunFile.Write(p)
-}
-
-func (t *NativeTun) WriteVectorised(buffers []*buf.Buffer) error {
-	if t.gsoEnabled {
-		n := buf.LenMulti(buffers)
-		buffer := buf.NewSize(virtioNetHdrLen + n)
-		buffer.Truncate(virtioNetHdrLen)
-		buf.CopyMulti(buffer.Extend(n), buffers)
-		_, err := t.tunFile.Write(buffer.Bytes())
-		buffer.Release()
-		return err
-	} else {
-		return t.tunWriter.WriteVectorised(buffers)
-	}
-}
-
-func (t *NativeTun) BatchSize() int {
-	if !t.gsoEnabled {
-		return 1
-	}
-	/* // Not works on some devices: https://github.com/SagerNet/sing-box/issues/1605
-	batchSize := int(gsoMaxSize/t.options.MTU) * 2
-	if batchSize > idealBatchSize {
-		batchSize = idealBatchSize
-	}
-	return batchSize*/
-	return idealBatchSize
-}
-
-func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
-	t.gsoReadAccess.Lock()
-	defer t.gsoReadAccess.Unlock()
-	n, err = t.tunFile.Read(t.gsoBuffer)
-	if err != nil {
-		return
-	}
-	return handleVirtioRead(t.gsoBuffer[:n], buffers, readN, offset)
-}
-
-func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) error {
-	t.tcpGROAccess.Lock()
-	defer func() {
-		t.tcp4GROTable.reset()
-		t.tcp6GROTable.reset()
-		t.tcpGROAccess.Unlock()
-	}()
-	t.gsoToWrite = t.gsoToWrite[:0]
-	err := handleGRO(buffers, offset, t.tcp4GROTable, t.tcp6GROTable, &t.gsoToWrite)
-	if err != nil {
-		return err
-	}
-	offset -= virtioNetHdrLen
-	for _, bufferIndex := range t.gsoToWrite {
-		_, err = t.tunFile.Write(buffers[bufferIndex][offset:])
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 var controlPath string
@@ -182,7 +83,7 @@ var controlPath string
 func init() {
 	const defaultTunPath = "/dev/net/tun"
 	const androidTunPath = "/dev/tun"
-	if rw.FileExists(androidTunPath) {
+	if rw.IsFile(androidTunPath) {
 		controlPath = androidTunPath
 	} else {
 		controlPath = defaultTunPath
@@ -192,79 +93,66 @@ func init() {
 func open(name string, vnetHdr bool) (int, error) {
 	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
 	if err != nil {
-		return -1, err
+		return -1, E.Cause(err, "open ", controlPath)
 	}
-
-	var ifr struct {
-		name  [16]byte
-		flags uint16
-		_     [22]byte
+	ifr, err := unix.NewIfreq(name)
+	if err != nil {
+		unix.Close(fd)
+		return 0, E.Cause(err, "create ifreq")
 	}
-
-	copy(ifr.name[:], name)
-	ifr.flags = unix.IFF_TUN | unix.IFF_NO_PI
+	flags := unix.IFF_TUN | unix.IFF_NO_PI
 	if vnetHdr {
-		ifr.flags |= unix.IFF_VNET_HDR
+		flags |= unix.IFF_VNET_HDR
 	}
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.TUNSETIFF, uintptr(unsafe.Pointer(&ifr)))
-	if errno != 0 {
+	ifr.SetUint16(uint16(flags))
+	err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
+	if err != nil {
 		unix.Close(fd)
-		return -1, errno
+		return 0, E.Cause(err, "TUNSETIFF")
 	}
-
-	if err = unix.SetNonblock(fd, true); err != nil {
+	err = unix.SetNonblock(fd, true)
+	if err != nil {
 		unix.Close(fd)
-		return -1, err
+		return 0, E.Cause(err, "set nonblock")
 	}
-
 	return fd, nil
 }
 
 func (t *NativeTun) configure(tunLink netlink.Link) error {
 	err := netlink.LinkSetMTU(tunLink, int(t.options.MTU))
-	if err == unix.EPERM {
-		// unprivileged
+	if errors.Is(err, unix.EPERM) {
 		return nil
 	} else if err != nil {
-		return err
+		return E.Cause(err, "set mtu")
 	}
-
-	if len(t.options.Inet4Address) > 0 {
-		for _, address := range t.options.Inet4Address {
-			addr4, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr4)
-			if err != nil {
-				return err
+	if !t.options.EXP_ExternalConfiguration {
+		if len(t.options.Inet4Address) > 0 {
+			for _, address := range t.options.Inet4Address {
+				addr4, _ := netlink.ParseAddr(address.String())
+				err = netlink.AddrAdd(tunLink, addr4)
+				if err != nil && !errors.Is(err, unix.EEXIST) {
+					return E.Cause(err, "add address ", address)
+				}
 			}
 		}
-	}
-	if len(t.options.Inet6Address) > 0 {
-		for _, address := range t.options.Inet6Address {
-			addr6, _ := netlink.ParseAddr(address.String())
-			err = netlink.AddrAdd(tunLink, addr6)
-			if err != nil {
-				return err
+		if len(t.options.Inet6Address) > 0 {
+			for _, address := range t.options.Inet6Address {
+				addr6, _ := netlink.ParseAddr(address.String())
+				err = netlink.AddrAdd(tunLink, addr6)
+				if err != nil && !errors.Is(err, unix.EEXIST) {
+					return E.Cause(err, "add address ", address)
+				}
 			}
 		}
 	}
 
 	if t.options.GSO {
-		var vnetHdrEnabled bool
-		vnetHdrEnabled, err = checkVNETHDREnabled(t.tunFd, t.options.Name)
+		err = t.enableGSO()
 		if err != nil {
-			return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(err)
+			}
 		}
-		if !vnetHdrEnabled {
-			return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
-		}
-		err = setTCPOffload(t.tunFd)
-		if err != nil {
-			return err
-		}
-		t.gsoEnabled = true
-		t.gsoBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
-		t.tcp4GROTable = newTCPGROTable()
-		t.tcp6GROTable = newTCPGROTable()
 	}
 
 	var rxChecksumOffload bool
@@ -277,26 +165,136 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 		var txChecksumOffload bool
 		txChecksumOffload, err = checkChecksumOffload(t.options.Name, unix.ETHTOOL_GTXCSUM)
 		if err != nil {
-			return err
+			return E.Cause(err, "check tx checksum offload")
 		}
-		if err == nil && !txChecksumOffload {
+		if !txChecksumOffload {
 			err = setChecksumOffload(t.options.Name, unix.ETHTOOL_STXCSUM)
 			if err != nil {
-				return err
+				return E.Cause(err, "set tx checksum offload")
 			}
 		}
 		t.txChecksumOffload = true
 	}
 
-	err = netlink.LinkSetUp(tunLink)
+	return nil
+}
+
+func (t *NativeTun) enableGSO() error {
+	vnetHdrEnabled, err := checkVNETHDREnabled(t.tunFd, t.options.Name)
 	if err != nil {
-		return err
+		return E.Cause(err, "enable offload: check IFF_VNET_HDR enabled")
+	}
+	if !vnetHdrEnabled {
+		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
+	}
+	err = setTCPOffload(t.tunFd)
+	if err != nil {
+		return E.Cause(err, "enable TCP offload")
+	}
+	t.vnetHdr = true
+	t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
+	t.tcpGROTable = newTCPGROTable()
+	t.udpGROTable = newUDPGROTable()
+	err = setUDPOffload(t.tunFd)
+	if err != nil {
+		t.gro.disableUDPGRO()
+	}
+	return nil
+}
+
+func (t *NativeTun) probeTCPGRO() error {
+	ipPort := netip.AddrPortFrom(t.options.Inet4Address[0].Addr(), 0)
+	fingerprint := []byte("sing-tun-probe-tun-gro")
+	segmentSize := len(fingerprint)
+	iphLen := 20
+	tcphLen := 20
+	totalLen := iphLen + tcphLen + segmentSize
+	bufs := make([][]byte, 2)
+	for i := range bufs {
+		bufs[i] = make([]byte, virtioNetHdrLen+totalLen, virtioNetHdrLen+(totalLen*2))
+		ipv4H := header.IPv4(bufs[i][virtioNetHdrLen:])
+		ipv4H.Encode(&header.IPv4Fields{
+			SrcAddr:  ipPort.Addr(),
+			DstAddr:  ipPort.Addr(),
+			Protocol: unix.IPPROTO_TCP,
+			// Use a zero value TTL as best effort means to reduce chance of
+			// probe packet leaking further than it needs to.
+			TTL:         0,
+			TotalLength: uint16(totalLen),
+		})
+		tcpH := header.TCP(bufs[i][virtioNetHdrLen+iphLen:])
+		tcpH.Encode(&header.TCPFields{
+			SrcPort:    ipPort.Port(),
+			DstPort:    ipPort.Port(),
+			SeqNum:     1 + uint32(i*segmentSize),
+			AckNum:     1,
+			DataOffset: 20,
+			Flags:      header.TCPFlagAck,
+			WindowSize: 3000,
+		})
+		copy(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], fingerprint)
+		ipv4H.SetChecksum(^ipv4H.CalculateChecksum())
+		pseudoCsum := header.PseudoHeaderChecksum(unix.IPPROTO_TCP, ipv4H.SourceAddressSlice(), ipv4H.DestinationAddressSlice(), uint16(tcphLen+segmentSize))
+		pseudoCsum = checksum.Checksum(bufs[i][virtioNetHdrLen+iphLen+tcphLen:], pseudoCsum)
+		tcpH.SetChecksum(^tcpH.CalculateChecksum(pseudoCsum))
+	}
+	_, err := t.BatchWrite(bufs, virtioNetHdrLen)
+	if err != nil {
+		return E.Cause(err, "batch write")
+	}
+	return nil
+}
+
+func (t *NativeTun) Name() (string, error) {
+	var ifr [unix.IFNAMSIZ + 64]byte
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		uintptr(t.tunFd),
+		uintptr(unix.TUNGETIFF),
+		uintptr(unsafe.Pointer(&ifr[0])),
+	)
+	if errno != 0 {
+		return "", os.NewSyscallError("ioctl TUNGETIFF", errno)
+	}
+	return unix.ByteSliceToString(ifr[:]), nil
+}
+
+func (t *NativeTun) Start() error {
+	if t.options.FileDescriptor != 0 {
+		return nil
+	}
+	if !t.options.EXP_ExternalConfiguration {
+		t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+	}
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return E.Cause(err, "find tun interface")
 	}
 
-	if t.options.TableIndex == 0 {
+	err = netlink.LinkSetUp(tunLink)
+	if err != nil {
+		return E.Cause(err, "set tun up")
+	}
+
+	if t.vnetHdr && len(t.options.Inet4Address) > 0 {
+		err = t.probeTCPGRO()
+		if err != nil {
+			t.gro.disableTCPGRO()
+			t.gro.disableUDPGRO()
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+			}
+		}
+	}
+
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
+
+	if t.options.IPRoute2TableIndex == 0 {
 		for {
-			t.options.TableIndex = int(rand.Uint32())
-			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.TableIndex}, netlink.RT_FILTER_TABLE)
+			t.options.IPRoute2TableIndex = int(rand.Uint32())
+			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
 			if len(routeList) == 0 || fErr != nil {
 				break
 			}
@@ -306,7 +304,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	err = t.setRoute(tunLink)
 	if err != nil {
 		_ = t.unsetRoute0(tunLink)
-		return err
+		return E.Cause(err, "set routes")
 	}
 
 	err = t.unsetRules()
@@ -316,7 +314,7 @@ func (t *NativeTun) configure(tunLink netlink.Link) error {
 	err = t.setRules()
 	if err != nil {
 		_ = t.unsetRules()
-		return err
+		return E.Cause(err, "set rules")
 	}
 
 	t.setSearchDomainForSystemdResolved()
@@ -331,7 +329,153 @@ func (t *NativeTun) Close() error {
 	if t.interfaceCallback != nil {
 		t.options.InterfaceMonitor.UnregisterCallback(t.interfaceCallback)
 	}
+	if t.options.EXP_ExternalConfiguration {
+		return common.Close(common.PtrOrNil(t.tunFile))
+	}
+	t.unsetSearchDomainForSystemdResolved()
+	t.unsetAddresses()
 	return E.Errors(t.unsetRoute(), t.unsetRules(), common.Close(common.PtrOrNil(t.tunFile)))
+}
+
+func (t *NativeTun) Read(p []byte) (n int, err error) {
+	if t.vnetHdr {
+		n, err = t.tunFile.Read(t.writeBuffer)
+		if err != nil {
+			if errors.Is(err, syscall.EBADFD) {
+				err = os.ErrClosed
+			}
+			return
+		}
+		var sizes [1]int
+		n, err = handleVirtioRead(t.writeBuffer[:n], [][]byte{p}, sizes[:], 0)
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			return
+		}
+		n = sizes[0]
+		return
+	} else {
+		return t.tunFile.Read(p)
+	}
+}
+
+// handleVirtioRead splits in into bufs, leaving offset bytes at the front of
+// each buffer. It mutates sizes to reflect the size of each element of bufs,
+// and returns the number of packets read.
+func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, error) {
+	var hdr virtioNetHdr
+	err := hdr.decode(in)
+	if err != nil {
+		return 0, err
+	}
+	in = in[virtioNetHdrLen:]
+
+	options, err := hdr.toGSOOptions()
+	if err != nil {
+		return 0, err
+	}
+
+	// Don't trust HdrLen from the kernel as it can be equal to the length
+	// of the entire first packet when the kernel is handling it as part of a
+	// FORWARD path. Instead, parse the transport header length and add it onto
+	// CsumStart, which is synonymous for IP header length.
+	if options.GSOType == GSOUDPL4 {
+		options.HdrLen = options.CsumStart + 8
+	} else if options.GSOType != GSONone {
+		if len(in) <= int(options.CsumStart+12) {
+			return 0, errors.New("packet is too short")
+		}
+
+		tcpHLen := uint16(in[options.CsumStart+12] >> 4 * 4)
+		if tcpHLen < 20 || tcpHLen > 60 {
+			// A TCP header must be between 20 and 60 bytes in length.
+			return 0, fmt.Errorf("tcp header len is invalid: %d", tcpHLen)
+		}
+		options.HdrLen = options.CsumStart + tcpHLen
+	}
+
+	return GSOSplit(in, options, bufs, sizes, offset)
+}
+
+func (t *NativeTun) Write(p []byte) (n int, err error) {
+	if t.vnetHdr {
+		_, err = t.BatchWrite([][]byte{p}, virtioNetHdrLen)
+		if err != nil {
+			return
+		}
+		n = len(p)
+		return
+	}
+	return t.tunFile.Write(p)
+}
+
+func (t *NativeTun) FrontHeadroom() int {
+	if t.vnetHdr {
+		return virtioNetHdrLen
+	}
+	return 0
+}
+
+func (t *NativeTun) BatchSize() int {
+	if !t.vnetHdr {
+		return 1
+	}
+	/* // Not works on some devices: https://github.com/SagerNet/sing-box/issues/1605
+	batchSize := int(gsoMaxSize/t.options.MTU) * 2
+	if batchSize > idealBatchSize {
+		batchSize = idealBatchSize
+	}
+	return batchSize*/
+	return idealBatchSize
+}
+
+func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error) {
+	t.readAccess.Lock()
+	defer t.readAccess.Unlock()
+	n, err = t.tunFile.Read(t.writeBuffer)
+	if err != nil {
+		return
+	}
+	return handleVirtioRead(t.writeBuffer[:n], buffers, readN, offset)
+}
+
+func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) (int, error) {
+	t.writeAccess.Lock()
+	defer func() {
+		t.tcpGROTable.reset()
+		t.udpGROTable.reset()
+		t.writeAccess.Unlock()
+	}()
+	var (
+		errs  error
+		total int
+	)
+	t.gsoToWrite = t.gsoToWrite[:0]
+	if t.vnetHdr {
+		err := handleGRO(buffers, offset, t.tcpGROTable, t.udpGROTable, t.gro, &t.gsoToWrite)
+		if err != nil {
+			return 0, err
+		}
+		offset -= virtioNetHdrLen
+	} else {
+		for i := range buffers {
+			t.gsoToWrite = append(t.gsoToWrite, i)
+		}
+	}
+	for _, toWrite := range t.gsoToWrite {
+		n, err := t.tunFile.Write(buffers[toWrite][offset:])
+		if errors.Is(err, syscall.EBADFD) {
+			return total, os.ErrClosed
+		}
+		if err != nil {
+			errs = errors.Join(errs, err)
+		} else {
+			total += n
+		}
+	}
+	return total, errs
 }
 
 func (t *NativeTun) TXChecksumOffload() bool {
@@ -345,24 +489,50 @@ func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
 	}
 }
 
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	if t.options.FileDescriptor > 0 {
+		return nil
+	} else if t.options.EXP_ExternalConfiguration {
+		t.options = tunOptions
+		return nil
+	} else if !t.options.AutoRoute {
+		t.options = tunOptions
+		return nil
+	}
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return E.Cause(err, "find tun interface")
+	}
+	err = t.unsetRoute0(tunLink)
+	if err != nil {
+		return E.Cause(err, "unset old routes")
+	}
+	t.options = tunOptions
+	return t.setRoute(tunLink)
+}
+
 func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 	routeRanges, err := t.options.BuildAutoRouteRanges(false)
 	if err != nil {
-		return nil, err
+		return nil, E.Cause(err, "build auto route ranges")
 	}
+	// Do not create gateway on linux by default
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 	return common.Map(routeRanges, func(it netip.Prefix) netlink.Route {
+		var gateway net.IP
+		if it.Addr().Is4() && !gateway4.IsUnspecified() {
+			gateway = gateway4.AsSlice()
+		} else if it.Addr().Is6() && !gateway6.IsUnspecified() {
+			gateway = gateway6.AsSlice()
+		}
 		return netlink.Route{
 			Dst:       prefixToIPNet(it),
+			Gw:        gateway,
 			LinkIndex: tunLink.Attrs().Index,
-			Table:     t.options.TableIndex,
+			Table:     t.options.IPRoute2TableIndex,
 		}
 	}), nil
 }
-
-const (
-	ruleStart = 9000
-	ruleEnd   = ruleStart + 10
-)
 
 func (t *NativeTun) nextIndex6() int {
 	ruleList, err := netlink.RuleList(netlink.FAMILY_V6)
@@ -385,7 +555,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if len(t.options.Inet6Address) > 0 {
 			it := netlink.NewRule()
 			it.Priority = t.nextIndex6()
-			it.Table = t.options.TableIndex
+			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			it.OifName = t.options.Name
 			return []*netlink.Rule{it}
@@ -411,10 +581,80 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	var it *netlink.Rule
 
 	excludeRanges := t.options.ExcludedRanges()
+
+	ruleStart := t.options.IPRoute2RuleIndex
 	priority := ruleStart
 	priority6 := priority
-	nopPriority := ruleEnd
 
+	if t.options.AutoRedirectMarkMode {
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Goto = priority + 2
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Mark = t.options.AutoRedirectInputMark
+			it.MarkSet = true
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+			priority++
+
+			it = netlink.NewRule()
+			it.Priority = priority
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Goto = priority6 + 2
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Mark = t.options.AutoRedirectInputMark
+			it.MarkSet = true
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+			priority6++
+
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+		// Fallback rules after system default rules (32766: main, 32767: default)
+		// Only reached when main and default tables have no route
+		if p4 {
+			it = netlink.NewRule()
+			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET
+			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+		return rules
+	}
+
+	nopPriority := ruleStart + 10
 	for _, excludeRange := range excludeRanges {
 		if p4 {
 			it = netlink.NewRule()
@@ -442,7 +682,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		}
 	}
 	if len(t.options.IncludeInterface) > 0 {
-		matchPriority := priority + 2*len(t.options.IncludeInterface) + 1
+		matchPriority := priority + 2
 		for _, includeInterface := range t.options.IncludeInterface {
 			if p4 {
 				it = netlink.NewRule()
@@ -451,7 +691,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = matchPriority
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
@@ -460,8 +699,13 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = matchPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
-				priority6++
 			}
+		}
+		if p4 {
+			priority++
+		}
+		if p6 {
+			priority6++
 		}
 		if p4 {
 			it = netlink.NewRule()
@@ -500,7 +744,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = nopPriority
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
-				priority++
 			}
 			if p6 {
 				it = netlink.NewRule()
@@ -509,17 +752,24 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it.Goto = nopPriority
 				it.Family = unix.AF_INET6
 				rules = append(rules, it)
-				priority6++
 			}
+		}
+
+		if p4 {
+			priority++
+		}
+		if p6 {
+			priority6++
 		}
 	}
 
 	if runtime.GOOS == "android" && t.options.InterfaceMonitor.AndroidVPNEnabled() {
 		const protectedFromVPN = 0x20000
-		if p4 || t.options.StrictRoute {
+		if p4 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
+				it.MarkSet = true
 			}
 			it.Mask = protectedFromVPN
 			it.Priority = priority
@@ -528,10 +778,11 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 			priority++
 		}
-		if p6 || t.options.StrictRoute {
+		if p6 {
 			it = netlink.NewRule()
 			if t.options.InterfaceMonitor.OverrideAndroidVPN() {
 				it.Mark = protectedFromVPN
+				it.MarkSet = true
 			}
 			it.Mask = protectedFromVPN
 			it.Family = unix.AF_INET6
@@ -567,124 +818,128 @@ func (t *NativeTun) rules() []*netlink.Rule {
 				it = netlink.NewRule()
 				it.Priority = priority
 				it.Dst = address.Masked()
-				it.Table = t.options.TableIndex
+				it.Table = t.options.IPRoute2TableIndex
 				it.Family = unix.AF_INET
 				rules = append(rules, it)
 			}
 			priority++
-		}
-		if p4 && !t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
-			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
 
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.IPProto = syscall.IPPROTO_ICMP
-			it.Goto = nopPriority
+			it.Table = t.options.IPRoute2TableIndex
+			it.SuppressPrefixlen = 0
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
 			priority++
 		}
-		if p6 && !t.options.StrictRoute {
+		if p6 {
 			it = netlink.NewRule()
 			it.Priority = priority6
-			it.Invert = true
-			it.Dport = netlink.NewRulePortRange(53, 53)
-			it.Table = unix.RT_TABLE_MAIN
+			it.Table = t.options.IPRoute2TableIndex
 			it.SuppressPrefixlen = 0
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IPProto = syscall.IPPROTO_ICMPV6
-			it.Goto = nopPriority
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
 			priority6++
 		}
-	}
-
-	if p4 {
-		if t.options.StrictRoute {
-			it = netlink.NewRule()
-			it.Priority = priority
-			it.Table = t.options.TableIndex
-			it.Family = unix.AF_INET
-			rules = append(rules, it)
-		} else {
+		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.Invert = true
-			it.IifName = "lo"
-			it.Table = t.options.TableIndex
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
+		}
+		if p6 {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.Invert = true
+			it.Dport = netlink.NewRulePortRange(53, 53)
+			it.Table = unix.RT_TABLE_MAIN
+			it.SuppressPrefixlen = 0
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+	}
+	if p4 {
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = t.options.Name
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+		priority++
 
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.Invert = true
+		it.IifName = "lo"
+		it.Table = t.options.IPRoute2TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
+		it.Table = t.options.IPRoute2TableIndex
+		it.Family = unix.AF_INET
+		rules = append(rules, it)
+
+		for _, address := range t.options.Inet4Address {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
-			it.Table = t.options.TableIndex
+			it.Src = address.Masked()
+			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
-
-			for _, address := range t.options.Inet4Address {
-				it = netlink.NewRule()
-				it.Priority = priority
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET
-				rules = append(rules, it)
-			}
 		}
-		priority++
+		// priority++
 	}
 	if p6 {
-		if !t.options.StrictRoute {
-			for _, address := range t.options.Inet6Address {
-				it = netlink.NewRule()
-				it.Priority = priority6
-				it.IifName = "lo"
-				it.Src = address.Masked()
-				it.Table = t.options.TableIndex
-				it.Family = unix.AF_INET6
-				rules = append(rules, it)
-			}
-			priority6++
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
-			it.Goto = nopPriority
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			it = netlink.NewRule()
-			it.Priority = priority6
-			it.IifName = "lo"
-			it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
-			it.Goto = nopPriority
-			it.Family = unix.AF_INET6
-			rules = append(rules, it)
-
-			priority6++
-		}
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = t.options.Name
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
 
 		it = netlink.NewRule()
 		it.Priority = priority6
-		it.Table = t.options.TableIndex
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.IPv6Unspecified(), 1)
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = "lo"
+		it.Src = netip.PrefixFrom(netip.AddrFrom16([16]byte{0: 128}), 1)
+		it.Goto = nopPriority
 		it.Family = unix.AF_INET6
 		rules = append(rules, it)
 		priority6++
+
+		for _, address := range t.options.Inet6Address {
+			it = netlink.NewRule()
+			it.Priority = priority6
+			it.IifName = "lo"
+			it.Src = address.Masked()
+			it.Table = t.options.IPRoute2TableIndex
+			it.Family = unix.AF_INET6
+			rules = append(rules, it)
+		}
+		priority6++
+
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.Table = t.options.IPRoute2TableIndex
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+		// priority6++
 	}
 	if p4 {
 		it = netlink.NewRule()
@@ -704,7 +959,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 	routes, err := t.routes(tunLink)
 	if err != nil {
-		return err
+		return E.Cause(err, "build routes")
 	}
 	for i, route := range routes {
 		err := netlink.RouteAdd(&route)
@@ -731,7 +986,7 @@ func (t *NativeTun) unsetRoute() error {
 	}
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
-		return err
+		return E.Cause(err, "find tun interface")
 	}
 	return t.unsetRoute0(tunLink)
 }
@@ -764,10 +1019,12 @@ func (t *NativeTun) unsetRules() error {
 	if t.options.AutoRoute {
 		ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
 		if err != nil {
-			return err
+			return E.Cause(err, "list rules")
 		}
 		for _, rule := range ruleList {
-			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd {
+			ruleStart := t.options.IPRoute2RuleIndex
+			ruleEnd := ruleStart + 10
+			if rule.Priority >= ruleStart && rule.Priority <= ruleEnd || (t.options.AutoRedirectMarkMode && rule.Priority == t.options.IPRoute2AutoRedirectFallbackRuleIndex) {
 				ruleToDel := netlink.NewRule()
 				ruleToDel.Family = rule.Family
 				ruleToDel.Priority = rule.Priority
@@ -781,13 +1038,31 @@ func (t *NativeTun) unsetRules() error {
 	return nil
 }
 
+func (t *NativeTun) unsetAddresses() {
+	if t.options.FileDescriptor > 0 {
+		return
+	}
+	tunLink, err := netlink.LinkByName(t.options.Name)
+	if err != nil {
+		return
+	}
+	for _, address := range t.options.Inet4Address {
+		addr, _ := netlink.ParseAddr(address.String())
+		_ = netlink.AddrDel(tunLink, addr)
+	}
+	for _, address := range t.options.Inet6Address {
+		addr, _ := netlink.ParseAddr(address.String())
+		_ = netlink.AddrDel(tunLink, addr)
+	}
+}
+
 func (t *NativeTun) resetRules() error {
 	t.unsetRules()
 	return t.setRules()
 }
 
-func (t *NativeTun) routeUpdate(event int) {
-	if event&EventAndroidVPNUpdate == 0 {
+func (t *NativeTun) routeUpdate(_ *control.Interface, flags int) {
+	if flags&FlagAndroidVPNUpdate == 0 {
 		return
 	}
 	err := t.resetRules()
@@ -799,20 +1074,39 @@ func (t *NativeTun) routeUpdate(event int) {
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() {
+	if t.options.EXP_DisableDNSHijack {
+		return
+	}
 	ctlPath, err := exec.LookPath("resolvectl")
 	if err != nil {
 		return
 	}
-	var dnsServer []netip.Addr
-	if len(t.options.Inet4Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+	dnsServer := t.options.DNSServers
+	if len(dnsServer) == 0 {
+		if len(t.options.Inet4Address) > 0 && HasNextAddress(t.options.Inet4Address[0], 1) {
+			dnsServer = append(dnsServer, t.options.Inet4Address[0].Addr().Next())
+		}
+		if len(t.options.Inet6Address) > 0 && HasNextAddress(t.options.Inet6Address[0], 1) {
+			dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+		}
 	}
-	if len(t.options.Inet6Address) > 0 {
-		dnsServer = append(dnsServer, t.options.Inet6Address[0].Addr().Next())
+	if len(dnsServer) == 0 {
+		return
 	}
-	go shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
-	if t.options.AutoRoute {
-		go shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
-		go shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
+	go func() {
+		_ = shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
+		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
+		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsServer, netip.Addr.String)...)...).Run()
+	}()
+}
+
+func (t *NativeTun) unsetSearchDomainForSystemdResolved() {
+	if t.options.EXP_DisableDNSHijack {
+		return
 	}
+	ctlPath, err := exec.LookPath("resolvectl")
+	if err != nil {
+		return
+	}
+	_ = shell.Exec(ctlPath, "revert", t.options.Name).Run()
 }

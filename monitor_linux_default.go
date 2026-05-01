@@ -4,6 +4,7 @@ package tun
 
 import (
 	"github.com/sagernet/netlink"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
@@ -11,7 +12,7 @@ import (
 func (m *defaultInterfaceMonitor) checkUpdate() error {
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return err
+		return E.Cause(err, "list routes")
 	}
 	for _, route := range routes {
 		if route.Dst != nil {
@@ -21,19 +22,18 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		var link netlink.Link
 		link, err = netlink.LinkByIndex(route.LinkIndex)
 		if err != nil {
-			return err
+			return E.Cause(err, "find link by index")
 		}
 
-		oldInterface := m.defaultInterfaceName
-		oldIndex := m.defaultInterfaceIndex
-
-		m.defaultInterfaceName = link.Attrs().Name
-		m.defaultInterfaceIndex = link.Attrs().Index
-
-		if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
+		newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)
+		if err != nil {
+			return E.Cause(err, "find updated interface: ", link.Attrs().Name)
+		}
+		oldInterface := m.defaultInterface.Swap(newInterface)
+		if oldInterface != nil && oldInterface.Equals(*newInterface) {
 			return nil
 		}
-		m.emit(EventInterfaceUpdate)
+		m.emit(newInterface, 0)
 		return nil
 	}
 	return ErrNoRoute

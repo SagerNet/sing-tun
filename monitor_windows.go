@@ -14,7 +14,6 @@ import (
 type networkUpdateMonitor struct {
 	routeListener     *winipcfg.RouteChangeCallback
 	interfaceListener *winipcfg.InterfaceChangeCallback
-	errorHandler      E.Handler
 
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]
@@ -78,12 +77,16 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			continue
 		}
 
+		if ifrow.Type == winipcfg.IfTypePropVirtual || ifrow.Type == winipcfg.IfTypeSoftwareLoopback {
+			continue
+		}
+
 		iface, err := row.InterfaceLUID.IPInterface(windows.AF_INET)
 		if err != nil {
 			continue
 		}
 
-		if ifrow.Type == winipcfg.IfTypePropVirtual || ifrow.Type == winipcfg.IfTypeSoftwareLoopback {
+		if !iface.Connected {
 			continue
 		}
 
@@ -99,16 +102,14 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 		return ErrNoRoute
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = alias
-	m.defaultInterfaceIndex = index
-
-	if oldInterface == m.defaultInterfaceName && oldIndex == m.defaultInterfaceIndex {
+	newInterface, err := m.interfaceFinder.ByIndex(index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", alias)
+	}
+	oldInterface := m.defaultInterface.Swap(newInterface)
+	if oldInterface != nil && oldInterface.Equals(*newInterface) {
 		return nil
 	}
-
-	m.emit(EventInterfaceUpdate)
+	m.emit(newInterface, 0)
 	return nil
 }

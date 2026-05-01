@@ -2,30 +2,33 @@ package tun
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
 	"io"
 	"os"
 	"strconv"
 
+	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/abx"
 	E "github.com/sagernet/sing/common/exceptions"
-
-	"github.com/fsnotify/fsnotify"
+	"github.com/sagernet/sing/common/logger"
 )
 
 type packageManager struct {
 	callback        PackageManagerCallback
-	watcher         *fsnotify.Watcher
+	logger          logger.Logger
+	watcher         *fswatch.Watcher
 	idByPackage     map[string]uint32
 	sharedByPackage map[string]uint32
-	packageById     map[uint32]string
+	packageById     map[uint32][]string
 	sharedById      map[uint32]string
 }
 
-func NewPackageManager(callback PackageManagerCallback) (PackageManager, error) {
-	return &packageManager{callback: callback}, nil
+func NewPackageManager(options PackageManagerOptions) (PackageManager, error) {
+	return &packageManager{
+		callback: options.Callback,
+		logger:   options.Logger,
+	}, nil
 }
 
 func (m *packageManager) Start() error {
@@ -35,42 +38,33 @@ func (m *packageManager) Start() error {
 	}
 	err = m.startWatcher()
 	if err != nil {
-		m.callback.NewError(context.Background(), E.Cause(err, "create fsnotify watcher"))
+		m.logger.Error(E.Cause(err, "create watcher for packages list"))
 	}
 	return nil
 }
 
 func (m *packageManager) startWatcher() error {
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := fswatch.NewWatcher(fswatch.Options{
+		Path:     []string{"/data/system/packages.xml"},
+		Direct:   true,
+		Callback: m.packagesUpdated,
+		Logger:   m.logger,
+	})
 	if err != nil {
 		return err
 	}
-	err = watcher.Add("/data/system/packages.xml")
+	err = watcher.Start()
 	if err != nil {
 		return err
 	}
 	m.watcher = watcher
-	go m.loopUpdate()
 	return nil
 }
 
-func (m *packageManager) loopUpdate() {
-	for {
-		select {
-		case _, ok := <-m.watcher.Events:
-			if !ok {
-				return
-			}
-			err := m.updatePackages()
-			if err != nil {
-				m.callback.NewError(context.Background(), E.Cause(err, "update packages"))
-			}
-		case err, ok := <-m.watcher.Errors:
-			if !ok {
-				return
-			}
-			m.callback.NewError(context.Background(), E.Cause(err, "fsnotify error"))
-		}
+func (m *packageManager) packagesUpdated(path string) {
+	err := m.updatePackages()
+	if err != nil {
+		m.logger.Error(E.Cause(err, "update packages"))
 	}
 }
 
@@ -89,8 +83,16 @@ func (m *packageManager) IDBySharedPackage(sharedPackage string) (uint32, bool) 
 }
 
 func (m *packageManager) PackageByID(id uint32) (string, bool) {
-	packageName, loaded := m.packageById[id]
-	return packageName, loaded
+	packageNames, loaded := m.packageById[id]
+	if !loaded || len(packageNames) == 0 {
+		return "", false
+	}
+	return packageNames[0], true
+}
+
+func (m *packageManager) PackagesByID(id uint32) ([]string, bool) {
+	packageNames, loaded := m.packageById[id]
+	return packageNames, loaded
 }
 
 func (m *packageManager) SharedPackageByID(id uint32) (string, bool) {
@@ -116,7 +118,7 @@ func (m *packageManager) updatePackages() error {
 func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 	idByPackage := make(map[string]uint32)
 	sharedByPackage := make(map[string]uint32)
-	packageById := make(map[uint32]string)
+	packageById := make(map[uint32][]string)
 	sharedById := make(map[uint32]string)
 	for {
 		token, err := decoder.Token()
@@ -150,7 +152,7 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 				continue
 			}
 			idByPackage[name] = uint32(userID)
-			packageById[uint32(userID)] = name
+			packageById[uint32(userID)] = append(packageById[uint32(userID)], name)
 		case "shared-user":
 			var name string
 			var userID uint64
@@ -163,7 +165,6 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 					if err != nil {
 						return err
 					}
-					packageById[uint32(userID)] = name
 				}
 			}
 			if userID == 0 && name == "" {

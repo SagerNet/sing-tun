@@ -27,7 +27,7 @@ type networkUpdateMonitor struct {
 var ErrNetlinkBanned = E.New(
 	"netlink socket in Android is banned by Google, " +
 		"use the root or system (ADB) user to run sing-box, " +
-		"or switch to the sing-box Adnroid graphical interface client",
+		"or switch to the sing-box Android graphical interface client",
 )
 
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
@@ -57,11 +57,11 @@ func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error)
 func (m *networkUpdateMonitor) Start() error {
 	err := netlink.RouteSubscribe(m.routeUpdate, m.close)
 	if err != nil {
-		return err
+		return E.Cause(err, "subscribe route updates")
 	}
 	err = netlink.LinkSubscribe(m.linkUpdate, m.close)
 	if err != nil {
-		return err
+		return E.Cause(err, "subscribe link updates")
 	}
 	go m.loopUpdate()
 	return nil

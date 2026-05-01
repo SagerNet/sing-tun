@@ -12,8 +12,12 @@ import (
 
 var _ GVisorTun = (*NativeTun)(nil)
 
-func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, error) {
-	return &FreeBSDEndpoint{tun: t}, nil
+func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
+	return bufio.WriteVectorised(t, pkt.AsSlices())
+}
+
+func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) {
+	return &FreeBSDEndpoint{tun: t}, stack.NICOptions{}, nil
 }
 
 var _ stack.LinkEndpoint = (*FreeBSDEndpoint)(nil)
@@ -87,14 +91,17 @@ func (e *FreeBSDEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 	return stack.CapabilityRXChecksumOffload
 }
 
+func (e *FreeBSDEndpoint) SetMTU(mtu uint32) {
+}
+
 func (e *FreeBSDEndpoint) ARPHardwareType() header.ARPHardwareType {
 	return header.ARPHardwareNone
 }
 
-func (e *FreeBSDEndpoint) AddHeader(buffer stack.PacketBufferPtr) {
+func (e *FreeBSDEndpoint) AddHeader(buffer *stack.PacketBuffer) {
 }
 
-func (e *FreeBSDEndpoint) ParseHeader(ptr stack.PacketBufferPtr) bool {
+func (e *FreeBSDEndpoint) ParseHeader(ptr *stack.PacketBuffer) bool {
 	return true
 }
 
@@ -110,6 +117,9 @@ func (e *FreeBSDEndpoint) LinkAddress() tcpip.LinkAddress {
 	return ""
 }
 
+func (e *FreeBSDEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
+}
+
 func (e *FreeBSDEndpoint) WritePackets(packetBufferList stack.PacketBufferList) (int, tcpip.Error) {
 	var n int
 	for _, packet := range packetBufferList.AsSlice() {
@@ -120,4 +130,10 @@ func (e *FreeBSDEndpoint) WritePackets(packetBufferList stack.PacketBufferList) 
 		n++
 	}
 	return n, nil
+}
+
+func (e *FreeBSDEndpoint) Close() {
+}
+
+func (e *FreeBSDEndpoint) SetOnCloseAction(f func()) {
 }

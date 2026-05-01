@@ -8,7 +8,7 @@ import (
 func (m *defaultInterfaceMonitor) checkUpdate() error {
 	ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
 	if err != nil {
-		return err
+		return E.Cause(err, "list rules")
 	}
 
 	oldVPNEnabled := m.androidVPNEnabled
@@ -20,7 +20,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 				continue
 			}
 			vpnEnabled = true
-			if m.options.OverrideAndroidVPN {
+			if m.overrideAndroidVPN {
 				defaultTableIndex = rule.Table
 				break
 			}
@@ -38,7 +38,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: defaultTableIndex}, netlink.RT_FILTER_TABLE)
 	if err != nil {
-		return err
+		return E.Cause(err, "list routes")
 	}
 
 	if len(routes) == 0 {
@@ -48,25 +48,21 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	var link netlink.Link
 	link, err = netlink.LinkByIndex(routes[0].LinkIndex)
 	if err != nil {
-		return err
+		return E.Cause(err, "find link by index")
 	}
 
-	oldInterface := m.defaultInterfaceName
-	oldIndex := m.defaultInterfaceIndex
-
-	m.defaultInterfaceName = link.Attrs().Name
-	m.defaultInterfaceIndex = link.Attrs().Index
-
-	var event int
-	if oldInterface != m.defaultInterfaceName || oldIndex != m.defaultInterfaceIndex {
-		event |= EventInterfaceUpdate
+	newInterface, err := m.interfaceFinder.ByIndex(link.Attrs().Index)
+	if err != nil {
+		return E.Cause(err, "find updated interface: ", link.Attrs().Name)
 	}
+	oldInterface := m.defaultInterface.Swap(newInterface)
+	if oldInterface != nil && oldInterface.Equals(*newInterface) && oldVPNEnabled == m.androidVPNEnabled {
+		return nil
+	}
+	var flags int
 	if oldVPNEnabled != m.androidVPNEnabled {
-		event |= EventAndroidVPNUpdate
+		flags = FlagAndroidVPNUpdate
 	}
-	if event != 0 {
-		m.emit(event)
-	}
-
+	m.emit(newInterface, flags)
 	return nil
 }

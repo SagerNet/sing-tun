@@ -7,24 +7,39 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/control"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ranges"
 )
 
 type Handler interface {
-	N.TCPConnectionHandler
-	N.UDPConnectionHandler
-	E.Handler
+	PrepareConnection(
+		network string,
+		source M.Socksaddr,
+		destination M.Socksaddr,
+		routeContext DirectRouteContext,
+		timeout time.Duration,
+	) (DirectRouteDestination, error)
+	N.TCPConnectionHandlerEx
+	N.UDPConnectionHandlerEx
+}
+
+type DirectRouteContext interface {
+	WritePacket(packet []byte) error
 }
 
 type Tun interface {
 	io.ReadWriter
-	N.VectorisedWriter
+	Name() (string, error)
+	Start() error
 	Close() error
+	UpdateRouteOptions(tunOptions Options) error
 }
 
 type WinTun interface {
@@ -37,36 +52,128 @@ type LinuxTUN interface {
 	N.FrontHeadroom
 	BatchSize() int
 	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
-	BatchWrite(buffers [][]byte, offset int) error
+	BatchWrite(buffers [][]byte, offset int) (n int, err error)
 	TXChecksumOffload() bool
 }
 
+type DarwinTUN interface {
+	Tun
+	BatchRead() ([]*buf.Buffer, error)
+	BatchWrite(buffers []*buf.Buffer) error
+}
+
+const (
+	DefaultIPRoute2TableIndex                    = 2022
+	DefaultIPRoute2RuleIndex                     = 9000
+	DefaultIPRoute2AutoRedirectFallbackRuleIndex = 32768
+)
+
 type Options struct {
-	Name                     string
-	Inet4Address             []netip.Prefix
-	Inet6Address             []netip.Prefix
-	MTU                      uint32
-	GSO                      bool
-	AutoRoute                bool
-	StrictRoute              bool
-	Inet4RouteAddress        []netip.Prefix
-	Inet6RouteAddress        []netip.Prefix
-	Inet4RouteExcludeAddress []netip.Prefix
-	Inet6RouteExcludeAddress []netip.Prefix
-	IncludeInterface         []string
-	ExcludeInterface         []string
-	IncludeUID               []ranges.Range[uint32]
-	ExcludeUID               []ranges.Range[uint32]
-	IncludeAndroidUser       []int
-	IncludePackage           []string
-	ExcludePackage           []string
-	InterfaceMonitor         DefaultInterfaceMonitor
-	TableIndex               int
-	FileDescriptor           int
-	Logger                   logger.Logger
+	Name                                  string
+	Inet4Address                          []netip.Prefix
+	Inet6Address                          []netip.Prefix
+	MTU                                   uint32
+	GSO                                   bool
+	AutoRoute                             bool
+	InterfaceScope                        bool
+	Inet4Gateway                          netip.Addr
+	Inet6Gateway                          netip.Addr
+	DNSServers                            []netip.Addr
+	IPRoute2TableIndex                    int
+	IPRoute2RuleIndex                     int
+	IPRoute2AutoRedirectFallbackRuleIndex int
+	AutoRedirectMarkMode                  bool
+	AutoRedirectInputMark                 uint32
+	AutoRedirectOutputMark                uint32
+	AutoRedirectResetMark                 uint32
+	AutoRedirectNFQueue                   uint16
+	ExcludeMPTCP                          bool
+	Inet4LoopbackAddress                  []netip.Addr
+	Inet6LoopbackAddress                  []netip.Addr
+	StrictRoute                           bool
+	Inet4RouteAddress                     []netip.Prefix
+	Inet6RouteAddress                     []netip.Prefix
+	Inet4RouteExcludeAddress              []netip.Prefix
+	Inet6RouteExcludeAddress              []netip.Prefix
+	IncludeInterface                      []string
+	ExcludeInterface                      []string
+	IncludeUID                            []ranges.Range[uint32]
+	ExcludeUID                            []ranges.Range[uint32]
+	IncludeAndroidUser                    []int
+	IncludePackage                        []string
+	ExcludePackage                        []string
+	IncludeMACAddress                     []net.HardwareAddr
+	ExcludeMACAddress                     []net.HardwareAddr
+	InterfaceFinder                       control.InterfaceFinder
+	InterfaceMonitor                      DefaultInterfaceMonitor
+	FileDescriptor                        int
+	Logger                                logger.Logger
 
 	// No work for TCP, do not use.
 	_TXChecksumOffload bool
+
+	// For library usages.
+	EXP_DisableDNSHijack      bool
+	EXP_ExternalConfiguration bool
+
+	// For gvisor stack, it should be enabled when MTU is less than 32768; otherwise it should be less than or equal to 8192.
+	// The above condition is just an estimate and not exact, calculated on M4 pro.
+	EXP_MultiPendingPackets bool
+
+	// Will cause the darwin network to die, do not use.
+	EXP_SendMsgX bool
+}
+
+func (o *Options) Inet4GatewayAddr() netip.Addr {
+	if o.Inet4Gateway.IsValid() {
+		return o.Inet4Gateway
+	}
+	if len(o.Inet4Address) > 0 {
+		switch runtime.GOOS {
+		case "android":
+		case "linux":
+			if HasNextAddress(o.Inet4Address[0], 1) {
+				return o.Inet4Address[0].Addr().Next()
+			}
+		case "darwin":
+			return o.Inet4Address[0].Addr()
+		default:
+			if !o.InterfaceScope {
+				if HasNextAddress(o.Inet4Address[0], 1) {
+					return o.Inet4Address[0].Addr().Next()
+				} else {
+					return o.Inet4Address[0].Addr()
+				}
+			}
+		}
+	}
+	return netip.IPv4Unspecified()
+}
+
+func (o *Options) Inet6GatewayAddr() netip.Addr {
+	if o.Inet6Gateway.IsValid() {
+		return o.Inet6Gateway
+	}
+	if len(o.Inet6Address) > 0 {
+		switch runtime.GOOS {
+		case "android":
+		case "linux":
+			if HasNextAddress(o.Inet6Address[0], 1) {
+				return o.Inet6Address[0].Addr().Next()
+			}
+		case "darwin":
+			return o.Inet6Address[0].Addr()
+		default:
+			if !o.InterfaceScope {
+				if HasNextAddress(o.Inet6Address[0], 1) {
+					return o.Inet6Address[0].Addr().Next()
+				} else {
+					return o.Inet6Address[0].Addr()
+				}
+			}
+		}
+	}
+	return netip.IPv6Unspecified()
 }
 
 func CalculateInterfaceName(name string) (tunName string) {
@@ -85,7 +192,7 @@ func CalculateInterfaceName(name string) (tunName string) {
 	for _, netInterface := range interfaces {
 		if strings.HasPrefix(netInterface.Name, tunName) {
 			index, parseErr := strconv.ParseInt(netInterface.Name[len(tunName):], 10, 16)
-			if parseErr == nil {
+			if parseErr == nil && int(index) >= tunIndex {
 				tunIndex = int(index) + 1
 			}
 		}

@@ -1,20 +1,32 @@
 module github.com/sagernet/sing-tun
 
-go 1.18
+go 1.24.7
 
 require (
-	github.com/fsnotify/fsnotify v1.7.0
+	github.com/florianl/go-nfqueue/v2 v2.0.2
 	github.com/go-ole/go-ole v1.3.0
-	github.com/sagernet/gvisor v0.0.0-20240428053021-e691de28565f
-	github.com/sagernet/netlink v0.0.0-20220905062125-8043b4a9aa97
-	github.com/sagernet/sing v0.3.8
+	github.com/google/btree v1.1.3
+	github.com/mdlayher/netlink v1.9.0
+	github.com/sagernet/fswatch v0.1.1
+	github.com/sagernet/gvisor v0.0.0-20250811.0-sing-box-mod.1
+	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
+	github.com/sagernet/nftables v0.3.0-mod.2
+	github.com/sagernet/sing v0.8.0
+	github.com/stretchr/testify v1.11.1
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/net v0.24.0
-	golang.org/x/sys v0.19.0
+	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
+	golang.org/x/net v0.50.0
+	golang.org/x/sys v0.41.0
 )
 
 require (
-	github.com/google/btree v1.1.2 // indirect
-	github.com/vishvananda/netns v0.0.0-20211101163701-50045581ed74 // indirect
-	golang.org/x/time v0.5.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/vishvananda/netns v0.0.4 // indirect
+	golang.org/x/sync v0.7.0 // indirect
+	golang.org/x/time v0.7.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

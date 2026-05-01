@@ -75,7 +75,7 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 			continue
 		}
 
-		if size < uintptr(sections[i].PointerToRawData+sections[i].SizeOfRawData) {
+		if size < uintptr(sections[i].PointerToRawData)+uintptr(sections[i].SizeOfRawData) {
 			return errors.New("Incomplete section")
 		}
 
@@ -245,8 +245,16 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 		return delta == 0, nil
 	}
 
-	relocationHdr := (*IMAGE_BASE_RELOCATION)(a2p(module.codeBase + uintptr(directory.VirtualAddress)))
-	for relocationHdr.VirtualAddress > 0 {
+	relocBase := module.codeBase + uintptr(directory.VirtualAddress)
+	relocEnd := relocBase + uintptr(directory.Size)
+	relocationHdr := (*IMAGE_BASE_RELOCATION)(a2p(relocBase))
+	for uintptr(unsafe.Pointer(relocationHdr))+unsafe.Sizeof(*relocationHdr) <= relocEnd && relocationHdr.VirtualAddress > 0 {
+		if uintptr(relocationHdr.SizeOfBlock) < unsafe.Sizeof(*relocationHdr) {
+			return false, errors.New("Invalid relocation block size")
+		}
+		if uintptr(unsafe.Pointer(relocationHdr))+uintptr(relocationHdr.SizeOfBlock) > relocEnd {
+			return false, errors.New("Relocation block exceeds directory bounds")
+		}
 		dest := module.codeBase + uintptr(relocationHdr.VirtualAddress)
 
 		relInfos := unsafe.Slice(
@@ -456,16 +464,16 @@ func hookRtlPcToFileHeader() error {
 
 // LoadLibrary loads module image to memory.
 func LoadLibrary(data []byte) (module *Module, err error) {
-	addr := uintptr(unsafe.Pointer(&data[0]))
 	size := uintptr(len(data))
 	if size < unsafe.Sizeof(IMAGE_DOS_HEADER{}) {
 		return nil, errors.New("Incomplete IMAGE_DOS_HEADER")
 	}
+	addr := uintptr(unsafe.Pointer(&data[0]))
 	dosHeader := (*IMAGE_DOS_HEADER)(a2p(addr))
 	if dosHeader.E_magic != IMAGE_DOS_SIGNATURE {
 		return nil, fmt.Errorf("Not an MS-DOS binary (provided: %x, expected: %x)", dosHeader.E_magic, IMAGE_DOS_SIGNATURE)
 	}
-	if (size < uintptr(dosHeader.E_lfanew)+unsafe.Sizeof(IMAGE_NT_HEADERS{})) {
+	if dosHeader.E_lfanew < 0 || (size < uintptr(dosHeader.E_lfanew)+unsafe.Sizeof(IMAGE_NT_HEADERS{})) {
 		return nil, errors.New("Incomplete IMAGE_NT_HEADERS")
 	}
 	oldHeader := (*IMAGE_NT_HEADERS)(a2p(addr + uintptr(dosHeader.E_lfanew)))
@@ -475,8 +483,22 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 	if oldHeader.FileHeader.Machine != imageFileProcess {
 		return nil, fmt.Errorf("Foreign platform (provided: %x, expected: %x)", oldHeader.FileHeader.Machine, imageFileProcess)
 	}
-	if (oldHeader.OptionalHeader.SectionAlignment & 1) != 0 {
+	if oldHeader.OptionalHeader.SectionAlignment == 0 || (oldHeader.OptionalHeader.SectionAlignment&(oldHeader.OptionalHeader.SectionAlignment-1)) != 0 {
 		return nil, errors.New("Unaligned section")
+	}
+	if oldHeader.FileHeader.NumberOfSections == 0 {
+		return nil, errors.New("No sections")
+	}
+	if uintptr(oldHeader.FileHeader.SizeOfOptionalHeader) < unsafe.Sizeof(oldHeader.OptionalHeader) {
+		return nil, errors.New("Incomplete optional header")
+	}
+	if oldHeader.OptionalHeader.NumberOfRvaAndSizes < IMAGE_NUMBEROF_DIRECTORY_ENTRIES {
+		return nil, errors.New("Incomplete data directory")
+	}
+	sectionHeadersEnd := uintptr(dosHeader.E_lfanew) + unsafe.Offsetof(oldHeader.OptionalHeader) + uintptr(oldHeader.FileHeader.SizeOfOptionalHeader) +
+		uintptr(oldHeader.FileHeader.NumberOfSections)*unsafe.Sizeof(IMAGE_SECTION_HEADER{})
+	if size < sectionHeadersEnd {
+		return nil, errors.New("Incomplete section headers")
 	}
 	lastSectionEnd := uintptr(0)
 	sections := oldHeader.Sections()
@@ -562,6 +584,10 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 		module.isRelocated, err = module.performBaseRelocation(locationDelta)
 		if err != nil {
 			err = fmt.Errorf("Error relocating module: %w", err)
+			return
+		}
+		if !module.isRelocated {
+			err = errors.New("Module could not be relocated")
 			return
 		}
 	} else {
@@ -654,7 +680,7 @@ func (module *Module) ProcAddressByName(name string) (uintptr, error) {
 		return 0, errors.New("No functions exported by name")
 	}
 	if idx, ok := module.nameExports[name]; ok {
-		if uint32(idx) > exports.NumberOfFunctions {
+		if uint32(idx) >= exports.NumberOfFunctions {
 			return 0, errors.New("Ordinal number too high")
 		}
 		// AddressOfFunctions contains the RVAs to the "real" functions.
@@ -674,7 +700,7 @@ func (module *Module) ProcAddressByOrdinal(ordinal uint16) (uintptr, error) {
 		return 0, errors.New("Ordinal number too low")
 	}
 	idx := ordinal - uint16(exports.Base)
-	if uint32(idx) > exports.NumberOfFunctions {
+	if uint32(idx) >= exports.NumberOfFunctions {
 		return 0, errors.New("Ordinal number too high")
 	}
 	// AddressOfFunctions contains the RVAs to the "real" functions.

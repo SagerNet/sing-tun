@@ -47,8 +47,9 @@ type NativeTun struct {
 	name    string
 	tunFile *os.File
 
-	fd  int
-	mtu uint32
+	fd      int
+	mtu     uint32
+	options Options
 	unix.RawSockaddrInet6
 	tunWriter N.VectorisedWriter
 
@@ -80,6 +81,7 @@ func New(options Options) (Tun, error) {
 		tunFile:       tunFile,
 		fd:            int(tunFile.Fd()),
 		mtu:           options.MTU,
+		options:       options,
 		routeCleanFns: make([]func() error, 0),
 	}
 
@@ -114,7 +116,10 @@ func New(options Options) (Tun, error) {
 			destoryIf(assignedName)
 			return nil, err
 		}
+		assignedName = options.Name
 	}
+	tun.name = assignedName
+	tun.options.Name = assignedName
 
 	if err := becomeCtrlProc(tun.tunFile); err != nil {
 		tun.tunFile.Close()
@@ -159,30 +164,24 @@ func New(options Options) (Tun, error) {
 		panic("create vectorised writer")
 	}
 
-	// same as darwin
-	if options.AutoRoute {
-		var routeRanges []netip.Prefix
-		routeRanges, _ = options.BuildAutoRouteRanges(false)
-		for _, routeRange := range routeRanges {
-			var fn func() error
-			if routeRange.Addr().Is4() {
-				fn, err = addRoute(routeRange, options.Inet4Address[0].Addr())
-			} else {
-				fn, err = addRoute(routeRange, options.Inet6Address[0].Addr())
-			}
-			if err != nil {
-				return nil, E.Cause(err, "add route: ", routeRange)
-			}
-			tun.routeCleanFns = append(tun.routeCleanFns, fn)
-		}
-	}
-
 	if err := ifUp(tun.name); err != nil {
 		tun.tunFile.Close()
 		return nil, err
 	}
 
 	return tun, nil
+}
+
+func (t *NativeTun) Name() (string, error) {
+	return t.name, nil
+}
+
+func (t *NativeTun) Start() error {
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
+	t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+	return t.setRoutes()
 }
 
 // Read implements Tun.
@@ -195,24 +194,65 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 	return t.tunFile.Write(p)
 }
 
+func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	tunOptions.Name = t.name
+	t.options = tunOptions
+	if t.options.EXP_ExternalConfiguration {
+		return nil
+	}
+	if err := t.unsetRoutes(); err != nil {
+		return err
+	}
+	return t.setRoutes()
+}
+
 // Close implements Tun.
 func (t *NativeTun) Close() error {
+	err := t.unsetRoutes()
 
-	for _, fn := range t.routeCleanFns {
-		if err := fn(); err != nil {
-			// TODO: deal with undeleted route?
-			continue
+	if closeErr := t.tunFile.Close(); closeErr != nil {
+		err = E.Errors(err, closeErr)
+	}
+
+	if destroyErr := destoryIf(t.name); destroyErr != nil {
+		err = E.Errors(err, destroyErr)
+	}
+	return err
+}
+
+func (t *NativeTun) setRoutes() error {
+	if !t.options.AutoRoute {
+		return nil
+	}
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	if err != nil {
+		return err
+	}
+	for _, routeRange := range routeRanges {
+		var gateway netip.Addr
+		if routeRange.Addr().Is4() {
+			gateway = t.options.Inet4GatewayAddr()
+		} else {
+			gateway = t.options.Inet6GatewayAddr()
 		}
-	}
-
-	if err := t.tunFile.Close(); err != nil {
-		return err
-	}
-
-	if err := destoryIf(t.name); err != nil {
-		return err
+		fn, err := addRoute(routeRange, gateway)
+		if err != nil {
+			return E.Cause(err, "add route: ", routeRange)
+		}
+		t.routeCleanFns = append(t.routeCleanFns, fn)
 	}
 	return nil
+}
+
+func (t *NativeTun) unsetRoutes() error {
+	var err error
+	for _, fn := range t.routeCleanFns {
+		if routeErr := fn(); routeErr != nil {
+			err = E.Errors(err, routeErr)
+		}
+	}
+	t.routeCleanFns = t.routeCleanFns[:0]
+	return err
 }
 
 var (
