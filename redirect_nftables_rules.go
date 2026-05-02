@@ -675,7 +675,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6RouteExcludeAddress.ID, inet6RouteExcludeAddress.Name, nftables.TableFamilyIPv6, false)
 	}
 
-	if !r.tunOptions.EXP_DisableDNSHijack && ((chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeNAT) ||
+	if r.tunOptions.DNSModeOrDefault() == DNSModeHijack && ((chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeNAT) ||
 		(r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeNAT)) {
 		if r.enableIPv4 {
 			err := r.nftablesCreateDNSHijackRulesForFamily(nft, table, chain, nftables.TableFamilyIPv4, 5, "inet4_local_address_set")
@@ -997,23 +997,19 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	if err != nil {
 		return E.Cause(err, "add dns protocol set")
 	}
-	dnsServer := common.Find(r.tunOptions.DNSServers, func(it netip.Addr) bool {
-		return it.Is4() == (family == nftables.TableFamilyIPv4)
-	})
-	if !dnsServer.IsValid() {
-		if family == nftables.TableFamilyIPv4 {
-			if HasNextAddress(r.tunOptions.Inet4Address[0], 1) {
-				dnsServer = r.tunOptions.Inet4Address[0].Addr().Next()
-			}
-		} else {
-			if HasNextAddress(r.tunOptions.Inet6Address[0], 1) {
-				dnsServer = r.tunOptions.Inet6Address[0].Addr().Next()
-			}
-		}
+	var dnsServers []netip.Addr
+	if family == nftables.TableFamilyIPv4 {
+		dnsServers, err = r.tunOptions.Inet4DNSAddress()
+	} else {
+		dnsServers, err = r.tunOptions.Inet6DNSAddress()
 	}
-	if !dnsServer.IsValid() {
+	if err != nil {
+		return err
+	}
+	if len(dnsServers) == 0 {
 		return nil
 	}
+	dnsServer := dnsServers[0]
 	exprs := []expr.Any{
 		&expr.Meta{
 			Key:      expr.MetaKeyNFPROTO,
