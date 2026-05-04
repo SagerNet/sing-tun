@@ -27,20 +27,20 @@ type TCPForwarder struct {
 	forwarder            *tcp.Forwarder
 }
 
-func NewTCPForwarder(ctx context.Context, stack *stack.Stack, handler Handler) *TCPForwarder {
-	return NewTCPForwarderWithLoopback(ctx, stack, handler, nil, nil, nil)
+func NewTCPForwarder(ctx context.Context, ipStack *stack.Stack, handler Handler) *TCPForwarder {
+	return NewTCPForwarderWithLoopback(ctx, ipStack, handler, nil, nil, nil)
 }
 
-func NewTCPForwarderWithLoopback(ctx context.Context, stack *stack.Stack, handler Handler, inet4LoopbackAddress []netip.Addr, inet6LoopbackAddress []netip.Addr, tun GVisorTun) *TCPForwarder {
+func NewTCPForwarderWithLoopback(ctx context.Context, ipStack *stack.Stack, handler Handler, inet4LoopbackAddress []netip.Addr, inet6LoopbackAddress []netip.Addr, tun GVisorTun) *TCPForwarder {
 	forwarder := &TCPForwarder{
 		ctx:                  ctx,
-		stack:                stack,
+		stack:                ipStack,
 		handler:              handler,
 		inet4LoopbackAddress: common.Map(inet4LoopbackAddress, AddressFromAddr),
 		inet6LoopbackAddress: common.Map(inet6LoopbackAddress, AddressFromAddr),
 		tun:                  tun,
 	}
-	forwarder.forwarder = tcp.NewForwarder(stack, 0, 1024, forwarder.Forward)
+	forwarder.forwarder = tcp.NewForwarder(ipStack, 0, 1024, forwarder.Forward)
 	return forwarder
 }
 
