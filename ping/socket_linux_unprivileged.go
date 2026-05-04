@@ -23,6 +23,7 @@ type UnprivilegedConn struct {
 	destination   netip.Addr
 	receiveChan   chan *unprivilegedResponse
 	readDeadline  pipe.Deadline
+	ttl           uint8
 	mappingAccess sync.Mutex
 	mapping       map[uint16]net.Conn
 }
@@ -105,7 +106,14 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 		go c.fetchResponse(conn.(*net.UDPConn), identifier)
 		c.mapping[identifier] = conn
 	}
+	ttl := c.ttl
 	c.mappingAccess.Unlock()
+	if ttl > 0 {
+		err = c.setTTL(conn, ttl)
+		if err != nil {
+			return
+		}
+	}
 	n, err = conn.Write(b)
 	if err != nil {
 		c.removeConn(conn.(*net.UDPConn), identifier)
@@ -165,6 +173,12 @@ func (c *UnprivilegedConn) Close() error {
 	}
 	common.ClearMap(c.mapping)
 	return nil
+}
+
+func (c *UnprivilegedConn) SetTTL(ttl uint8) {
+	c.mappingAccess.Lock()
+	c.ttl = ttl
+	c.mappingAccess.Unlock()
 }
 
 func (c *UnprivilegedConn) LocalAddr() net.Addr {
