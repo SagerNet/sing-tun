@@ -22,8 +22,14 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/common/udpnat2"
+	udpnat "github.com/sagernet/sing/common/udpnat2"
 )
+
+// defaultMaxTracerouteHopLimit is the default TTL/HopLimit threshold below
+// which packets are treated as traceroute probes and sent via DirectRoute
+// rather than the normal proxy path. Set to 60 to allow up to 4 layers of
+// network devices between the originating host (TTL=64) and this TUN stack.
+const defaultMaxTracerouteHopLimit = 60
 
 type UDPForwarder struct {
 	ctx     context.Context
@@ -32,10 +38,10 @@ type UDPForwarder struct {
 	udpNat  *udpnat.Service
 }
 
-func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, timeout time.Duration) *UDPForwarder {
+func NewUDPForwarder(ctx context.Context, ipStack *stack.Stack, handler Handler, timeout time.Duration) *UDPForwarder {
 	forwarder := &UDPForwarder{
 		ctx:     ctx,
-		stack:   stack,
+		stack:   ipStack,
 		handler: handler,
 	}
 	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout, true)
@@ -45,6 +51,7 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, t
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
 	source := M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
+
 	bufferRange := pkt.Data().AsRange()
 	var bufferSlices [][]byte
 	rangeIterate(bufferRange, func(view *buffer.View) {
@@ -181,4 +188,11 @@ func gWriteUnreachable(gStack *stack.Stack, packet *stack.PacketBuffer) error {
 	} else {
 		return gonet.TranslateNetstackError(gStack.NetworkProtocolInstance(header.IPv6ProtocolNumber).(stack.RejectIPv6WithHandler).SendRejectionError(packet, stack.RejectIPv6WithICMPPortUnreachable, true))
 	}
+}
+
+func directRouteWritePacket(action DirectRouteDestination, packetBuffer *stack.PacketBuffer) error {
+	packetSlice := packetBuffer.NetworkHeader().Slice()
+	packetSlice = append(packetSlice, packetBuffer.TransportHeader().Slice()...)
+	packetSlice = append(packetSlice, packetBuffer.Data().AsRange().ToSlice()...)
+	return action.WritePacket(buf.As(packetSlice).ToOwned())
 }

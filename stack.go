@@ -33,6 +33,7 @@ type StackOptions struct {
 	ForwarderBindInterface bool
 	IncludeAllNetworks     bool
 	InterfaceFinder        control.InterfaceFinder
+	MaxTracerouteHopLimit  uint8
 }
 
 func NewStack(

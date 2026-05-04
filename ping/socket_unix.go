@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/control"
@@ -107,4 +108,81 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		}
 		return conn, nil
 	}
+}
+
+// ErrorListener listens for ICMP error messages (Time Exceeded, Destination Unreachable)
+// on an unconnected raw ICMP socket.
+type ErrorListener struct {
+	conn        *net.IPConn
+	destination netip.Addr
+}
+
+func listenErrors(privileged bool, controlFunc control.Func, destination netip.Addr) (*ErrorListener, error) {
+	var (
+		fd  int
+		err error
+	)
+	if destination.Is4() {
+		fd, err = unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_ICMP)
+	} else {
+		fd, err = unix.Socket(unix.AF_INET6, unix.SOCK_RAW, unix.IPPROTO_ICMPV6)
+	}
+	if err != nil {
+		return nil, E.Cause(err, "socket()")
+	}
+	file := os.NewFile(uintptr(fd), "icmp-error-listener")
+	defer file.Close()
+
+	if destination.Is4() {
+		err = unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_RECVTTL, 1)
+		if err != nil {
+			return nil, E.Cause(err, "setsockopt IP_RECVTTL")
+		}
+	} else {
+		err = unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_RECVHOPLIMIT, 1)
+		if err != nil {
+			return nil, E.Cause(err, "setsockopt IPV6_RECVHOPLIMIT")
+		}
+		err = unix.SetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_RECVTCLASS, 1)
+		if err != nil {
+			return nil, E.Cause(err, "setsockopt IPV6_RECVTCLASS")
+		}
+	}
+
+	var bindAddress netip.Addr
+	if !destination.Is6() {
+		bindAddress = netip.AddrFrom4([4]byte{})
+	} else {
+		bindAddress = netip.AddrFrom16([16]byte{})
+	}
+	err = unix.Bind(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(bindAddress, 0)))
+	if err != nil {
+		return nil, E.Cause(err, "bind()")
+	}
+
+	ipConn, err := net.FileConn(file)
+	if err != nil {
+		return nil, err
+	}
+	return &ErrorListener{
+		conn:        ipConn.(*net.IPConn),
+		destination: destination,
+	}, nil
+}
+
+func (l *ErrorListener) ReadMsg(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
+	var ipAddr *net.IPAddr
+	n, oobn, _, ipAddr, err = l.conn.ReadMsgIP(b, oob)
+	if err == nil {
+		addr = M.AddrFromNet(ipAddr)
+	}
+	return
+}
+
+func (l *ErrorListener) Close() error {
+	return l.conn.Close()
+}
+
+func (l *ErrorListener) SetReadDeadline(t time.Time) error {
+	return l.conn.SetReadDeadline(t)
 }

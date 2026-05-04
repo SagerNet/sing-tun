@@ -70,8 +70,8 @@ func (c *Conn) connect(controlFunc control.Func) (err error) {
 			}
 			return
 		}
-	} else if unprivilegedConn, isUnprivilegedConn := c.conn.(*UnprivilegedConn); isUnprivilegedConn {
-		c.readMsg = unprivilegedConn.ReadMsg
+	} else if rmConn, ok := c.conn.(readMsgConn); ok {
+		c.readMsg = rmConn.ReadMsg
 	} else {
 		return E.New("unsupported conn type: ", reflect.TypeOf(c.conn))
 	}

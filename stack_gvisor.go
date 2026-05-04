@@ -27,18 +27,19 @@ const WithGVisor = true
 const DefaultNIC tcpip.NICID = 1
 
 type GVisor struct {
-	ctx                  context.Context
-	tun                  GVisorTun
-	inet4Address         netip.Addr
-	inet6Address         netip.Addr
-	inet4LoopbackAddress []netip.Addr
-	inet6LoopbackAddress []netip.Addr
-	udpTimeout           time.Duration
-	broadcastAddr        netip.Addr
-	handler              Handler
-	logger               logger.Logger
-	stack                *stack.Stack
-	endpoint             stack.LinkEndpoint
+	ctx                   context.Context
+	tun                   GVisorTun
+	inet4Address          netip.Addr
+	inet6Address          netip.Addr
+	inet4LoopbackAddress  []netip.Addr
+	inet6LoopbackAddress  []netip.Addr
+	udpTimeout            time.Duration
+	maxTracerouteHopLimit uint8
+	broadcastAddr         netip.Addr
+	handler               Handler
+	logger                logger.Logger
+	stack                 *stack.Stack
+	endpoint              stack.LinkEndpoint
 }
 
 type GVisorTun interface {
@@ -67,16 +68,17 @@ func NewGVisor(
 	}
 
 	gStack := &GVisor{
-		ctx:                  options.Context,
-		tun:                  gTun,
-		inet4Address:         inet4Address,
-		inet6Address:         inet6Address,
-		inet4LoopbackAddress: options.TunOptions.Inet4LoopbackAddress,
-		inet6LoopbackAddress: options.TunOptions.Inet6LoopbackAddress,
-		udpTimeout:           options.UDPTimeout,
-		broadcastAddr:        BroadcastAddr(options.TunOptions.Inet4Address),
-		handler:              options.Handler,
-		logger:               options.Logger,
+		ctx:                   options.Context,
+		tun:                   gTun,
+		inet4Address:          inet4Address,
+		inet6Address:          inet6Address,
+		inet4LoopbackAddress:  options.TunOptions.Inet4LoopbackAddress,
+		inet6LoopbackAddress:  options.TunOptions.Inet6LoopbackAddress,
+		udpTimeout:            options.UDPTimeout,
+		maxTracerouteHopLimit: options.MaxTracerouteHopLimit,
+		broadcastAddr:         BroadcastAddr(options.TunOptions.Inet4Address),
+		handler:               options.Handler,
+		logger:                options.Logger,
 	}
 	return gStack, nil
 }
@@ -91,10 +93,12 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
 	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout)
 	icmpForwarder.SetLocalAddresses(t.inet4Address, t.inet6Address)
+	tcpHandler := NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket
+	udpHandler := NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, WrapTCPHandlerWithDirectRoute(ipStack, t.handler, icmpForwarder, t.udpTimeout, t.maxTracerouteHopLimit, netip.Addr{}, netip.Addr{}, tcpHandler))
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, WrapUDPHandlerWithDirectRoute(ipStack, t.handler, icmpForwarder, t.udpTimeout, t.maxTracerouteHopLimit, netip.Addr{}, netip.Addr{}, udpHandler))
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
 	t.stack = ipStack

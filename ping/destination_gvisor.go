@@ -13,7 +13,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport"
 	"github.com/sagernet/gvisor/pkg/waiter"
-	"github.com/sagernet/sing-tun"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -23,12 +23,13 @@ import (
 var _ tun.DirectRouteDestination = (*GVisorDestination)(nil)
 
 type GVisorDestination struct {
-	ctx      context.Context
-	logger   logger.ContextLogger
-	endpoint tcpip.Endpoint
-	conn     *gonet.TCPConn
-	rewriter *SourceRewriter
-	timeout  time.Duration
+	ctx           context.Context
+	logger        logger.ContextLogger
+	endpoint      tcpip.Endpoint
+	conn          *gonet.TCPConn
+	rewriter      *SourceRewriter
+	errorListener *ErrorListener
+	timeout       time.Duration
 }
 
 func ConnectGVisor(
@@ -86,6 +87,14 @@ func ConnectGVisor(
 		rewriter: rewriter,
 		timeout:  timeout,
 	}
+
+	// Try to create an error listener for receiving ICMP error messages
+	if errorListener := tryListenErrors(ctx, logger, nil, destinationAddress); errorListener != nil {
+		destination.errorListener = errorListener
+		go destination.loopReadErrors()
+		logger.DebugContext(ctx, "ICMP error listener started")
+	}
+
 	go destination.loopRead()
 	return destination, nil
 }
@@ -120,7 +129,37 @@ func (d *GVisorDestination) WritePacket(packet *buf.Buffer) error {
 	return common.Error(d.conn.Write(packet.Bytes()))
 }
 
+func (d *GVisorDestination) loopReadErrors() {
+	defer d.errorListener.Close()
+	for {
+		buffer := buf.NewSize(1500)
+		oob := make([]byte, 128)
+		n, _, _, err := d.errorListener.ReadMsg(buffer.FreeBytes(), oob)
+		if err != nil {
+			buffer.Release()
+			if !E.IsClosed(err) {
+				d.logger.ErrorContext(d.ctx, E.Cause(err, "receive ICMP error"))
+			}
+			return
+		}
+		buffer.Truncate(n)
+
+		// The error listener receives raw IP packets, but we ignore the
+		// TTL/hop limit from cmsg since gvisor handles that separately.
+		// Pass the raw IP packet through the SourceRewriter which handles
+		// address rewriting for both Echo Replies and ICMP errors.
+		_, err = d.rewriter.WriteBack(buffer.Bytes())
+		if err != nil {
+			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP error"))
+		}
+		buffer.Release()
+	}
+}
+
 func (d *GVisorDestination) Close() error {
+	if d.errorListener != nil {
+		_ = d.errorListener.Close()
+	}
 	return d.conn.Close()
 }
 
