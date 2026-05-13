@@ -54,10 +54,11 @@ func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
 	}, nil
 }
 
-func (h *nfqueueHandler) setVerdict(packetID uint32, verdict int, mark uint32) {
+func (h *nfqueueHandler) setVerdict(packetID uint32, verdict int, mark uint32, existingMark uint32) {
 	var err error
 	if mark != 0 {
-		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(mark))
+		combined := (existingMark &^ AutoRedirectMarkMask) | mark
+		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(combined))
 	} else {
 		err = h.nfq.SetVerdict(packetID, verdict)
 	}
@@ -165,8 +166,13 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	payload := *attr.Payload
 
 	if len(payload) < header.IPv4MinimumSize {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 		return 0
+	}
+
+	var existingMark uint32
+	if attr.Mark != nil {
+		existingMark = *attr.Mark
 	}
 
 	var srcAddr, dstAddr M.Socksaddr
@@ -176,7 +182,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	if version == 4 {
 		ipv4 := header.IPv4(payload)
 		if !ipv4.IsValid(len(payload)) || ipv4.Protocol() != uint8(unix.IPPROTO_TCP) {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+			h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 			return 0
 		}
 		srcAddr = M.SocksaddrFrom(ipv4.SourceAddr(), 0)
@@ -185,7 +191,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	} else if version == 6 {
 		transportProto, transportOffset, ok := parseIPv6TransportHeader(payload)
 		if !ok || transportProto != unix.IPPROTO_TCP {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+			h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 			return 0
 		}
 		ipv6 := header.IPv6(payload)
@@ -193,12 +199,12 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		dstAddr = M.SocksaddrFrom(ipv6.DestinationAddr(), 0)
 		tcpOffset = transportOffset
 	} else {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 		return 0
 	}
 
 	if len(payload) < tcpOffset+header.TCPMinimumSize {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 		return 0
 	}
 
@@ -208,7 +214,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 
 	flags := tcp.Flags()
 	if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 		return 0
 	}
 
@@ -220,13 +226,13 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	// the chain immediately, skipping any rules after the queue statement.
 	switch {
 	case errors.Is(pErr, ErrBypass):
-		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
+		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark, existingMark)
 	case errors.Is(pErr, ErrReset):
-		h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
+		h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark, existingMark)
 	case errors.Is(pErr, ErrDrop):
-		h.setVerdict(packetID, nfqueue.NfDrop, 0)
+		h.setVerdict(packetID, nfqueue.NfDrop, 0, 0)
 	default:
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, nfqueue.NfAccept, 0, 0)
 	}
 
 	return 0

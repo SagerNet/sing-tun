@@ -213,69 +213,29 @@ func (r *autoRedirect) setupNFTables() error {
 				},
 			},
 		})
+		inputMarkValue := binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)
+		outputMarkValue := binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark)
+		// If iface != tun AND (ct mark & mask) == InputMark → set InputMark on meta mark (preserving high bits)
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyIIFNAME,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     nftablesIfname(r.tunOptions.Name),
-				},
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
+			Exprs: append(append(append([]expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: nftablesIfname(r.tunOptions.Name)},
+			}, maskedCtMarkCmp(expr.CmpOpEq, nftMarkMaskBytes, inputMarkValue)...),
+				maskedMetaMarkSet(inputMarkValue)...),
 				&expr.Counter{},
-			},
+			),
 		})
+		// If (ct mark & mask) != InputMark → set OutputMark (preserving high bits), copy to ct mark
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
-			Exprs: []expr.Any{
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-				},
-				&expr.Immediate{
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
-				&expr.Meta{
-					Key:      expr.MetaKeyMARK,
-					Register: 1,
-				},
-				&expr.Ct{
-					Key:            expr.CtKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
+			Exprs: append(append(
+				maskedCtMarkCmp(expr.CmpOpNeq, nftMarkMaskBytes, inputMarkValue),
+				maskedMetaMarkSetWithCtCopy(outputMarkValue)...),
 				&expr.Counter{},
-			},
+			),
 		})
 	}
 
@@ -432,38 +392,36 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())},
+		Exprs: append(
+			maskedMetaMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+				binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())),
 			&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
 			&expr.Counter{},
 			&expr.Verdict{Kind: expr.VerdictReturn},
-		},
+		),
 	})
 
 	// Reset mark: reject with TCP RST.
-	// When the NFQUEUE handler returns NF_REPEAT with the reset mark,
-	// the packet re-enters this chain and is rejected here.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveResetMark())},
+		Exprs: append(
+			maskedMetaMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+				binaryutil.NativeEndian.PutUint32(r.effectiveResetMark())),
 			&expr.Counter{},
 			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
-		},
+		),
 	})
 
 	// Already-tracked bypass connections: return immediately.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())},
+		Exprs: append(
+			maskedCtMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+				binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())),
 			&expr.Verdict{Kind: expr.VerdictReturn},
-		},
+		),
 	})
 
 	// TCP SYN: send to NFQUEUE for pre-match evaluation.

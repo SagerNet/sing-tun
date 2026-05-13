@@ -14,6 +14,11 @@ const (
 	DefaultAutoRedirectOutputMark = 0x2024
 	DefaultAutoRedirectResetMark  = 0x2025
 	DefaultAutoRedirectNFQueue    = 100
+
+	// AutoRedirectMarkMask defines which bits of the 32-bit mark field are
+	// reserved for auto_redirect loop prevention. Bits outside this mask
+	// (the upper 16) are available for routing_mark / WAN selection.
+	AutoRedirectMarkMask = 0x0000FFFF
 )
 
 type AutoRedirect interface {

@@ -26,6 +26,55 @@ func init() {
 	allocSetID = 6
 }
 
+var (
+	nftMarkMaskBytes    = binaryutil.NativeEndian.PutUint32(AutoRedirectMarkMask)
+	nftMarkInvMaskBytes = binaryutil.NativeEndian.PutUint32(^uint32(AutoRedirectMarkMask))
+	nftZeroBytes4       = []byte{0, 0, 0, 0}
+	nftAllOnesBytes4    = binaryutil.NativeEndian.PutUint32(0xFFFFFFFF)
+)
+
+// maskedMetaMarkCmp returns exprs: (meta mark & mask) == value
+func maskedMetaMarkCmp(op expr.CmpOp, mask, value []byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: mask, Xor: nftZeroBytes4},
+		&expr.Cmp{Op: op, Register: 1, Data: value},
+	}
+}
+
+// maskedCtMarkCmp returns exprs: (ct mark & mask) == value
+func maskedCtMarkCmp(op expr.CmpOp, mask, value []byte) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: mask, Xor: nftZeroBytes4},
+		&expr.Cmp{Op: op, Register: 1, Data: value},
+	}
+}
+
+// maskedMetaMarkSet returns exprs: meta mark = (meta mark & ~mask) | value
+// Preserves bits outside the mask.
+func maskedMetaMarkSet(value []byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: nftMarkInvMaskBytes, Xor: nftZeroBytes4},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: nftAllOnesBytes4, Xor: value},
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
+	}
+}
+
+// maskedMetaMarkSetWithCtCopy returns exprs that set meta mark (preserving
+// high bits) and copy the result to ct mark.
+func maskedMetaMarkSetWithCtCopy(value []byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: nftMarkInvMaskBytes, Xor: nftZeroBytes4},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: nftAllOnesBytes4, Xor: value},
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
+	}
+}
+
 func (r *autoRedirect) nftablesCreateAddressSets(
 	nft *nftables.Conn, table *nftables.Table,
 	update bool,
@@ -171,41 +220,23 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
-				},
+			Exprs: append(
+				maskedMetaMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+					binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark)),
 				&expr.Counter{},
-				&expr.Verdict{
-					Kind: expr.VerdictReturn,
-				},
-			},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			),
 		})
 		if chain.Type == nftables.ChainTypeRoute {
 			nft.AddRule(&nftables.Rule{
 				Table: table,
 				Chain: chain,
-				Exprs: []expr.Any{
-					&expr.Ct{
-						Key:      expr.CtKeyMARK,
-						Register: 1,
-					},
-					&expr.Cmp{
-						Op:       expr.CmpOpEq,
-						Register: 1,
-						Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
-					},
+				Exprs: append(
+					maskedCtMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+						binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark)),
 					&expr.Counter{},
-					&expr.Verdict{
-						Kind: expr.VerdictReturn,
-					},
-				},
+					&expr.Verdict{Kind: expr.VerdictReturn},
+				),
 			})
 		}
 	}
@@ -213,42 +244,24 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark()),
-				},
+			Exprs: append(
+				maskedCtMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+					binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())),
 				&expr.Counter{},
-				&expr.Verdict{
-					Kind: expr.VerdictReturn,
-				},
-			},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			),
 		})
 	}
 	if r.nfqueueEnabled && chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeNAT {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark()),
-				},
+			Exprs: append(
+				maskedCtMarkCmp(expr.CmpOpEq, nftMarkMaskBytes,
+					binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark())),
 				&expr.Counter{},
-				&expr.Verdict{
-					Kind: expr.VerdictReturn,
-				},
-			},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			),
 		})
 	}
 	if chain.Hooknum == nftables.ChainHookPrerouting {
@@ -615,33 +628,12 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 }
 
 func (r *autoRedirect) nftablesCreateMark(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	markValue := binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)
+	markExprs := maskedMetaMarkSetWithCtCopy(markValue)
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Immediate{
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-			},
-			&expr.Meta{
-				Key:            expr.MetaKeyMARK,
-				Register:       1,
-				SourceRegister: true,
-			},
-			&expr.Meta{
-				Key:      expr.MetaKeyMARK,
-				Register: 1,
-			}, // output meta mark set myMark ct mark set meta mark
-			&expr.Ct{
-				Key:            expr.CtKeyMARK,
-				Register:       1,
-				SourceRegister: true,
-			},
-			&expr.Counter{},
-			&expr.Verdict{
-				Kind: expr.VerdictReturn,
-			},
-		},
+		Exprs: append(markExprs, &expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}),
 	})
 }
 
@@ -749,7 +741,7 @@ func (r *autoRedirect) nftablesCreateRedirect(
 func (r *autoRedirect) nftablesCreateLoopbackReroute(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
 ) error {
-	exprs := []expr.Any{
+	exprs := append([]expr.Any{
 		&expr.Meta{
 			Key:      expr.MetaKeyL4PROTO,
 			Register: 1,
@@ -759,16 +751,8 @@ func (r *autoRedirect) nftablesCreateLoopbackReroute(
 			Register: 1,
 			Data:     []byte{unix.IPPROTO_TCP},
 		},
-		&expr.Meta{
-			Key:      expr.MetaKeyMARK,
-			Register: 1,
-		},
-		&expr.Cmp{
-			Op:       expr.CmpOpNeq,
-			Register: 1,
-			Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-		},
-	}
+	}, maskedMetaMarkCmp(expr.CmpOpNeq, nftMarkMaskBytes,
+		binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark))...)
 	var exprs4 []expr.Any
 	if r.enableIPv4 && len(r.tunOptions.Inet4LoopbackAddress) > 0 {
 		exprs4 = append(exprs, nftablesCreateDestinationIPSetExprs(7, "inet4_local_redirect_address_set", nftables.TableFamilyIPv4, false)...)
@@ -777,42 +761,12 @@ func (r *autoRedirect) nftablesCreateLoopbackReroute(
 	if r.enableIPv6 && len(r.tunOptions.Inet6LoopbackAddress) > 0 {
 		exprs6 = append(exprs, nftablesCreateDestinationIPSetExprs(8, "inet6_local_redirect_address_set", nftables.TableFamilyIPv6, false)...)
 	}
+	markValue := binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)
 	var exprsCreateMark []expr.Any
 	if chain.Hooknum == nftables.ChainHookPrerouting {
-		exprsCreateMark = []expr.Any{
-			&expr.Immediate{
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-			},
-			&expr.Meta{
-				Key:            expr.MetaKeyMARK,
-				Register:       1,
-				SourceRegister: true,
-			},
-			&expr.Counter{},
-		}
+		exprsCreateMark = append(maskedMetaMarkSet(markValue), &expr.Counter{})
 	} else {
-		exprsCreateMark = []expr.Any{
-			&expr.Immediate{
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-			},
-			&expr.Meta{
-				Key:            expr.MetaKeyMARK,
-				Register:       1,
-				SourceRegister: true,
-			},
-			&expr.Meta{
-				Key:      expr.MetaKeyMARK,
-				Register: 1,
-			},
-			&expr.Ct{
-				Key:            expr.CtKeyMARK,
-				Register:       1,
-				SourceRegister: true,
-			},
-			&expr.Counter{},
-		}
+		exprsCreateMark = append(maskedMetaMarkSetWithCtCopy(markValue), &expr.Counter{})
 	}
 	if len(exprs4) > 0 {
 		exprs4 = append(exprs4, exprsCreateMark...)
