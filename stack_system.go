@@ -366,6 +366,7 @@ func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 	case header.TCPProtocolNumber:
 		writeBack, err = s.processIPv6TCP(ipHdr, ipHdr.Payload())
 	case header.UDPProtocolNumber:
+		writeBack = false
 		err = s.processIPv6UDP(ipHdr, ipHdr.Payload())
 	case header.ICMPv6ProtocolNumber:
 		writeBack, err = s.processIPv6ICMP(ipHdr, ipHdr.Payload())
