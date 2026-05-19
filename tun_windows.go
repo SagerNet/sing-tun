@@ -43,7 +43,14 @@ func New(options Options) (WinTun, error) {
 	}
 	adapter, err := wintun.CreateAdapter(options.Name, TunnelType, generateGUIDByDeviceName(options.Name))
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		createErr := err
+		adapter, err = wintun.OpenAdapter(options.Name)
+		if err != nil {
+			return nil, E.Errors(E.Cause(createErr, "create adapter"), E.Cause(err, "open existing adapter"))
+		}
 	}
 	nativeTun := &NativeTun{
 		adapter: adapter,
