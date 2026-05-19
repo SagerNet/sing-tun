@@ -72,7 +72,7 @@ func TestPing(t *testing.T) {
 }
 
 func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr), 0)
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -105,7 +105,7 @@ func testPingIPv4ReadIP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr), 0)
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -137,7 +137,7 @@ func testPingIPv4ReadICMP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr), 0)
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}
@@ -169,7 +169,7 @@ func testPingIPv6ReadIP(t *testing.T, privileged bool, addr string) {
 }
 
 func testPingIPv6ReadICMP(t *testing.T, privileged bool, addr string) {
-	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr))
+	conn, err := ping.Connect(context.Background(), privileged, nil, netip.MustParseAddr(addr), 0)
 	if runtime.GOOS == "linux" && err != nil && err.Error() == "socket(): permission denied" {
 		t.SkipNow()
 	}

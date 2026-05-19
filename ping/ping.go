@@ -30,22 +30,22 @@ type Conn struct {
 	readMsg     func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
 }
 
-func Connect(ctx context.Context, privileged bool, controlFunc control.Func, destination netip.Addr) (*Conn, error) {
+func Connect(ctx context.Context, privileged bool, controlFunc control.Func, destination netip.Addr, idleTimeout time.Duration) (*Conn, error) {
 	c := &Conn{
 		ctx:         ctx,
 		privileged:  privileged,
 		destination: destination,
 	}
-	err := c.connect(controlFunc)
+	err := c.connect(controlFunc, idleTimeout)
 	if err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-func (c *Conn) connect(controlFunc control.Func) (err error) {
+func (c *Conn) connect(controlFunc control.Func, idleTimeout time.Duration) (err error) {
 	if c.isLinuxUnprivileged() {
-		c.conn, err = newUnprivilegedConn(c.ctx, controlFunc, c.destination)
+		c.conn, err = newUnprivilegedConn(c.ctx, controlFunc, c.destination, idleTimeout)
 	} else {
 		c.conn, err = connect(c.privileged, controlFunc, c.destination)
 	}

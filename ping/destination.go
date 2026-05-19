@@ -51,11 +51,11 @@ func ConnectDestination(
 	)
 	switch runtime.GOOS {
 	case "darwin", "ios", "windows":
-		conn, err = Connect(ctx, false, controlFunc, destination)
+		conn, err = Connect(ctx, false, controlFunc, destination, timeout)
 	default:
-		conn, err = Connect(ctx, true, controlFunc, destination)
+		conn, err = Connect(ctx, true, controlFunc, destination, timeout)
 		if errors.Is(err, os.ErrPermission) {
-			conn, err = Connect(ctx, false, controlFunc, destination)
+			conn, err = Connect(ctx, false, controlFunc, destination, timeout)
 		}
 	}
 	if err != nil {

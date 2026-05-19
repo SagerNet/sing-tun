@@ -21,6 +21,7 @@ type UnprivilegedConn struct {
 	cancel        context.CancelFunc
 	controlFunc   control.Func
 	destination   netip.Addr
+	idleTimeout   time.Duration
 	receiveChan   chan *unprivilegedResponse
 	readDeadline  pipe.Deadline
 	mappingAccess sync.Mutex
@@ -33,7 +34,7 @@ type unprivilegedResponse struct {
 	Addr   netip.Addr
 }
 
-func newUnprivilegedConn(ctx context.Context, controlFunc control.Func, destination netip.Addr) (net.Conn, error) {
+func newUnprivilegedConn(ctx context.Context, controlFunc control.Func, destination netip.Addr, idleTimeout time.Duration) (net.Conn, error) {
 	conn, err := connect(false, controlFunc, destination)
 	if err != nil {
 		return nil, err
@@ -45,6 +46,7 @@ func newUnprivilegedConn(ctx context.Context, controlFunc control.Func, destinat
 		cancel:       cancel,
 		controlFunc:  controlFunc,
 		destination:  destination,
+		idleTimeout:  idleTimeout,
 		receiveChan:  make(chan *unprivilegedResponse),
 		readDeadline: pipe.MakeDeadline(),
 		mapping:      make(map[uint16]net.Conn),
@@ -116,6 +118,12 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 func (c *UnprivilegedConn) fetchResponse(conn *net.UDPConn, identifier uint16) {
 	defer c.removeConn(conn, identifier)
 	for {
+		if c.idleTimeout > 0 {
+			err := conn.SetReadDeadline(time.Now().Add(c.idleTimeout))
+			if err != nil {
+				return
+			}
+		}
 		buffer := buf.NewPacket()
 		cmsgBuffer := buf.NewSize(1024)
 		n, oobN, _, addr, err := conn.ReadMsgUDPAddrPort(buffer.FreeBytes(), cmsgBuffer.FreeBytes())
