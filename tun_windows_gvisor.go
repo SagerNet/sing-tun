@@ -3,6 +3,8 @@
 package tun
 
 import (
+	"sync"
+
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
@@ -23,6 +25,7 @@ var _ stack.LinkEndpoint = (*WintunEndpoint)(nil)
 
 type WintunEndpoint struct {
 	tun        *NativeTun
+	mu         sync.RWMutex // mu guards dispatcher
 	dispatcher stack.NetworkDispatcher
 }
 
@@ -49,6 +52,8 @@ func (e *WintunEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 }
 
 func (e *WintunEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if dispatcher == nil && e.dispatcher != nil {
 		e.dispatcher = nil
 		return
@@ -88,7 +93,9 @@ func (e *WintunEndpoint) dispatchLoop() {
 			Payload:           packetBuffer,
 			IsForwardedPacket: true,
 		})
+		e.mu.RLock()
 		dispatcher := e.dispatcher
+		e.mu.RUnlock()
 		if dispatcher == nil {
 			pkt.DecRef()
 			return
@@ -99,6 +106,8 @@ func (e *WintunEndpoint) dispatchLoop() {
 }
 
 func (e *WintunEndpoint) IsAttached() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.dispatcher != nil
 }
 
