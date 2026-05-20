@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/netip"
@@ -22,6 +23,7 @@ import (
 
 type Handler interface {
 	PrepareConnection(
+		ctx context.Context,
 		network string,
 		source M.Socksaddr,
 		destination M.Socksaddr,
