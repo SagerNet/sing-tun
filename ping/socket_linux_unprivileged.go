@@ -94,8 +94,9 @@ func (c *UnprivilegedConn) Write(b []byte) (n int, err error) {
 	}
 
 	c.mappingAccess.Lock()
-	if c.ctx.Err() != nil {
-		return 0, c.ctx.Err()
+	if err = c.ctx.Err(); err != nil {
+		c.mappingAccess.Unlock()
+		return 0, err
 	}
 	conn, loaded := c.mapping[identifier]
 	if !loaded {
@@ -159,9 +160,12 @@ func (c *UnprivilegedConn) fetchResponse(conn *net.UDPConn, identifier uint16) {
 
 func (c *UnprivilegedConn) removeConn(conn *net.UDPConn, identifier uint16) {
 	c.mappingAccess.Lock()
-	defer c.mappingAccess.Unlock()
+	mappedConn, loaded := c.mapping[identifier]
+	if loaded && mappedConn == conn {
+		delete(c.mapping, identifier)
+	}
+	c.mappingAccess.Unlock()
 	_ = conn.Close()
-	delete(c.mapping, identifier)
 }
 
 func (c *UnprivilegedConn) Close() error {
