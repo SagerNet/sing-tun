@@ -80,14 +80,14 @@ func (n *TCPNat) LookupBack(port uint16) *TCPSession {
 	return session
 }
 
-func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handler Handler) (uint16, error) {
+func (n *TCPNat) Lookup(ctx context.Context, source netip.AddrPort, destination netip.AddrPort, handler Handler) (uint16, error) {
 	n.addrAccess.RLock()
 	port, loaded := n.addrMap[source]
 	n.addrAccess.RUnlock()
 	if loaded {
 		return port, nil
 	}
-	_, pErr := handler.PrepareConnection(N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), nil, 0)
+	_, pErr := handler.PrepareConnection(ctx, N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), nil, 0)
 	if pErr != nil {
 		return 0, pErr
 	}
