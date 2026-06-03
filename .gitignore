@@ -1,5 +1,6 @@
 /.idea/
 /vendor/
 .DS_Store
+.worktrees/
 !/README.md
 /*.md
