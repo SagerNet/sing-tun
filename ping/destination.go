@@ -17,6 +17,9 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
+// Although its theoretical maximum may be 64k, I don’t yet know of any practical use case for that. For memory-usage reasons, I’m just using a 2k buffer.
+const maxICMPPacketSize = 2048
+
 var _ tun.DirectRouteDestination = (*Destination)(nil)
 
 type Destination struct {
@@ -77,7 +80,7 @@ func ConnectDestination(
 func (d *Destination) loopRead() {
 	defer d.Close()
 	for {
-		buffer := buf.NewPacket()
+		buffer := buf.NewSize(maxICMPPacketSize)
 		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))

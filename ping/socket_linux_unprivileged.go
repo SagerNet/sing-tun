@@ -125,7 +125,7 @@ func (c *UnprivilegedConn) fetchResponse(conn *net.UDPConn, identifier uint16) {
 				return
 			}
 		}
-		buffer := buf.NewPacket()
+		buffer := buf.NewSize(maxICMPPacketSize)
 		cmsgBuffer := buf.NewSize(1024)
 		n, oobN, _, addr, err := conn.ReadMsgUDPAddrPort(buffer.FreeBytes(), cmsgBuffer.FreeBytes())
 		if err != nil {

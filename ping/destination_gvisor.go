@@ -93,7 +93,7 @@ func ConnectGVisor(
 func (d *GVisorDestination) loopRead() {
 	defer d.endpoint.Close()
 	for {
-		buffer := buf.NewPacket()
+		buffer := buf.NewSize(maxICMPPacketSize)
 		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
