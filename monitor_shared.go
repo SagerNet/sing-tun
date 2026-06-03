@@ -47,7 +47,7 @@ type defaultInterfaceMonitor struct {
 	element               *list.Element[NetworkUpdateCallback]
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
-	myInterface           string
+	myInterfaces          []string
 }
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
@@ -137,11 +137,11 @@ func (m *defaultInterfaceMonitor) emit(defaultInterface *control.Interface, flag
 func (m *defaultInterfaceMonitor) RegisterMyInterface(interfaceName string) {
 	m.access.Lock()
 	defer m.access.Unlock()
-	m.myInterface = interfaceName
+	m.myInterfaces = append(m.myInterfaces, interfaceName)
 }
 
-func (m *defaultInterfaceMonitor) MyInterface() string {
+func (m *defaultInterfaceMonitor) MyInterfaces() []string {
 	m.access.Lock()
 	defer m.access.Unlock()
-	return m.myInterface
+	return m.myInterfaces
 }

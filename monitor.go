@@ -31,7 +31,7 @@ type DefaultInterfaceMonitor interface {
 	RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback]
 	UnregisterCallback(element *list.Element[DefaultInterfaceUpdateCallback])
 	RegisterMyInterface(interfaceName string)
-	MyInterface() string
+	MyInterfaces() []string
 }
 
 type DefaultInterfaceMonitorOptions struct {
