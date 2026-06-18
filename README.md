@@ -4,6 +4,8 @@ Simple transparent proxy library.
 
 For Linux, Windows, macOS and iOS.
 
+Integration docs are [here](https://sing-tun-docs.pages.dev/).
+
 ## License
 
 ```
