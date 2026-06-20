@@ -161,7 +161,7 @@ func nftablesCreateIPSet(
 			IntervalEnd: true,
 		})
 	}
-	if len(prefixList) == 0 && appendDefault {
+	if appendDefault && len(setElements) == 0 {
 		if family == nftables.TableFamilyIPv4 {
 			setElements = append(setElements, nftables.SetElement{
 				Key: netip.IPv4Unspecified().AsSlice(),
