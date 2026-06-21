@@ -1122,6 +1122,15 @@ func (r *autoRedirect) nftablesCreateUnreachable(
 		Chain: chain,
 		Exprs: []expr.Any{
 			&expr.Meta{
+				Key:      expr.MetaKeyOIFNAME,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpNeq,
+				Register: 1,
+				Data:     nftablesIfname("lo"),
+			},
+			&expr.Meta{
 				Key:      expr.MetaKeyNFPROTO,
 				Register: 1,
 			},
