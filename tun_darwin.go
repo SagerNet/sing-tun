@@ -10,7 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
-	"github.com/sagernet/sing-tun/internal/rawfile_darwin"
+	rawfile "github.com/sagernet/sing-tun/internal/rawfile_darwin"
 	"github.com/sagernet/sing-tun/internal/stopfd_darwin"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
