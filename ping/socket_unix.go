@@ -87,24 +87,33 @@ func connect(privileged bool, controlFunc control.Func, destination netip.Addr) 
 		return nil, err
 	}
 
-	if runtime.GOOS == "darwin" && !privileged {
-		// When running in NetworkExtension on macOS, write to connected socket results in EPIPE.
+	useUnconnected := (runtime.GOOS == "darwin" && !privileged) ||
+		((runtime.GOOS == "linux" || runtime.GOOS == "android") && privileged)
+	if useUnconnected {
+		// A connected ICMP socket only receives messages whose source is the connected peer,
+		// so the Time Exceeded replies that transit routers send for traceroute never reach it.
+		// Additionally, on macOS NetworkExtension, writing to a connected socket returns EPIPE.
 		var packetConn net.PacketConn
 		packetConn, err = net.FilePacketConn(file)
 		if err != nil {
 			return nil, err
 		}
-		return bufio.NewBindPacketConn(packetConn, M.SocksaddrFrom(destination, 0).UDPAddr()), nil
-	} else {
-		err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
-		if err != nil {
-			return nil, err
+		var writeTarget net.Addr
+		if privileged {
+			writeTarget = M.SocksaddrFrom(destination, 0).IPAddr()
+		} else {
+			writeTarget = M.SocksaddrFrom(destination, 0).UDPAddr()
 		}
-		var conn net.Conn
-		conn, err = net.FileConn(file)
-		if err != nil {
-			return nil, err
-		}
-		return conn, nil
+		return bufio.NewBindPacketConn(packetConn, writeTarget), nil
 	}
+	err = unix.Connect(fd, M.AddrPortToSockaddr(netip.AddrPortFrom(destination, 0)))
+	if err != nil {
+		return nil, err
+	}
+	var conn net.Conn
+	conn, err = net.FileConn(file)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
