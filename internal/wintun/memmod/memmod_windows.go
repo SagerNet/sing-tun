@@ -56,16 +56,16 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 			if sectionSize == 0 {
 				continue
 			}
-			dest, err := windows.VirtualAlloc(module.codeBase+uintptr(sections[i].VirtualAddress),
+			_, err := windows.VirtualAlloc(module.codeBase+uintptr(sections[i].VirtualAddress),
 				uintptr(sectionSize),
 				windows.MEM_COMMIT,
 				windows.PAGE_READWRITE)
 			if err != nil {
-				return fmt.Errorf("Error allocating section: %w", err)
+				return fmt.Errorf("error allocating section: %w", err)
 			}
 
 			// Always use position from file to support alignments smaller than page size (allocation above will align to page size).
-			dest = module.codeBase + uintptr(sections[i].VirtualAddress)
+			dest := module.codeBase + uintptr(sections[i].VirtualAddress)
 			// NOTE: On 64bit systems we truncate to 32bit here but expand again later when "PhysicalAddress" is used.
 			sections[i].SetPhysicalAddress((uint32)(dest & 0xffffffff))
 			dst := unsafe.Slice((*byte)(a2p(dest)), sectionSize)
@@ -76,7 +76,7 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 		}
 
 		if size < uintptr(sections[i].PointerToRawData)+uintptr(sections[i].SizeOfRawData) {
-			return errors.New("Incomplete section")
+			return errors.New("incomplete section")
 		}
 
 		// Commit memory block and copy data from dll.
@@ -85,7 +85,7 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 			windows.MEM_COMMIT,
 			windows.PAGE_READWRITE)
 		if err != nil {
-			return fmt.Errorf("Error allocating memory block: %w", err)
+			return fmt.Errorf("error allocating memory block: %w", err)
 		}
 
 		// Always use position from file to support alignments smaller than page size (allocation above will align to page size).
@@ -158,7 +158,7 @@ func (module *Module) finalizeSection(sectionData *sectionFinalizeData) error {
 	var oldProtect uint32
 	err := windows.VirtualProtect(sectionData.address, sectionData.size, protect, &oldProtect)
 	if err != nil {
-		return fmt.Errorf("Error protecting memory page: %w", err)
+		return fmt.Errorf("error protecting memory page: %w", err)
 	}
 
 	return nil
@@ -204,7 +204,7 @@ func (module *Module) finalizeSections() error {
 
 		err := module.finalizeSection(&sectionData)
 		if err != nil {
-			return fmt.Errorf("Error finalizing section: %w", err)
+			return fmt.Errorf("error finalizing section: %w", err)
 		}
 		sectionData.address = sectionAddress
 		sectionData.alignedAddress = alignedAddress
@@ -214,7 +214,7 @@ func (module *Module) finalizeSections() error {
 	sectionData.last = true
 	err := module.finalizeSection(&sectionData)
 	if err != nil {
-		return fmt.Errorf("Error finalizing section: %w", err)
+		return fmt.Errorf("error finalizing section: %w", err)
 	}
 	return nil
 }
@@ -250,10 +250,10 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 	relocationHdr := (*IMAGE_BASE_RELOCATION)(a2p(relocBase))
 	for uintptr(unsafe.Pointer(relocationHdr))+unsafe.Sizeof(*relocationHdr) <= relocEnd && relocationHdr.VirtualAddress > 0 {
 		if uintptr(relocationHdr.SizeOfBlock) < unsafe.Sizeof(*relocationHdr) {
-			return false, errors.New("Invalid relocation block size")
+			return false, errors.New("invalid relocation block size")
 		}
 		if uintptr(unsafe.Pointer(relocationHdr))+uintptr(relocationHdr.SizeOfBlock) > relocEnd {
-			return false, errors.New("Relocation block exceeds directory bounds")
+			return false, errors.New("relocation block exceeds directory bounds")
 		}
 		dest := module.codeBase + uintptr(relocationHdr.VirtualAddress)
 
@@ -272,11 +272,9 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 
 			case IMAGE_REL_BASED_LOW:
 				*(*uint16)(a2p(dest + relOffset)) += uint16(delta & 0xffff)
-				break
 
 			case IMAGE_REL_BASED_HIGH:
 				*(*uint16)(a2p(dest + relOffset)) += uint16(uint32(delta) >> 16)
-				break
 
 			case IMAGE_REL_BASED_HIGHLOW:
 				*(*uint32)(a2p(dest + relOffset)) += uint32(delta)
@@ -289,7 +287,7 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 				imm16 := ((inst << 1) & 0x0800) + ((inst << 12) & 0xf000) +
 					((inst >> 20) & 0x0700) + ((inst >> 16) & 0x00ff)
 				if (inst & 0x8000fbf0) != 0x0000f240 {
-					return false, fmt.Errorf("Wrong Thumb2 instruction %08x, expected MOVW", inst)
+					return false, fmt.Errorf("wrong Thumb2 instruction %08x, expected MOVW", inst)
 				}
 				imm16 += uint32(delta) & 0xffff
 				hiDelta := (uint32(delta&0xffff0000) >> 16) + ((imm16 & 0xffff0000) >> 16)
@@ -302,11 +300,11 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 					imm16 = ((inst << 1) & 0x0800) + ((inst << 12) & 0xf000) +
 						((inst >> 20) & 0x0700) + ((inst >> 16) & 0x00ff)
 					if (inst & 0x8000fbf0) != 0x0000f2c0 {
-						return false, fmt.Errorf("Wrong Thumb2 instruction %08x, expected MOVT", inst)
+						return false, fmt.Errorf("wrong Thumb2 instruction %08x, expected MOVT", inst)
 					}
 					imm16 += hiDelta
 					if imm16 > 0xffff {
-						return false, fmt.Errorf("Resulting immediate value won't fit: %08x", imm16)
+						return false, fmt.Errorf("resulting immediate value won't fit: %08x", imm16)
 					}
 					*(*uint32)(a2p(dest + relOffset + 4)) = (inst & 0x8f00fbf0) +
 						((imm16 >> 1) & 0x0400) +
@@ -316,7 +314,7 @@ func (module *Module) performBaseRelocation(delta uintptr) (relocated bool, err 
 				}
 
 			default:
-				return false, fmt.Errorf("Unsupported relocation: %v", relType)
+				return false, fmt.Errorf("unsupported relocation: %v", relType)
 			}
 		}
 
@@ -337,7 +335,7 @@ func (module *Module) buildImportTable() error {
 	for importDesc.Name != 0 {
 		handle, err := windows.LoadLibraryEx(windows.BytePtrToString((*byte)(a2p(module.codeBase+uintptr(importDesc.Name)))), 0, windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 		if err != nil {
-			return fmt.Errorf("Error loading module: %w", err)
+			return fmt.Errorf("error loading module: %w", err)
 		}
 		var thunkRef, funcRef *uintptr
 		if importDesc.OriginalFirstThunk() != 0 {
@@ -357,7 +355,7 @@ func (module *Module) buildImportTable() error {
 			}
 			if err != nil {
 				windows.FreeLibrary(handle)
-				return fmt.Errorf("Error getting function address: %w", err)
+				return fmt.Errorf("error getting function address: %w", err)
 			}
 			thunkRef = (*uintptr)(a2p(uintptr(unsafe.Pointer(thunkRef)) + unsafe.Sizeof(*thunkRef)))
 			funcRef = (*uintptr)(a2p(uintptr(unsafe.Pointer(funcRef)) + unsafe.Sizeof(*funcRef)))
@@ -371,14 +369,14 @@ func (module *Module) buildImportTable() error {
 func (module *Module) buildNameExports() error {
 	directory := module.headerDirectory(IMAGE_DIRECTORY_ENTRY_EXPORT)
 	if directory.Size == 0 {
-		return errors.New("No export table found")
+		return errors.New("no export table found")
 	}
 	exports := (*IMAGE_EXPORT_DIRECTORY)(a2p(module.codeBase + uintptr(directory.VirtualAddress)))
 	if exports.NumberOfNames == 0 || exports.NumberOfFunctions == 0 {
-		return errors.New("No functions exported")
+		return errors.New("no functions exported")
 	}
 	if exports.NumberOfNames == 0 {
-		return errors.New("No functions exported by name")
+		return errors.New("no functions exported by name")
 	}
 	nameRefs := unsafe.Slice((*uint32)(a2p(module.codeBase+uintptr(exports.AddressOfNames))), exports.NumberOfNames)
 	ordinals := unsafe.Slice((*uint16)(a2p(module.codeBase+uintptr(exports.AddressOfNameOrdinals))), exports.NumberOfNames)
@@ -466,39 +464,39 @@ func hookRtlPcToFileHeader() error {
 func LoadLibrary(data []byte) (module *Module, err error) {
 	size := uintptr(len(data))
 	if size < unsafe.Sizeof(IMAGE_DOS_HEADER{}) {
-		return nil, errors.New("Incomplete IMAGE_DOS_HEADER")
+		return nil, errors.New("incomplete IMAGE_DOS_HEADER")
 	}
 	addr := uintptr(unsafe.Pointer(&data[0]))
 	dosHeader := (*IMAGE_DOS_HEADER)(a2p(addr))
 	if dosHeader.E_magic != IMAGE_DOS_SIGNATURE {
-		return nil, fmt.Errorf("Not an MS-DOS binary (provided: %x, expected: %x)", dosHeader.E_magic, IMAGE_DOS_SIGNATURE)
+		return nil, fmt.Errorf("not an MS-DOS binary (provided: %x, expected: %x)", dosHeader.E_magic, IMAGE_DOS_SIGNATURE)
 	}
 	if dosHeader.E_lfanew < 0 || (size < uintptr(dosHeader.E_lfanew)+unsafe.Sizeof(IMAGE_NT_HEADERS{})) {
-		return nil, errors.New("Incomplete IMAGE_NT_HEADERS")
+		return nil, errors.New("incomplete IMAGE_NT_HEADERS")
 	}
 	oldHeader := (*IMAGE_NT_HEADERS)(a2p(addr + uintptr(dosHeader.E_lfanew)))
 	if oldHeader.Signature != IMAGE_NT_SIGNATURE {
-		return nil, fmt.Errorf("Not an NT binary (provided: %x, expected: %x)", oldHeader.Signature, IMAGE_NT_SIGNATURE)
+		return nil, fmt.Errorf("not an NT binary (provided: %x, expected: %x)", oldHeader.Signature, IMAGE_NT_SIGNATURE)
 	}
 	if oldHeader.FileHeader.Machine != imageFileProcess {
-		return nil, fmt.Errorf("Foreign platform (provided: %x, expected: %x)", oldHeader.FileHeader.Machine, imageFileProcess)
+		return nil, fmt.Errorf("foreign platform (provided: %x, expected: %x)", oldHeader.FileHeader.Machine, imageFileProcess)
 	}
 	if oldHeader.OptionalHeader.SectionAlignment == 0 || (oldHeader.OptionalHeader.SectionAlignment&(oldHeader.OptionalHeader.SectionAlignment-1)) != 0 {
-		return nil, errors.New("Unaligned section")
+		return nil, errors.New("unaligned section")
 	}
 	if oldHeader.FileHeader.NumberOfSections == 0 {
-		return nil, errors.New("No sections")
+		return nil, errors.New("no sections")
 	}
 	if uintptr(oldHeader.FileHeader.SizeOfOptionalHeader) < unsafe.Sizeof(oldHeader.OptionalHeader) {
-		return nil, errors.New("Incomplete optional header")
+		return nil, errors.New("incomplete optional header")
 	}
 	if oldHeader.OptionalHeader.NumberOfRvaAndSizes < IMAGE_NUMBEROF_DIRECTORY_ENTRIES {
-		return nil, errors.New("Incomplete data directory")
+		return nil, errors.New("incomplete data directory")
 	}
 	sectionHeadersEnd := uintptr(dosHeader.E_lfanew) + unsafe.Offsetof(oldHeader.OptionalHeader) + uintptr(oldHeader.FileHeader.SizeOfOptionalHeader) +
 		uintptr(oldHeader.FileHeader.NumberOfSections)*unsafe.Sizeof(IMAGE_SECTION_HEADER{})
 	if size < sectionHeadersEnd {
-		return nil, errors.New("Incomplete section headers")
+		return nil, errors.New("incomplete section headers")
 	}
 	lastSectionEnd := uintptr(0)
 	sections := oldHeader.Sections()
@@ -517,7 +515,7 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 	}
 	alignedImageSize := alignUp(uintptr(oldHeader.OptionalHeader.SizeOfImage), uintptr(oldHeader.OptionalHeader.SectionAlignment))
 	if alignedImageSize != alignUp(lastSectionEnd, uintptr(oldHeader.OptionalHeader.SectionAlignment)) {
-		return nil, errors.New("Section is not page-aligned")
+		return nil, errors.New("section is not page-aligned")
 	}
 
 	module = &Module{isDLL: (oldHeader.FileHeader.Characteristics & IMAGE_FILE_DLL) != 0}
@@ -541,18 +539,18 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 			windows.MEM_RESERVE|windows.MEM_COMMIT,
 			windows.PAGE_READWRITE)
 		if err != nil {
-			err = fmt.Errorf("Error allocating code: %w", err)
+			err = fmt.Errorf("error allocating code: %w", err)
 			return
 		}
 	}
 	err = module.check4GBBoundaries(alignedImageSize)
 	if err != nil {
-		err = fmt.Errorf("Error reallocating code: %w", err)
+		err = fmt.Errorf("error reallocating code: %w", err)
 		return
 	}
 
 	if size < uintptr(oldHeader.OptionalHeader.SizeOfHeaders) {
-		err = errors.New("Incomplete headers")
+		err = errors.New("incomplete headers")
 		return
 	}
 	// Commit memory for headers.
@@ -561,7 +559,7 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 		windows.MEM_COMMIT,
 		windows.PAGE_READWRITE)
 	if err != nil {
-		err = fmt.Errorf("Error allocating headers: %w", err)
+		err = fmt.Errorf("error allocating headers: %w", err)
 		return
 	}
 	// Copy PE header to code.
@@ -574,7 +572,7 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 	// Copy sections from DLL file block to new memory location.
 	err = module.copySections(addr, size, oldHeader)
 	if err != nil {
-		err = fmt.Errorf("Error copying sections: %w", err)
+		err = fmt.Errorf("error copying sections: %w", err)
 		return
 	}
 
@@ -583,7 +581,7 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 	if locationDelta != 0 {
 		module.isRelocated, err = module.performBaseRelocation(locationDelta)
 		if err != nil {
-			err = fmt.Errorf("Error relocating module: %w", err)
+			err = fmt.Errorf("error relocating module: %w", err)
 			return
 		}
 		if !module.isRelocated {
@@ -597,14 +595,14 @@ func LoadLibrary(data []byte) (module *Module, err error) {
 	// Load required dlls and adjust function table of imports.
 	err = module.buildImportTable()
 	if err != nil {
-		err = fmt.Errorf("Error building import table: %w", err)
+		err = fmt.Errorf("error building import table: %w", err)
 		return
 	}
 
 	// Mark memory pages depending on section headers and release sections that are marked as "discardable".
 	err = module.finalizeSections()
 	if err != nil {
-		err = fmt.Errorf("Error finalizing sections: %w", err)
+		err = fmt.Errorf("error finalizing sections: %w", err)
 		return
 	}
 
@@ -673,35 +671,35 @@ func (module *Module) Free() {
 func (module *Module) ProcAddressByName(name string) (uintptr, error) {
 	directory := module.headerDirectory(IMAGE_DIRECTORY_ENTRY_EXPORT)
 	if directory.Size == 0 {
-		return 0, errors.New("No export table found")
+		return 0, errors.New("no export table found")
 	}
 	exports := (*IMAGE_EXPORT_DIRECTORY)(a2p(module.codeBase + uintptr(directory.VirtualAddress)))
 	if module.nameExports == nil {
-		return 0, errors.New("No functions exported by name")
+		return 0, errors.New("no functions exported by name")
 	}
 	if idx, ok := module.nameExports[name]; ok {
 		if uint32(idx) >= exports.NumberOfFunctions {
-			return 0, errors.New("Ordinal number too high")
+			return 0, errors.New("ordinal number too high")
 		}
 		// AddressOfFunctions contains the RVAs to the "real" functions.
 		return module.codeBase + uintptr(*(*uint32)(a2p(module.codeBase + uintptr(exports.AddressOfFunctions) + uintptr(idx)*4))), nil
 	}
-	return 0, errors.New("Function not found by name")
+	return 0, errors.New("function not found by name")
 }
 
 // ProcAddressByOrdinal returns function address by exported ordinal.
 func (module *Module) ProcAddressByOrdinal(ordinal uint16) (uintptr, error) {
 	directory := module.headerDirectory(IMAGE_DIRECTORY_ENTRY_EXPORT)
 	if directory.Size == 0 {
-		return 0, errors.New("No export table found")
+		return 0, errors.New("no export table found")
 	}
 	exports := (*IMAGE_EXPORT_DIRECTORY)(a2p(module.codeBase + uintptr(directory.VirtualAddress)))
 	if uint32(ordinal) < exports.Base {
-		return 0, errors.New("Ordinal number too low")
+		return 0, errors.New("ordinal number too low")
 	}
 	idx := ordinal - uint16(exports.Base)
 	if uint32(idx) >= exports.NumberOfFunctions {
-		return 0, errors.New("Ordinal number too high")
+		return 0, errors.New("ordinal number too high")
 	}
 	// AddressOfFunctions contains the RVAs to the "real" functions.
 	return module.codeBase + uintptr(*(*uint32)(a2p(module.codeBase + uintptr(exports.AddressOfFunctions) + uintptr(idx)*4))), nil

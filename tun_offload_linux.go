@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip"
@@ -18,6 +19,11 @@ import (
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 
 	"golang.org/x/sys/unix"
+)
+
+const (
+	gsoMaxSize     = 65536
+	idealBatchSize = 128
 )
 
 // virtioNetHdr is defined in the kernel in include/uapi/linux/virtio_net.h. The
@@ -606,7 +612,7 @@ func tcpGRO(bufs [][]byte, offset int, pktI int, table *tcpGROTable, isV6 bool) 
 	if !existing {
 		return groResultTableInsert
 	}
-	for i := len(items) - 1; i >= 0; i-- {
+	for i, item := range slices.Backward(items) {
 		// In the best case of packets arriving in order iterating in reverse is
 		// more efficient if there are multiple items for a given flow. This
 		// also enables a natural table.deleteAt() in the
@@ -615,7 +621,6 @@ func tcpGRO(bufs [][]byte, offset int, pktI int, table *tcpGROTable, isV6 bool) 
 		// unordered packets, where pkt may land anywhere in items from a
 		// sequence number perspective, however once an item is inserted into
 		// the table it is never compared across other items later.
-		item := items[i]
 		can := tcpPacketsCanCoalesce(pkt, uint8(iphLen), uint8(tcphLen), seq, pshSet, gsoSize, item, bufs, offset)
 		if can != coalesceUnavailable {
 			result := coalesceTCPPackets(can, pkt, pktI, gsoSize, seq, pshSet, &item, bufs, offset, isV6)
@@ -793,7 +798,8 @@ func packetIsGROCandidate(b []byte, gro groDisablementFlags) groCandidateType {
 	if len(b) < 28 {
 		return notGROCandidate
 	}
-	if b[0]>>4 == 4 {
+	switch b[0] >> 4 {
+	case 4:
 		if b[0]&0x0F != 5 {
 			// IPv4 packets w/IP options do not coalesce
 			return notGROCandidate
@@ -804,7 +810,7 @@ func packetIsGROCandidate(b []byte, gro groDisablementFlags) groCandidateType {
 		if b[9] == unix.IPPROTO_UDP && gro.canUDPGRO() {
 			return udp4GROCandidate
 		}
-	} else if b[0]>>4 == 6 {
+	case 6:
 		if b[6] == unix.IPPROTO_TCP && len(b) >= 60 && gro.canTCPGRO() {
 			return tcp6GROCandidate
 		}

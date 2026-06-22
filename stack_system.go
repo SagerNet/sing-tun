@@ -131,7 +131,7 @@ func (s *System) start() error {
 	var tcpListener net.Listener
 	var err error
 	if s.inet4NextAddress.IsValid() {
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
@@ -146,7 +146,7 @@ func (s *System) start() error {
 		go s.acceptLoop(tcpListener)
 	}
 	if s.inet6NextAddress.IsValid() {
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
@@ -245,7 +245,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 		if n == 0 {
 			continue
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			packetSize := packetSizes[i]
 			if packetSize < header.IPv4MinimumSize {
 				continue

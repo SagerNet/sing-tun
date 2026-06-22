@@ -40,7 +40,7 @@ var (
 )
 
 func (wintun *Adapter) StartSession(capacity uint32) (session Session, err error) {
-	r0, _, e1 := syscall.Syscall(procWintunStartSession.Addr(), 2, uintptr(wintun.handle), uintptr(capacity), 0)
+	r0, _, e1 := syscall.SyscallN(procWintunStartSession.Addr(), uintptr(wintun.handle), uintptr(capacity))
 	if r0 == 0 {
 		err = e1
 	} else {
@@ -50,19 +50,18 @@ func (wintun *Adapter) StartSession(capacity uint32) (session Session, err error
 }
 
 func (session Session) End() {
-	syscall.Syscall(procWintunEndSession.Addr(), 1, session.handle, 0, 0)
-	session.handle = 0
+	syscall.SyscallN(procWintunEndSession.Addr(), session.handle)
 }
 
 func (session Session) ReadWaitEvent() (handle windows.Handle) {
-	r0, _, _ := syscall.Syscall(procWintunGetReadWaitEvent.Addr(), 1, session.handle, 0, 0)
+	r0, _, _ := syscall.SyscallN(procWintunGetReadWaitEvent.Addr(), session.handle)
 	handle = windows.Handle(r0)
 	return
 }
 
 func (session Session) ReceivePacket() (packet []byte, err error) {
 	var packetSize uint32
-	r0, _, e1 := syscall.Syscall(procWintunReceivePacket.Addr(), 2, session.handle, uintptr(unsafe.Pointer(&packetSize)), 0)
+	r0, _, e1 := syscall.SyscallN(procWintunReceivePacket.Addr(), session.handle, uintptr(unsafe.Pointer(&packetSize)))
 	if r0 == 0 {
 		err = e1
 		return
@@ -72,11 +71,11 @@ func (session Session) ReceivePacket() (packet []byte, err error) {
 }
 
 func (session Session) ReleaseReceivePacket(packet []byte) {
-	syscall.Syscall(procWintunReleaseReceivePacket.Addr(), 2, session.handle, uintptr(unsafe.Pointer(&packet[0])), 0)
+	syscall.SyscallN(procWintunReleaseReceivePacket.Addr(), session.handle, uintptr(unsafe.Pointer(&packet[0])))
 }
 
 func (session Session) AllocateSendPacket(packetSize int) (packet []byte, err error) {
-	r0, _, e1 := syscall.Syscall(procWintunAllocateSendPacket.Addr(), 2, session.handle, uintptr(packetSize), 0)
+	r0, _, e1 := syscall.SyscallN(procWintunAllocateSendPacket.Addr(), session.handle, uintptr(packetSize))
 	if r0 == 0 {
 		err = e1
 		return
@@ -86,5 +85,5 @@ func (session Session) AllocateSendPacket(packetSize int) (packet []byte, err er
 }
 
 func (session Session) SendPacket(packet []byte) {
-	syscall.Syscall(procWintunSendPacket.Addr(), 2, session.handle, uintptr(unsafe.Pointer(&packet[0])), 0)
+	syscall.SyscallN(procWintunSendPacket.Addr(), session.handle, uintptr(unsafe.Pointer(&packet[0])))
 }

@@ -98,105 +98,105 @@ func firewallRuleAdd(name, description, group, appPath, serviceName, ports, remo
 	if profile == NET_FW_PROFILE2_CURRENT {
 		currentProfiles, err := oleutil.GetProperty(fwPolicy, "CurrentProfileTypes")
 		if err != nil {
-			return false, fmt.Errorf("Failed to get CurrentProfiles: %s", err)
+			return false, fmt.Errorf("failed to get CurrentProfiles: %s", err)
 		}
 		profile = currentProfiles.Value().(int32)
 	}
 	unknownRules, err := oleutil.GetProperty(fwPolicy, "Rules")
 	if err != nil {
-		return false, fmt.Errorf("Failed to get Rules: %s", err)
+		return false, fmt.Errorf("failed to get Rules: %s", err)
 	}
 	rules := unknownRules.ToIDispatch()
 
 	if ok, err := FirewallRuleExistsByName(rules, name); err != nil {
-		return false, fmt.Errorf("Error while checking rules for duplicate: %s", err)
+		return false, fmt.Errorf("error while checking rules for duplicate: %s", err)
 	} else if ok {
 		return false, nil
 	}
 
 	unknown2, err := oleutil.CreateObject("HNetCfg.FWRule")
 	if err != nil {
-		return false, fmt.Errorf("Error creating Rule object: %s", err)
+		return false, fmt.Errorf("error creating Rule object: %s", err)
 	}
 	defer unknown2.Release()
 
 	fwRule, err := unknown2.QueryInterface(ole.IID_IDispatch)
 	if err != nil {
-		return false, fmt.Errorf("Error creating Rule object (2): %s", err)
+		return false, fmt.Errorf("error creating Rule object (2): %s", err)
 	}
 	defer fwRule.Release()
 
 	if _, err := oleutil.PutProperty(fwRule, "Name", name); err != nil {
-		return false, fmt.Errorf("Error setting property (Name) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Name) of Rule: %s", err)
 	}
 	if _, err := oleutil.PutProperty(fwRule, "Description", description); err != nil {
-		return false, fmt.Errorf("Error setting property (Description) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Description) of Rule: %s", err)
 	}
 	if appPath != "" {
 		if _, err := oleutil.PutProperty(fwRule, "Applicationname", appPath); err != nil {
-			return false, fmt.Errorf("Error setting property (Applicationname) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (Applicationname) of Rule: %s", err)
 		}
 	}
 	if serviceName != "" {
 		if _, err := oleutil.PutProperty(fwRule, "ServiceName", serviceName); err != nil {
-			return false, fmt.Errorf("Error setting property (ServiceName) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (ServiceName) of Rule: %s", err)
 		}
 	}
 	if protocol != 0 {
 		if _, err := oleutil.PutProperty(fwRule, "Protocol", protocol); err != nil {
-			return false, fmt.Errorf("Error setting property (Protocol) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (Protocol) of Rule: %s", err)
 		}
 	}
 	if icmpTypes != "" {
 		if _, err := oleutil.PutProperty(fwRule, "IcmpTypesAndCodes", icmpTypes); err != nil {
-			return false, fmt.Errorf("Error setting property (IcmpTypesAndCodes) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (IcmpTypesAndCodes) of Rule: %s", err)
 		}
 	}
 	if ports != "" {
 		if _, err := oleutil.PutProperty(fwRule, "LocalPorts", ports); err != nil {
-			return false, fmt.Errorf("Error setting property (LocalPorts) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (LocalPorts) of Rule: %s", err)
 		}
 	}
 	if remotePorts != "" {
 		if _, err := oleutil.PutProperty(fwRule, "RemotePorts", remotePorts); err != nil {
-			return false, fmt.Errorf("Error setting property (RemotePorts) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (RemotePorts) of Rule: %s", err)
 		}
 	}
 	if localAddresses != "" {
 		if _, err := oleutil.PutProperty(fwRule, "LocalAddresses", localAddresses); err != nil {
-			return false, fmt.Errorf("Error setting property (LocalAddresses) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (LocalAddresses) of Rule: %s", err)
 		}
 	}
 	if remoteAddresses != "" {
 		if _, err := oleutil.PutProperty(fwRule, "RemoteAddresses", remoteAddresses); err != nil {
-			return false, fmt.Errorf("Error setting property (RemoteAddresses) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (RemoteAddresses) of Rule: %s", err)
 		}
 	}
 	if direction != 0 {
 		if _, err := oleutil.PutProperty(fwRule, "Direction", direction); err != nil {
-			return false, fmt.Errorf("Error setting property (Direction) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (Direction) of Rule: %s", err)
 		}
 	}
 	if _, err := oleutil.PutProperty(fwRule, "Enabled", enabled); err != nil {
-		return false, fmt.Errorf("Error setting property (Enabled) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Enabled) of Rule: %s", err)
 	}
 	if _, err := oleutil.PutProperty(fwRule, "Grouping", group); err != nil {
-		return false, fmt.Errorf("Error setting property (Grouping) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Grouping) of Rule: %s", err)
 	}
 	if _, err := oleutil.PutProperty(fwRule, "Profiles", profile); err != nil {
-		return false, fmt.Errorf("Error setting property (Profiles) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Profiles) of Rule: %s", err)
 	}
 	if _, err := oleutil.PutProperty(fwRule, "Action", action); err != nil {
-		return false, fmt.Errorf("Error setting property (Action) of Rule: %s", err)
+		return false, fmt.Errorf("error setting property (Action) of Rule: %s", err)
 	}
 	if edgeTraversal {
 		if _, err := oleutil.PutProperty(fwRule, "EdgeTraversal", edgeTraversal); err != nil {
-			return false, fmt.Errorf("Error setting property (EdgeTraversal) of Rule: %s", err)
+			return false, fmt.Errorf("error setting property (EdgeTraversal) of Rule: %s", err)
 		}
 	}
 
 	if _, err := oleutil.CallMethod(rules, "Add", fwRule); err != nil {
-		return false, fmt.Errorf("Error adding Rule: %s", err)
+		return false, fmt.Errorf("error adding Rule: %s", err)
 	}
 
 	return true, nil
@@ -205,13 +205,13 @@ func firewallRuleAdd(name, description, group, appPath, serviceName, ports, remo
 func FirewallRuleExistsByName(rules *ole.IDispatch, name string) (bool, error) {
 	enumProperty, err := rules.GetProperty("_NewEnum")
 	if err != nil {
-		return false, fmt.Errorf("Failed to get enumeration property on Rules: %s", err)
+		return false, fmt.Errorf("failed to get enumeration property on Rules: %s", err)
 	}
 	defer enumProperty.Clear()
 
 	enum, err := enumProperty.ToIUnknown().IEnumVARIANT(ole.IID_IEnumVariant)
 	if err != nil {
-		return false, fmt.Errorf("Failed to cast enum to correct type: %s", err)
+		return false, fmt.Errorf("failed to cast enum to correct type: %s", err)
 	}
 	if enum == nil {
 		return false, fmt.Errorf("can't get IEnumVARIANT, enum is nil")
@@ -219,7 +219,7 @@ func FirewallRuleExistsByName(rules *ole.IDispatch, name string) (bool, error) {
 
 	for itemRaw, length, err := enum.Next(1); length > 0; itemRaw, length, err = enum.Next(1) {
 		if err != nil {
-			return false, fmt.Errorf("Failed to seek next Rule item: %s", err)
+			return false, fmt.Errorf("failed to seek next Rule item: %s", err)
 		}
 
 		t, err := func() (bool, error) {
@@ -227,7 +227,7 @@ func FirewallRuleExistsByName(rules *ole.IDispatch, name string) (bool, error) {
 			defer item.Release()
 
 			if item, err := oleutil.GetProperty(item, "Name"); err != nil {
-				return false, fmt.Errorf("Failed to get Property (Name) of Rule")
+				return false, fmt.Errorf("failed to get Property (Name) of Rule")
 			} else if item.ToString() == name {
 				return true, nil
 			}
@@ -251,18 +251,18 @@ func FirewallRuleExistsByName(rules *ole.IDispatch, name string) (bool, error) {
 func firewallAPIInit() (*ole.IUnknown, *ole.IDispatch, error) {
 	err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to initialize COM: %s", err)
+		return nil, nil, fmt.Errorf("failed to initialize COM: %s", err)
 	}
 
 	unknown, err := oleutil.CreateObject("HNetCfg.FwPolicy2")
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to create FwPolicy Object: %s", err)
+		return nil, nil, fmt.Errorf("failed to create FwPolicy Object: %s", err)
 	}
 
 	fwPolicy, err := unknown.QueryInterface(ole.IID_IDispatch)
 	if err != nil {
 		unknown.Release()
-		return nil, nil, fmt.Errorf("Failed to create FwPolicy Object (2): %s", err)
+		return nil, nil, fmt.Errorf("failed to create FwPolicy Object (2): %s", err)
 	}
 
 	return unknown, fwPolicy, nil

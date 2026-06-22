@@ -42,7 +42,6 @@ type NativeTun struct {
 	vnetHdrWriteBuf     []byte
 	gsoToWrite          []int
 	tcpGROTable         *tcpGROTable
-	udpGroAccess        sync.Mutex
 	udpGROTable         *udpGROTable
 	gro                 groDisablementFlags
 	txChecksumOffload   bool

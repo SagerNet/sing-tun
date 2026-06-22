@@ -1,3 +1,5 @@
+//go:build darwin
+
 package fdbased
 
 import (
@@ -92,5 +94,5 @@ func endpointinitLockNames() {}
 
 func init() {
 	endpointinitLockNames()
-	endpointprefixIndex = locking.NewMutexClass(reflect.TypeOf(endpointRWMutex{}), endpointlockNames)
+	endpointprefixIndex = locking.NewMutexClass(reflect.TypeFor[endpointRWMutex](), endpointlockNames)
 }
