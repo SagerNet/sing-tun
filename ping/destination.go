@@ -105,23 +105,29 @@ func (d *Destination) loopRead() {
 			}
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			if d.needFilter() {
-				if icmpHdr.Type() != header.ICMPv4EchoReply {
+				switch icmpHdr.Type() {
+				case header.ICMPv4EchoReply:
+					request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
+					d.requestAccess.Lock()
+					_, loaded := d.requests[request]
+					if loaded {
+						delete(d.requests, request)
+					}
+					d.requestAccess.Unlock()
+					if !loaded {
+						continue
+					}
+					d.logger.TraceContext(d.ctx, "read ICMPv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
+				case header.ICMPv4TimeExceeded, header.ICMPv4DstUnreachable:
+					if !d.rewriteICMPv4Error(ipHdr, icmpHdr) {
+						continue
+					}
+				default:
 					continue
 				}
-				var requestExists bool
-				request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
-				d.requestAccess.Lock()
-				_, loaded := d.requests[request]
-				if loaded {
-					requestExists = true
-					delete(d.requests, request)
-				}
-				d.requestAccess.Unlock()
-				if !requestExists {
-					continue
-				}
+			} else {
+				d.logger.TraceContext(d.ctx, "read ICMPv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 			}
-			d.logger.TraceContext(d.ctx, "read ICMPv4 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
 			if !ipHdr.IsValid(buffer.Len()) {
@@ -189,6 +195,45 @@ func (d *Destination) WritePacket(packet *buf.Buffer) error {
 		d.logger.TraceContext(d.ctx, "write ICMPv6 echo request from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 	}
 	return d.conn.WriteIP(packet)
+}
+
+func (d *Destination) rewriteICMPv4Error(ipHdr header.IPv4, icmpHdr header.ICMPv4) bool {
+	inner := icmpHdr.Payload()
+	if len(inner) < header.IPv4MinimumSize {
+		return false
+	}
+	innerIPHdr := header.IPv4(inner)
+	headerLen := int(innerIPHdr.HeaderLength())
+	if headerLen < header.IPv4MinimumSize || len(inner) < headerLen+header.ICMPv4MinimumSize {
+		return false
+	}
+	if innerIPHdr.TransportProtocol() != header.ICMPv4ProtocolNumber {
+		return false
+	}
+	innerICMP := header.ICMPv4(inner[headerLen:])
+	if innerICMP.Type() != header.ICMPv4Echo {
+		return false
+	}
+	originalIdent := ^innerICMP.Ident()
+	request := pingRequest{
+		Source:      ipHdr.DestinationAddr(),
+		Destination: innerIPHdr.DestinationAddr(),
+		Identifier:  originalIdent,
+		Sequence:    innerICMP.Sequence(),
+	}
+	d.requestAccess.Lock()
+	_, loaded := d.requests[request]
+	d.requestAccess.Unlock()
+	if !loaded {
+		return false
+	}
+	innerICMP.SetIdent(originalIdent)
+	innerICMP.SetChecksum(header.ICMPv4Checksum(innerICMP, 0))
+	innerIPHdr.SetSourceAddr(ipHdr.DestinationAddr())
+	innerIPHdr.SetChecksum(^innerIPHdr.CalculateChecksum())
+	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
+	d.logger.TraceContext(d.ctx, "read ICMPv4 error type ", int(icmpHdr.Type()), " from ", ipHdr.SourceAddr(), " seq ", innerICMP.Sequence())
+	return true
 }
 
 func (d *Destination) needFilter() bool {
