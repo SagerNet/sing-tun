@@ -68,7 +68,7 @@ func NewStack(
 
 func HasNextAddress(prefix netip.Prefix, count int) bool {
 	checkAddr := prefix.Addr()
-	for i := 0; i < count; i++ {
+	for range count {
 		checkAddr = checkAddr.Next()
 	}
 	return prefix.Contains(checkAddr)

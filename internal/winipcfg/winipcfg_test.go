@@ -1,3 +1,5 @@
+//go:build windows
+
 /* SPDX-License-Identifier: MIT
  *
  * Copyright (C) 2019-2022 WireGuard LLC. All Rights Reserved.
@@ -104,6 +106,9 @@ func TestAdaptersAddresses(t *testing.T) {
 	}
 
 	ifcs, err = GetAdaptersAddresses(windows.AF_UNSPEC, GAAFlagDefault)
+	if err != nil {
+		t.Errorf("GetAdaptersAddresses() returned error: %v", err)
+	}
 
 	for _, i := range ifcs {
 		ifc, err := i.LUID.Interface()
@@ -370,7 +375,7 @@ func TestAddDeleteIPAddress(t *testing.T) {
 		return
 	}
 
-	addr, err := ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
+	_, err = ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
 	if err == nil {
 		t.Errorf("Unicast address %s already exists. Please set nonexistantIPv4ToAdd appropriately.", nonexistantIPv4ToAdd.Addr().String())
 		return
@@ -414,7 +419,7 @@ func TestAddDeleteIPAddress(t *testing.T) {
 	if count != 1 {
 		t.Errorf("After adding there are %d new interface(s).", count)
 	}
-	addr, err = ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
+	addr, err := ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
 	if err != nil {
 		t.Errorf("LUID.IPAddress() returned an error: %w", err)
 	} else if addr == nil {
@@ -431,7 +436,7 @@ func TestAddDeleteIPAddress(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	addr, err = ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
+	_, err = ifc.LUID.IPAddress(nonexistantIPv4ToAdd.Addr())
 	if err == nil {
 		t.Errorf("Unicast address %s still exists, although it's deleted successfully.", nonexistantIPv4ToAdd.Addr().String())
 	} else if err != windows.ERROR_NOT_FOUND {

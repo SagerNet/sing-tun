@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build darwin
+
 package fdbased
 
 import (
@@ -19,7 +21,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack/gro"
-	"github.com/sagernet/sing-tun/internal/rawfile_darwin"
+	rawfile "github.com/sagernet/sing-tun/internal/rawfile_darwin"
 	"github.com/sagernet/sing-tun/internal/stopfd_darwin"
 
 	"golang.org/x/sys/unix"
@@ -177,7 +179,7 @@ func (d *recvMMsgDispatcher) dispatch() (bool, tcpip.Error) {
 	d.gro.Dispatcher = dsp
 	defer d.pkts.Reset()
 
-	for k := 0; k < nMsgs; k++ {
+	for k := range nMsgs {
 		n := int(d.msgHdrs[k].DataLen)
 		payload := d.bufs[k].pullBuffer(n)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{

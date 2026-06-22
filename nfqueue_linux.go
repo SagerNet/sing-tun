@@ -173,7 +173,8 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	var tcpOffset int
 
 	version := payload[0] >> 4
-	if version == 4 {
+	switch version {
+	case 4:
 		ipv4 := header.IPv4(payload)
 		if !ipv4.IsValid(len(payload)) || ipv4.Protocol() != uint8(unix.IPPROTO_TCP) {
 			h.setVerdict(packetID, nfqueue.NfAccept, 0)
@@ -182,7 +183,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		srcAddr = M.SocksaddrFrom(ipv4.SourceAddr(), 0)
 		dstAddr = M.SocksaddrFrom(ipv4.DestinationAddr(), 0)
 		tcpOffset = int(ipv4.HeaderLength())
-	} else if version == 6 {
+	case 6:
 		transportProto, transportOffset, ok := parseIPv6TransportHeader(payload)
 		if !ok || transportProto != unix.IPPROTO_TCP {
 			h.setVerdict(packetID, nfqueue.NfAccept, 0)
@@ -192,7 +193,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		srcAddr = M.SocksaddrFrom(ipv6.SourceAddr(), 0)
 		dstAddr = M.SocksaddrFrom(ipv6.DestinationAddr(), 0)
 		tcpOffset = transportOffset
-	} else {
+	default:
 		h.setVerdict(packetID, nfqueue.NfAccept, 0)
 		return 0
 	}

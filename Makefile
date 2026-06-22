@@ -18,11 +18,10 @@ fmt_install:
 	go install -v github.com/daixiang0/gci@latest
 
 lint:
-	GOOS=linux golangci-lint run .
-	GOOS=android golangci-lint run .
-	GOOS=windows golangci-lint run .
-	GOOS=darwin golangci-lint run .
-	GOOS=freebsd golangci-lint run .
+	GOOS=linux golangci-lint --max-same-issues=0 --max-issues-per-linter=0 run ./...
+	GOOS=android golangci-lint --max-same-issues=0 --max-issues-per-linter=0 run ./...
+	GOOS=windows golangci-lint --max-same-issues=0 --max-issues-per-linter=0 run ./...
+	GOOS=darwin golangci-lint --max-same-issues=0 --max-issues-per-linter=0 run ./...
 
 lint_install:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest

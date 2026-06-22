@@ -9,11 +9,6 @@ import (
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 )
 
-const (
-	gsoMaxSize     = 65536
-	idealBatchSize = 128
-)
-
 // GSOType represents the type of segmentation offload.
 type GSOType int
 
@@ -167,10 +162,7 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 		if i == len(outBufs) {
 			return i - 1, ErrTooManySegments
 		}
-		nextSegmentEnd := nextSegmentDataAt + int(options.GSOSize)
-		if nextSegmentEnd > len(in) {
-			nextSegmentEnd = len(in)
-		}
+		nextSegmentEnd := min(nextSegmentDataAt+int(options.GSOSize), len(in))
 		segmentDataLen := nextSegmentEnd - nextSegmentDataAt
 		totalLen := int(options.HdrLen) + segmentDataLen
 		sizes[i] = totalLen

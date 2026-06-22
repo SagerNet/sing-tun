@@ -476,20 +476,14 @@ func ParseSynOptions(opts []byte, isAck bool) TCPSynOptions {
 			if mss == 0 {
 				return synOpts
 			}
-			synOpts.MSS = mss
-			if mss < TCPMinimumSendMSS {
-				synOpts.MSS = TCPMinimumSendMSS
-			}
+			synOpts.MSS = max(mss, TCPMinimumSendMSS)
 			i += 4
 
 		case TCPOptionWS:
 			if i+3 > limit || opts[i+1] != 3 {
 				return synOpts
 			}
-			ws := int(opts[i+2])
-			if ws > MaxWndScale {
-				ws = MaxWndScale
-			}
+			ws := min(int(opts[i+2]), MaxWndScale)
 			synOpts.WS = ws
 			i += 3
 
@@ -561,7 +555,7 @@ func ParseTCPOptions(b []byte) TCPOptions {
 			}
 			numBlocks := (sackOptionLen - 2) / 8
 			opts.SACKBlocks = []SACKBlock{}
-			for j := 0; j < numBlocks; j++ {
+			for j := range numBlocks {
 				start := binary.BigEndian.Uint32(b[i+2+j*8:])
 				end := binary.BigEndian.Uint32(b[i+2+j*8+4:])
 				opts.SACKBlocks = append(opts.SACKBlocks, SACKBlock{
@@ -646,10 +640,7 @@ func EncodeSACKBlocks(sackBlocks []SACKBlock, b []byte) int {
 	if len(sackBlocks) == 0 {
 		return 0
 	}
-	l := len(sackBlocks)
-	if l > TCPMaxSACKBlocks {
-		l = TCPMaxSACKBlocks
-	}
+	l := min(len(sackBlocks), TCPMaxSACKBlocks)
 	if ll := (len(b) - 2) / 8; ll < l {
 		l = ll
 	}

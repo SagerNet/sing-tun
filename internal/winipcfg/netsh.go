@@ -1,3 +1,5 @@
+//go:build windows
+
 /* SPDX-License-Identifier: MIT
  *
  * Copyright (C) 2019-2022 WireGuard LLC. All Rights Reserved.
@@ -60,9 +62,10 @@ const (
 
 func (luid LUID) fallbackSetDNSForFamily(family AddressFamily, dnses []netip.Addr) error {
 	var templateFlush string
-	if family == windows.AF_INET {
+	switch family {
+	case windows.AF_INET:
 		templateFlush = netshCmdTemplateFlush4
-	} else if family == windows.AF_INET6 {
+	case windows.AF_INET6:
 		templateFlush = netshCmdTemplateFlush6
 	}
 
@@ -72,7 +75,7 @@ func (luid LUID) fallbackSetDNSForFamily(family AddressFamily, dnses []netip.Add
 		return err
 	}
 	cmds = append(cmds, fmt.Sprintf(templateFlush, ipif.InterfaceIndex))
-	for i := 0; i < len(dnses); i++ {
+	for i := range dnses {
 		if dnses[i].Is4() && family == windows.AF_INET {
 			cmds = append(cmds, fmt.Sprintf(netshCmdTemplateAdd4, ipif.InterfaceIndex, dnses[i].String()))
 		} else if dnses[i].Is6() && family == windows.AF_INET6 {
@@ -85,23 +88,23 @@ func (luid LUID) fallbackSetDNSForFamily(family AddressFamily, dnses []netip.Add
 func (luid LUID) fallbackSetDNSDomain(domain string) error {
 	guid, err := luid.GUID()
 	if err != nil {
-		return fmt.Errorf("Error converting luid to guid: %w", err)
+		return fmt.Errorf("error converting luid to guid: %w", err)
 	}
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, fmt.Sprintf("SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Adapters\\%v", guid), registry.QUERY_VALUE)
 	if err != nil {
-		return fmt.Errorf("Error opening adapter-specific TCP/IP network registry key: %w", err)
+		return fmt.Errorf("error opening adapter-specific TCP/IP network registry key: %w", err)
 	}
 	paths, _, err := key.GetStringsValue("IpConfig")
 	key.Close()
 	if err != nil {
-		return fmt.Errorf("Error reading IpConfig registry key: %w", err)
+		return fmt.Errorf("error reading IpConfig registry key: %w", err)
 	}
 	if len(paths) == 0 {
-		return errors.New("No TCP/IP interfaces found on adapter")
+		return errors.New("no TCP/IP interfaces found on adapter")
 	}
 	key, err = registry.OpenKey(registry.LOCAL_MACHINE, fmt.Sprintf("SYSTEM\\CurrentControlSet\\Services\\%s", paths[0]), registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("Unable to open TCP/IP network registry key: %w", err)
+		return fmt.Errorf("unable to open TCP/IP network registry key: %w", err)
 	}
 	err = key.SetStringValue("Domain", domain)
 	key.Close()

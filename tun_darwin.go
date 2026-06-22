@@ -10,7 +10,6 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/gtcpip/header"
-	"github.com/sagernet/sing-tun/internal/rawfile_darwin"
 	"github.com/sagernet/sing-tun/internal/stopfd_darwin"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -132,7 +131,7 @@ func New(options Options) (Tun, error) {
 		stopFd:        common.Must1(stopfd.New()),
 		sendMsgX:      options.EXP_SendMsgX,
 	}
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU))
 		nativeTun.iovecsOutput[i] = newIovecBuffer(int(options.MTU))
 	}
@@ -352,7 +351,7 @@ func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 	}
 	n, errno := rawfile.BlockingRecvMMsgUntilStopped(t.stopFd.ReadFD, t.tunFd, t.msgHdrs)
 	if errno != 0 {
-		for k := 0; k < n; k++ {
+		for k := range n {
 			t.iovecs[k].buffer.Release()
 			t.iovecs[k].buffer = nil
 		}
@@ -366,7 +365,7 @@ func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 		return nil, nil
 	}
 	buffers := t.buffers
-	for k := 0; k < n; k++ {
+	for k := range n {
 		buffer := t.iovecs[k].buffer
 		t.iovecs[k].buffer = nil
 		buffer.Truncate(int(t.msgHdrs[k].DataLen) - PacketOffset)

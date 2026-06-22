@@ -1,7 +1,8 @@
+//go:build darwin
+
 package rawfile
 
 import (
-	"reflect"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -25,12 +26,8 @@ func IovecFromBytes(bs []byte) unix.Iovec {
 	return iov
 }
 
-func bytesFromIovec(iov unix.Iovec) (bs []byte) {
-	sh := (*reflect.SliceHeader)(unsafe.Pointer(&bs))
-	sh.Data = uintptr(unsafe.Pointer(iov.Base))
-	sh.Len = int(iov.Len)
-	sh.Cap = int(iov.Len)
-	return
+func bytesFromIovec(iov unix.Iovec) []byte {
+	return unsafe.Slice(iov.Base, iov.Len)
 }
 
 // AppendIovecFromBytes returns append(iovs, IovecFromBytes(bs)). If len(bs) ==
@@ -56,6 +53,7 @@ type MsgHdrX struct {
 }
 
 func NonBlockingSendMMsg(fd int, msgHdrs []MsgHdrX) (int, unix.Errno) {
+	//nolint:staticcheck
 	n, _, e := unix.RawSyscall6(unix.SYS_SENDMSG_X, uintptr(fd), uintptr(unsafe.Pointer(&msgHdrs[0])), uintptr(len(msgHdrs)), unix.MSG_DONTWAIT, 0, 0)
 	return int(n), e
 }
@@ -66,12 +64,14 @@ const SizeofMsgHdrX = unsafe.Sizeof(MsgHdrX{})
 // It fails if partial data is written.
 func NonBlockingWriteIovec(fd int, iovec []unix.Iovec) unix.Errno {
 	iovecLen := uintptr(len(iovec))
+	//nolint:staticcheck
 	_, _, e := unix.RawSyscall(unix.SYS_WRITEV, uintptr(fd), uintptr(unsafe.Pointer(&iovec[0])), iovecLen)
 	return e
 }
 
 func BlockingReadvUntilStopped(efd int, fd int, iovecs []unix.Iovec) (int, unix.Errno) {
 	for {
+		//nolint:staticcheck
 		n, _, e := unix.RawSyscall(unix.SYS_READV, uintptr(fd), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(len(iovecs)))
 		if e == 0 {
 			return int(n), 0
@@ -91,6 +91,7 @@ func BlockingReadvUntilStopped(efd int, fd int, iovecs []unix.Iovec) (int, unix.
 
 func BlockingRecvMMsgUntilStopped(efd int, fd int, msgHdrs []MsgHdrX) (int, unix.Errno) {
 	for {
+		//nolint:staticcheck
 		n, _, e := unix.RawSyscall6(unix.SYS_RECVMSG_X, uintptr(fd), uintptr(unsafe.Pointer(&msgHdrs[0])), uintptr(len(msgHdrs)), unix.MSG_DONTWAIT, 0, 0)
 		if e == 0 {
 			return int(n), e
@@ -162,7 +163,7 @@ func BlockingPollUntilStopped(efd int, fd int, events int16) (bool, unix.Errno) 
 	var efdHasData bool
 	var errno unix.Errno
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ev := &revents[i]
 
 		if int(ev.Ident) == efd && ev.Filter == unix.EVFILT_READ {
