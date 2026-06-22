@@ -158,9 +158,19 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			})
 		}
 	} else {
-		_, err := buffer.ReadOnceFrom(c.conn)
-		if err != nil {
-			return err
+		if runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "windows" {
+			// An unconnected SOCK_RAW IPv4 socket delivers the full packet including the IP
+			// header via ReadMsgIP, whereas ReadFrom strips it.
+			n, _, _, err := c.readMsg(buffer.FreeBytes(), nil)
+			if err != nil {
+				return err
+			}
+			buffer.Truncate(n)
+		} else {
+			_, err := buffer.ReadOnceFrom(c.conn)
+			if err != nil {
+				return err
+			}
 		}
 		if !c.destination.Is6() {
 			ipHdr := header.IPv4(buffer.Bytes())
@@ -177,10 +187,12 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			ipHdr.SetDestinationAddr(c.source.Load())
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
-			if !c.isLinuxUnprivileged() {
-				icmpHdr.SetIdent(^icmpHdr.Ident())
+			if icmpHdr.Type() == header.ICMPv4EchoReply {
+				if !c.isLinuxUnprivileged() {
+					icmpHdr.SetIdent(^icmpHdr.Ident())
+				}
+				icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 			}
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 		} else {
 			ipHdr := header.IPv6(buffer.Bytes())
 			if !ipHdr.IsValid(buffer.Len()) {
@@ -202,27 +214,41 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 }
 
 func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
+	if !c.isLinuxUnprivileged() && !c.destination.Is6() {
+		if runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "windows" {
+			// An unconnected SOCK_RAW IPv4 socket delivers the full packet including the IP
+			// header via ReadMsgIP, whereas ReadFrom strips it.
+			n, _, _, err := c.readMsg(buffer.FreeBytes(), nil)
+			if err != nil {
+				return err
+			}
+			buffer.Truncate(n)
+		} else {
+			_, err := buffer.ReadOnceFrom(c.conn)
+			if err != nil {
+				return err
+			}
+		}
+		ipHdr := header.IPv4(buffer.Bytes())
+		buffer.Advance(int(ipHdr.HeaderLength()))
+
+		icmpHdr := header.ICMPv4(buffer.Bytes())
+		icmpHdr.SetIdent(^icmpHdr.Ident())
+		icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
+		return nil
+	}
 	_, err := buffer.ReadOnceFrom(c.conn)
 	if err != nil {
 		return err
 	}
-	if !c.isLinuxUnprivileged() {
-		if !c.destination.Is6() {
-			ipHdr := header.IPv4(buffer.Bytes())
-			buffer.Advance(int(ipHdr.HeaderLength()))
-
-			icmpHdr := header.ICMPv4(buffer.Bytes())
-			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
-		} else {
-			icmpHdr := header.ICMPv6(buffer.Bytes())
-			icmpHdr.SetIdent(^icmpHdr.Ident())
-			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
-				Header: icmpHdr,
-				Src:    c.destination.AsSlice(),
-				Dst:    c.source.Load().AsSlice(),
-			}))
-		}
+	if c.destination.Is6() && !c.isLinuxUnprivileged() {
+		icmpHdr := header.ICMPv6(buffer.Bytes())
+		icmpHdr.SetIdent(^icmpHdr.Ident())
+		icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
+			Header: icmpHdr,
+			Src:    c.destination.AsSlice(),
+			Dst:    c.source.Load().AsSlice(),
+		}))
 	}
 	return nil
 }
@@ -232,6 +258,10 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
+			err := ipv4.NewConn(c.conn).SetTTL(int(ipHdr.TTL()))
+			if err != nil {
+				return err
+			}
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
@@ -241,6 +271,10 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
+			err := ipv6.NewConn(c.conn).SetHopLimit(int(ipHdr.HopLimit()))
+			if err != nil {
+				return err
+			}
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
