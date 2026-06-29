@@ -18,6 +18,8 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/sing/common/buf"
+	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -25,6 +27,7 @@ import (
 type ICMPForwarder struct {
 	ctx          context.Context
 	stack        *stack.Stack
+	logger       logger.Logger
 	inet4Address netip.Addr
 	inet6Address netip.Addr
 	handler      Handler
@@ -34,12 +37,14 @@ type ICMPForwarder struct {
 func NewICMPForwarder(
 	ctx context.Context,
 	stack *stack.Stack,
+	logger logger.Logger,
 	handler Handler,
 	timeout time.Duration,
 ) *ICMPForwarder {
 	return &ICMPForwarder{
 		ctx:     ctx,
 		stack:   stack,
+		logger:  logger,
 		handler: handler,
 		mapping: NewDirectRouteMapping(timeout),
 	}
@@ -81,8 +86,10 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 				return true
 			}
 			if action != nil {
-				// TODO: handle error
-				_ = icmpWritePacketBuffer(action, pkt)
+				err = icmpWritePacketBuffer(action, pkt)
+				if err != nil {
+					f.logger.Error(E.Cause(err, "write ICMPv4 echo request"))
+				}
 				return true
 			}
 		}
@@ -95,7 +102,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 		outgoingEP, gErr := f.stack.GetNetworkEndpoint(DefaultNIC, header.IPv4ProtocolNumber)
 		if gErr != nil {
-			// TODO: log error
+			f.logger.Error(E.Cause(gonet.TranslateNetstackError(gErr), "get IPv4 network endpoint"))
 			return true
 		}
 		route, gErr := f.stack.FindRoute(
@@ -106,7 +113,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			false,
 		)
 		if gErr != nil {
-			// TODO: log error
+			f.logger.Error(E.Cause(gonet.TranslateNetstackError(gErr), "find IPv4 route"))
 			return true
 		}
 		defer route.Release()
@@ -142,9 +149,11 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 				return true
 			}
 			if action != nil {
-				// TODO: handle error
 				pkt.IncRef()
-				_ = icmpWritePacketBuffer(action, pkt)
+				err = icmpWritePacketBuffer(action, pkt)
+				if err != nil {
+					f.logger.Error(E.Cause(err, "write ICMPv6 echo request"))
+				}
 				return true
 			}
 		}
@@ -161,7 +170,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		}))
 		outgoingEP, gErr := f.stack.GetNetworkEndpoint(DefaultNIC, header.IPv4ProtocolNumber)
 		if gErr != nil {
-			// TODO: log error
+			f.logger.Error(E.Cause(gonet.TranslateNetstackError(gErr), "get IPv6 network endpoint"))
 			return true
 		}
 		route, gErr := f.stack.FindRoute(
@@ -172,7 +181,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			false,
 		)
 		if gErr != nil {
-			// TODO: log error
+			f.logger.Error(E.Cause(gonet.TranslateNetstackError(gErr), "find IPv6 route"))
 			return true
 		}
 		defer route.Release()
