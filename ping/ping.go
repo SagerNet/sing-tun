@@ -24,6 +24,7 @@ type Conn struct {
 	ctx         context.Context
 	privileged  bool
 	conn        net.Conn
+	controlConn net.Conn
 	destination netip.Addr
 	source      common.TypedValue[netip.Addr]
 	closed      atomic.Bool
@@ -53,6 +54,7 @@ func (c *Conn) connect(controlFunc control.Func, idleTimeout time.Duration) (err
 		return err
 	}
 	if ipConn, isIPConn := common.Cast[*net.IPConn](c.conn); isIPConn {
+		c.controlConn = ipConn
 		c.readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
 			var ipAddr *net.IPAddr
 			n, oobn, _, ipAddr, err = ipConn.ReadMsgIP(b, oob)
@@ -62,6 +64,7 @@ func (c *Conn) connect(controlFunc control.Func, idleTimeout time.Duration) (err
 			return
 		}
 	} else if udpConn, isUDPConn := common.Cast[*net.UDPConn](c.conn); isUDPConn {
+		c.controlConn = udpConn
 		c.readMsg = func(b, oob []byte) (n, oobn int, addr netip.Addr, err error) {
 			var addrPort netip.AddrPort
 			n, oobn, _, addrPort, err = udpConn.ReadMsgUDPAddrPort(b, oob)
@@ -258,7 +261,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
-			err := ipv4.NewConn(c.conn).SetTTL(int(ipHdr.TTL()))
+			err := ipv4.NewConn(c.controlConn).SetTTL(int(ipHdr.TTL()))
 			if err != nil {
 				return err
 			}
@@ -271,7 +274,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
-			err := ipv6.NewConn(c.conn).SetHopLimit(int(ipHdr.HopLimit()))
+			err := ipv6.NewConn(c.controlConn).SetHopLimit(int(ipHdr.HopLimit()))
 			if err != nil {
 				return err
 			}
