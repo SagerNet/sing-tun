@@ -74,12 +74,13 @@ func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) {
 	if t.vnetHdr {
 		ep, err := fdbased.New(&fdbased.Options{
-			FDs:               []int{t.tunFd},
-			MTU:               t.options.MTU,
-			GSOMaxSize:        gsoMaxSize,
-			GRO:               true,
-			RXChecksumOffload: true,
-			TXChecksumOffload: t.txChecksumOffload,
+			FDs:                  []int{t.tunFd},
+			MTU:                  t.options.MTU,
+			ProcessorsPerChannel: 1,
+			GSOMaxSize:           gsoMaxSize,
+			GRO:                  true,
+			RXChecksumOffload:    true,
+			TXChecksumOffload:    t.txChecksumOffload,
 		})
 		if err != nil {
 			return nil, stack.NICOptions{}, err
@@ -87,10 +88,11 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) 
 		return ep, stack.NICOptions{}, nil
 	} else {
 		ep, err := fdbased.New(&fdbased.Options{
-			FDs:               []int{t.tunFd},
-			MTU:               t.options.MTU,
-			RXChecksumOffload: true,
-			TXChecksumOffload: t.txChecksumOffload,
+			FDs:                  []int{t.tunFd},
+			MTU:                  t.options.MTU,
+			ProcessorsPerChannel: 1,
+			RXChecksumOffload:    true,
+			TXChecksumOffload:    t.txChecksumOffload,
 		})
 		if err != nil {
 			return nil, stack.NICOptions{}, err
