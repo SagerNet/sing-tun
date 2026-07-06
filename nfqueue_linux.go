@@ -4,15 +4,12 @@ package tun
 
 import (
 	"context"
-	"errors"
 	"net/netip"
 	"sync/atomic"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 
 	"github.com/florianl/go-nfqueue/v2"
 	"github.com/mdlayher/netlink"
@@ -105,9 +102,9 @@ const ipv6AuthenticationHeaderIdentifier header.IPv6ExtensionHeaderIdentifier = 
 
 type preMatchPacket struct {
 	protocol    uint8
-	network     string
-	source      M.Socksaddr
-	destination M.Socksaddr
+	source      netip.AddrPort
+	destination netip.AddrPort
+	firstPacket []byte
 }
 
 func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
@@ -161,20 +158,23 @@ func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
 		if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
 			return preMatchPacket{}, false
 		}
-		parsed.network = N.NetworkTCP
-		parsed.source = M.SocksaddrFrom(source, tcpHdr.SourcePort())
-		parsed.destination = M.SocksaddrFrom(destination, tcpHdr.DestinationPort())
+		parsed.source = netip.AddrPortFrom(source, tcpHdr.SourcePort())
+		parsed.destination = netip.AddrPortFrom(destination, tcpHdr.DestinationPort())
 	case uint8(header.UDPProtocolNumber):
 		if len(transport) < header.UDPMinimumSize {
 			return preMatchPacket{}, false
 		}
 		udpHdr := header.UDP(transport)
-		if int(udpHdr.Length()) < header.UDPMinimumSize {
+		udpLength := int(udpHdr.Length())
+		if udpLength < header.UDPMinimumSize {
 			return preMatchPacket{}, false
 		}
-		parsed.network = N.NetworkUDP
-		parsed.source = M.SocksaddrFrom(source, udpHdr.SourcePort())
-		parsed.destination = M.SocksaddrFrom(destination, udpHdr.DestinationPort())
+		if udpLength < len(transport) {
+			transport = transport[:udpLength]
+		}
+		parsed.source = netip.AddrPortFrom(source, udpHdr.SourcePort())
+		parsed.destination = netip.AddrPortFrom(destination, udpHdr.DestinationPort())
+		parsed.firstPacket = header.UDP(transport).Payload()
 	case uint8(header.ICMPv4ProtocolNumber):
 		if !source.Is4() || len(transport) < header.ICMPv4MinimumSize {
 			return preMatchPacket{}, false
@@ -183,9 +183,9 @@ func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
 		if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != 0 {
 			return preMatchPacket{}, false
 		}
-		parsed.network = N.NetworkICMP
-		parsed.source = M.SocksaddrFrom(source, 0)
-		parsed.destination = M.SocksaddrFrom(destination, 0)
+		identifier := icmpHdr.Ident()
+		parsed.source = netip.AddrPortFrom(source, identifier)
+		parsed.destination = netip.AddrPortFrom(destination, identifier)
 	case uint8(header.ICMPv6ProtocolNumber):
 		if !source.Is6() || len(transport) < header.ICMPv6MinimumSize {
 			return preMatchPacket{}, false
@@ -194,9 +194,9 @@ func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
 		if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
 			return preMatchPacket{}, false
 		}
-		parsed.network = N.NetworkICMP
-		parsed.source = M.SocksaddrFrom(source, 0)
-		parsed.destination = M.SocksaddrFrom(destination, 0)
+		identifier := icmpHdr.Ident()
+		parsed.source = netip.AddrPortFrom(source, identifier)
+		parsed.destination = netip.AddrPortFrom(destination, identifier)
 	default:
 		return preMatchPacket{}, false
 	}
@@ -265,22 +265,26 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		return 0
 	}
 
-	_, pErr := h.handler.PrepareConnection(packet.network, packet.source, packet.destination, nil, 0)
+	verdict := h.handler.JudgeFlow(
+		packet.protocol,
+		packet.source,
+		packet.destination,
+	)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
 	// from the beginning, allowing mark-checking rules to save the mark
 	// to conntrack. NfAccept is a terminal verdict in nftables — it exits
 	// the chain immediately, skipping any rules after the queue statement.
-	switch {
-	case errors.Is(pErr, ErrBypass):
+	switch verdict.Action {
+	case ActionBypass:
 		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
-	case errors.Is(pErr, ErrReset):
+	case ActionReject:
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
 			h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
 		} else {
 			h.setVerdict(packetID, nfqueue.NfAccept, 0)
 		}
-	case errors.Is(pErr, ErrDrop):
+	case ActionDrop:
 		h.setVerdict(packetID, nfqueue.NfDrop, 0)
 	default:
 		h.setVerdict(packetID, nfqueue.NfAccept, 0)

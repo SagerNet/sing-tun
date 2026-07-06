@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
@@ -15,25 +14,14 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ranges"
 )
 
 type Handler interface {
-	PrepareConnection(
-		network string,
-		source M.Socksaddr,
-		destination M.Socksaddr,
-		routeContext DirectRouteContext,
-		timeout time.Duration,
-	) (DirectRouteDestination, error)
+	JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort) FlowVerdict
 	N.TCPConnectionHandlerEx
 	N.UDPConnectionHandlerEx
-}
-
-type DirectRouteContext interface {
-	WritePacket(packet []byte) error
 }
 
 type Tun interface {

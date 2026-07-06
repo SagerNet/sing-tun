@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
@@ -20,14 +19,16 @@ import (
 // Although its theoretical maximum may be 64k, I don’t yet know of any practical use case for that. For memory-usage reasons, I’m just using a 2k buffer.
 const maxICMPPacketSize = 2048
 
-var _ tun.DirectRouteDestination = (*Destination)(nil)
+type PacketWriter interface {
+	WritePacket(packet []byte) error
+}
 
 type Destination struct {
 	conn          *Conn
 	ctx           context.Context
 	logger        logger.ContextLogger
 	destination   netip.Addr
-	routeContext  tun.DirectRouteContext
+	writer        PacketWriter
 	timeout       time.Duration
 	requestAccess sync.Mutex
 	requests      map[pingRequest]time.Time
@@ -45,9 +46,9 @@ func ConnectDestination(
 	logger logger.ContextLogger,
 	controlFunc control.Func,
 	destination netip.Addr,
-	routeContext tun.DirectRouteContext,
+	writer PacketWriter,
 	timeout time.Duration,
-) (tun.DirectRouteDestination, error) {
+) (*Destination, error) {
 	var (
 		conn *Conn
 		err  error
@@ -65,13 +66,13 @@ func ConnectDestination(
 		return nil, err
 	}
 	d := &Destination{
-		conn:         conn,
-		ctx:          ctx,
-		logger:       logger,
-		destination:  destination,
-		routeContext: routeContext,
-		timeout:      timeout,
-		requests:     make(map[pingRequest]time.Time),
+		conn:        conn,
+		ctx:         ctx,
+		logger:      logger,
+		destination: destination,
+		writer:      writer,
+		timeout:     timeout,
+		requests:    make(map[pingRequest]time.Time),
 	}
 	go d.loopRead()
 	return d, nil
@@ -158,7 +159,7 @@ func (d *Destination) loopRead() {
 			}
 			d.logger.TraceContext(d.ctx, "read ICMPv6 echo reply from ", ipHdr.SourceAddr(), " to ", ipHdr.DestinationAddr(), " id ", icmpHdr.Ident(), " seq ", icmpHdr.Sequence())
 		}
-		err = d.routeContext.WritePacket(buffer.Bytes())
+		err = d.writer.WritePacket(buffer.Bytes())
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP echo reply"))
 		}

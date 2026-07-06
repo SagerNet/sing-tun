@@ -4,7 +4,6 @@ package tun
 
 import (
 	"context"
-	"errors"
 	"net"
 	"os"
 	"sync"
@@ -71,7 +70,7 @@ func (c *gLazyConn) HandshakeFailure(err error) error {
 	if c.handshakeDone {
 		return os.ErrInvalid
 	}
-	c.request.Complete(!errors.Is(err, ErrDrop))
+	c.request.Complete(true)
 	c.handshakeDone = true
 	c.handshakeErr = err
 	return nil
