@@ -5,9 +5,6 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 type TCPNat struct {
@@ -85,17 +82,13 @@ func (n *TCPNat) LookupBack(port uint16) *TCPSession {
 	return session
 }
 
-func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handler Handler) (uint16, error) {
+func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint16 {
 	key := tcpNatKey{Source: source, Destination: destination}
 	n.addrAccess.RLock()
 	port, loaded := n.addrMap[key]
 	n.addrAccess.RUnlock()
 	if loaded {
-		return port, nil
-	}
-	_, pErr := handler.PrepareConnection(N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), nil, 0)
-	if pErr != nil {
-		return 0, pErr
+		return port
 	}
 	n.addrAccess.Lock()
 	nextPort := n.portIndex
@@ -114,5 +107,5 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handl
 		LastActive:  time.Now(),
 	}
 	n.portAccess.Unlock()
-	return nextPort, nil
+	return nextPort
 }

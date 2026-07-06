@@ -139,22 +139,24 @@ func (r *autoRedirect) Start() error {
 		r.redirectServer = server
 	}
 	if r.useNFTables {
-		var handler *nfqueueHandler
-		handler, err = newNFQueueHandler(nfqueueOptions{
-			Context:    r.ctx,
-			Handler:    r.handler,
-			Logger:     r.logger,
-			Queue:      r.effectiveNFQueue(),
-			OutputMark: r.effectiveOutputMark(),
-			ResetMark:  r.effectiveResetMark(),
-		})
-		if err != nil {
-			r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
-		} else if err = handler.Start(); err != nil {
-			r.logger.Warn("nfqueue start failed, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
-		} else {
-			r.nfqueueHandler = handler
-			r.nfqueueEnabled = true
+		if r.handler != nil {
+			var handler *nfqueueHandler
+			handler, err = newNFQueueHandler(nfqueueOptions{
+				Context:    r.ctx,
+				Handler:    r.handler,
+				Logger:     r.logger,
+				Queue:      r.effectiveNFQueue(),
+				OutputMark: r.effectiveOutputMark(),
+				ResetMark:  r.effectiveResetMark(),
+			})
+			if err != nil {
+				r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
+			} else if err = handler.Start(); err != nil {
+				r.logger.Warn("nfqueue start failed, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
+			} else {
+				r.nfqueueHandler = handler
+				r.nfqueueEnabled = true
+			}
 		}
 		r.cleanupNFTables()
 		err = r.setupNFTables()
