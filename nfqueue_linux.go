@@ -269,6 +269,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		packet.protocol,
 		packet.source,
 		packet.destination,
+		packet.firstPacket,
 	)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
