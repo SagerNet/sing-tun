@@ -5,10 +5,6 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-
-	E "github.com/sagernet/sing/common/exceptions"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 type TCPNat struct {
@@ -90,31 +86,27 @@ func (s *TCPSession) refresh() {
 	s.Unlock()
 }
 
-func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handler Handler) (uint16, error) {
+func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint16 {
 	key := tcpNatKey{Source: source, Destination: destination}
 	n.addrAccess.RLock()
 	port, loaded := n.addrMap[key]
 	n.addrAccess.RUnlock()
 	if loaded {
 		n.refresh(port)
-		return port, nil
-	}
-	_, pErr := handler.PrepareConnection(N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), nil, 0)
-	if pErr != nil {
-		return 0, pErr
+		return port
 	}
 	n.addrAccess.Lock()
 	defer n.addrAccess.Unlock()
 	port, loaded = n.addrMap[key]
 	if loaded {
 		n.refresh(port)
-		return port, nil
+		return port
 	}
 	n.portAccess.Lock()
 	defer n.portAccess.Unlock()
 	nextPort, allocated := n.allocatePortLocked()
 	if !allocated {
-		return 0, E.New("NAT port space exhausted")
+		return 0
 	}
 	n.portMap[nextPort] = &TCPSession{
 		Source:      source,
@@ -122,7 +114,7 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handl
 		LastActive:  time.Now(),
 	}
 	n.addrMap[key] = nextPort
-	return nextPort, nil
+	return nextPort
 }
 
 func (n *TCPNat) refresh(port uint16) {

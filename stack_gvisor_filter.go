@@ -14,20 +14,39 @@ var _ stack.LinkEndpoint = (*LinkEndpointFilter)(nil)
 
 type LinkEndpointFilter struct {
 	stack.LinkEndpoint
-	BroadcastAddress netip.Addr
-	Writer           GVisorTun
+	BroadcastAddress     netip.Addr
+	Writer               GVisorTun
+	Dispatcher           *ForwardDispatcher
+	Inet4Address         netip.Addr
+	Inet6Address         netip.Addr
+	Inet4LoopbackAddress []netip.Addr
+	Inet6LoopbackAddress []netip.Addr
 }
 
 func (w *LinkEndpointFilter) Attach(dispatcher stack.NetworkDispatcher) {
-	w.LinkEndpoint.Attach(&networkDispatcherFilter{dispatcher, w.BroadcastAddress, w.Writer})
+	w.LinkEndpoint.Attach(&networkDispatcherFilter{
+		NetworkDispatcher:    dispatcher,
+		broadcastAddress:     w.BroadcastAddress,
+		writer:               w.Writer,
+		dispatcher:           w.Dispatcher,
+		inet4Address:         w.Inet4Address,
+		inet6Address:         w.Inet6Address,
+		inet4LoopbackAddress: w.Inet4LoopbackAddress,
+		inet6LoopbackAddress: w.Inet6LoopbackAddress,
+	})
 }
 
 var _ stack.NetworkDispatcher = (*networkDispatcherFilter)(nil)
 
 type networkDispatcherFilter struct {
 	stack.NetworkDispatcher
-	broadcastAddress netip.Addr
-	writer           GVisorTun
+	broadcastAddress     netip.Addr
+	writer               GVisorTun
+	dispatcher           *ForwardDispatcher
+	inet4Address         netip.Addr
+	inet6Address         netip.Addr
+	inet4LoopbackAddress []netip.Addr
+	inet6LoopbackAddress []netip.Addr
 }
 
 func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkProtocolNumber, pkt *stack.PacketBuffer) {
@@ -50,5 +69,45 @@ func (w *networkDispatcherFilter) DeliverNetworkPacket(protocol tcpip.NetworkPro
 		w.writer.WritePacket(pkt)
 		return
 	}
+	if w.dispatcher != nil && pkt.GSOOptions.Type == stack.GSONone && !pkt.GSOOptions.NeedsCsum {
+		if view, loaded := pkt.Data().PullUp(pkt.Data().Size()); loaded {
+			consumed := w.dispatch(protocol, destination, view)
+			w.dispatcher.Flush()
+			if consumed {
+				return
+			}
+		}
+	}
 	w.NetworkDispatcher.DeliverNetworkPacket(protocol, pkt)
+}
+
+func (w *networkDispatcherFilter) dispatch(protocol tcpip.NetworkProtocolNumber, destination netip.Addr, view []byte) bool {
+	if protocol == header.IPv4ProtocolNumber {
+		switch header.IPv4(view).TransportProtocol() {
+		case header.TCPProtocolNumber:
+			for _, inet4LoopbackAddress := range w.inet4LoopbackAddress {
+				if destination == inet4LoopbackAddress {
+					return false
+				}
+			}
+		case header.ICMPv4ProtocolNumber:
+			if destination == w.inet4Address {
+				return false
+			}
+		}
+	} else {
+		switch header.IPv6(view).TransportProtocol() {
+		case header.TCPProtocolNumber:
+			for _, inet6LoopbackAddress := range w.inet6LoopbackAddress {
+				if destination == inet6LoopbackAddress {
+					return false
+				}
+			}
+		case header.ICMPv6ProtocolNumber:
+			if destination == w.inet6Address {
+				return false
+			}
+		}
+	}
+	return w.dispatcher.Dispatch(view)
 }
