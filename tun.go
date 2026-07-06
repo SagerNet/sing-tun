@@ -19,7 +19,7 @@ import (
 )
 
 type Handler interface {
-	JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort) FlowVerdict
+	JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort, firstPacket []byte) FlowVerdict
 	N.TCPConnectionHandlerEx
 	N.UDPConnectionHandlerEx
 }

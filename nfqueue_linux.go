@@ -213,6 +213,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		uint8(unix.IPPROTO_TCP),
 		netip.AddrPortFrom(sourceAddr, tcp.SourcePort()),
 		netip.AddrPortFrom(destinationAddr, tcp.DestinationPort()),
+		nil,
 	)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
