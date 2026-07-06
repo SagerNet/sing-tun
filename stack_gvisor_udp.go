@@ -57,7 +57,16 @@ func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 func rangeIterate(r stack.Range, fn func(*buffer.View))
 
 func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
-	switch f.handler.JudgeFlow(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort()).Action {
+	firstPacketBuffer := userData.(*stack.PacketBuffer)
+	var firstPacket []byte
+	rangeIterate(firstPacketBuffer.Data().AsRange(), func(view *buffer.View) {
+		if firstPacket == nil {
+			firstPacket = view.AsSlice()
+		} else {
+			firstPacket = append(firstPacket[:len(firstPacket):len(firstPacket)], view.AsSlice()...)
+		}
+	})
+	switch f.handler.JudgeFlow(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort(), firstPacket).Action {
 	case ActionReject:
 		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer))
 		return false, nil, nil, nil

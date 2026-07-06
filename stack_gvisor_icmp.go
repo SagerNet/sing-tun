@@ -28,7 +28,7 @@ type ICMPForwarder struct {
 	returnPath icmpForwarderReturn
 
 	flowAccess    sync.Mutex
-	flows         map[icmpFlowKey]time.Time
+	flows         map[icmpFlowKey]*icmpFlow
 	lastSweep     time.Time
 	attachedPorts map[Port]bool
 }
@@ -40,12 +40,32 @@ type icmpFlowKey struct {
 	identifier  uint16
 }
 
+type icmpFlow struct {
+	port     Port
+	tracker  FlowTracker
+	deadline time.Time
+	closed   atomic.Bool
+}
+
+func (f *icmpFlow) close(reason FlowCloseReason) {
+	if !f.closed.CompareAndSwap(false, true) {
+		return
+	}
+	if f.tracker != nil {
+		f.tracker.CloseFlow(reason)
+	}
+}
+
+func (f *icmpFlow) CloseFlow() {
+	f.close(FlowCloseInterrupted)
+}
+
 func NewICMPForwarder(stack *stack.Stack, handler Handler, logger logger.Logger) *ICMPForwarder {
 	forwarder := &ICMPForwarder{
 		stack:         stack,
 		handler:       handler,
 		logger:        logger,
-		flows:         make(map[icmpFlowKey]time.Time),
+		flows:         make(map[icmpFlowKey]*icmpFlow),
 		attachedPorts: make(map[Port]bool),
 	}
 	forwarder.returnPath.forwarder = forwarder
@@ -56,6 +76,10 @@ func (f *ICMPForwarder) Close() error {
 	f.returnPath.closed.Store(true)
 	f.flowAccess.Lock()
 	defer f.flowAccess.Unlock()
+	for key, flow := range f.flows {
+		flow.close(FlowCloseShutdown)
+		delete(f.flows, key)
+	}
 	for port := range f.attachedPorts {
 		port.DetachReturn(&f.returnPath)
 		delete(f.attachedPorts, port)
@@ -71,16 +95,25 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			return false
 		}
 		identifier := icmpHdr.Ident()
+		key := icmpFlowKey{
+			source:      AddrFromAddress(ipHdr.SourceAddress()),
+			destination: AddrFromAddress(ipHdr.DestinationAddress()),
+			identifier:  identifier,
+		}
+		if f.forwardCached(key, pkt) {
+			return true
+		}
 		verdict := f.handler.JudgeFlow(
 			uint8(header.ICMPv4ProtocolNumber),
-			netip.AddrPortFrom(AddrFromAddress(ipHdr.SourceAddress()), identifier),
-			netip.AddrPortFrom(AddrFromAddress(ipHdr.DestinationAddress()), identifier),
+			netip.AddrPortFrom(key.source, identifier),
+			netip.AddrPortFrom(key.destination, identifier),
+			nil,
 		)
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
 		case ActionFlow:
-			if f.forwardFlow(verdict.Port, false, AddrFromAddress(ipHdr.SourceAddress()), AddrFromAddress(ipHdr.DestinationAddress()), identifier, pkt) {
+			if f.installFlow(key, verdict, pkt) {
 				return true
 			}
 		}
@@ -117,16 +150,26 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			return false
 		}
 		identifier := icmpHdr.Ident()
+		key := icmpFlowKey{
+			v6:          true,
+			source:      AddrFromAddress(ipHdr.SourceAddress()),
+			destination: AddrFromAddress(ipHdr.DestinationAddress()),
+			identifier:  identifier,
+		}
+		if f.forwardCached(key, pkt) {
+			return true
+		}
 		verdict := f.handler.JudgeFlow(
 			uint8(header.ICMPv6ProtocolNumber),
-			netip.AddrPortFrom(AddrFromAddress(ipHdr.SourceAddress()), identifier),
-			netip.AddrPortFrom(AddrFromAddress(ipHdr.DestinationAddress()), identifier),
+			netip.AddrPortFrom(key.source, identifier),
+			netip.AddrPortFrom(key.destination, identifier),
+			nil,
 		)
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
 		case ActionFlow:
-			if f.forwardFlow(verdict.Port, true, AddrFromAddress(ipHdr.SourceAddress()), AddrFromAddress(ipHdr.DestinationAddress()), identifier, pkt) {
+			if f.installFlow(key, verdict, pkt) {
 				return true
 			}
 		}
@@ -163,13 +206,38 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 	}
 }
 
-func (f *ICMPForwarder) forwardFlow(port Port, v6 bool, source netip.Addr, destination netip.Addr, identifier uint16, pkt *stack.PacketBuffer) bool {
+func (f *ICMPForwarder) forwardCached(key icmpFlowKey, pkt *stack.PacketBuffer) bool {
+	now := time.Now()
+	f.flowAccess.Lock()
+	flow, loaded := f.flows[key]
+	if loaded {
+		if flow.closed.Load() {
+			delete(f.flows, key)
+			loaded = false
+		} else if now.After(flow.deadline) {
+			delete(f.flows, key)
+			flow.close(FlowCloseTimeout)
+			loaded = false
+		} else {
+			flow.deadline = now.Add(defaultICMPTimeout)
+		}
+	}
+	f.flowAccess.Unlock()
+	if !loaded {
+		return false
+	}
+	f.writeToPort(flow, pkt)
+	return true
+}
+
+func (f *ICMPForwarder) installFlow(key icmpFlowKey, verdict FlowVerdict, pkt *stack.PacketBuffer) bool {
+	port := verdict.Port
 	if port == nil {
 		return false
 	}
 	inet4Address, inet6Address := port.PortAddresses()
 	portAddress := inet4Address
-	if v6 {
+	if key.v6 {
 		portAddress = inet6Address
 	}
 	if !portAddress.IsValid() || !portAddress.IsUnspecified() {
@@ -188,14 +256,29 @@ func (f *ICMPForwarder) forwardFlow(port Port, v6 bool, source netip.Addr, desti
 	now := time.Now()
 	if now.Sub(f.lastSweep) >= defaultICMPTimeout {
 		f.lastSweep = now
-		for key, deadline := range f.flows {
-			if now.After(deadline) {
-				delete(f.flows, key)
+		for flowKey, cachedFlow := range f.flows {
+			if cachedFlow.closed.Load() {
+				delete(f.flows, flowKey)
+			} else if now.After(cachedFlow.deadline) {
+				delete(f.flows, flowKey)
+				cachedFlow.close(FlowCloseTimeout)
 			}
 		}
 	}
-	f.flows[icmpFlowKey{v6: v6, source: source, destination: destination, identifier: identifier}] = now.Add(defaultICMPTimeout)
+	flow := &icmpFlow{port: port, deadline: now.Add(defaultICMPTimeout)}
+	if verdict.NewTracker != nil {
+		flow.tracker = verdict.NewTracker()
+	}
+	f.flows[key] = flow
 	f.flowAccess.Unlock()
+	if flow.tracker != nil {
+		flow.tracker.AttachFlow(flow)
+	}
+	f.writeToPort(flow, pkt)
+	return true
+}
+
+func (f *ICMPForwarder) writeToPort(flow *icmpFlow, pkt *stack.PacketBuffer) {
 	networkSlice := pkt.NetworkHeader().Slice()
 	transportSlice := pkt.TransportHeader().Slice()
 	dataSlice := pkt.Data().AsRange().ToSlice()
@@ -203,27 +286,34 @@ func (f *ICMPForwarder) forwardFlow(port Port, v6 bool, source netip.Addr, desti
 	packetSlice = append(packetSlice, networkSlice...)
 	packetSlice = append(packetSlice, transportSlice...)
 	packetSlice = append(packetSlice, dataSlice...)
-	err := port.WritePackets([][]byte{packetSlice})
+	if flow.tracker != nil {
+		flow.tracker.CountForward(len(packetSlice))
+	}
+	err := flow.port.WritePackets([][]byte{packetSlice})
 	if err != nil {
 		f.logger.Trace(E.Cause(err, "forward ICMP packet"))
 	}
-	return true
 }
 
-func (f *ICMPForwarder) lookupFlow(key icmpFlowKey) bool {
+func (f *ICMPForwarder) lookupFlow(key icmpFlowKey) *icmpFlow {
 	f.flowAccess.Lock()
 	defer f.flowAccess.Unlock()
-	deadline, loaded := f.flows[key]
+	flow, loaded := f.flows[key]
 	if !loaded {
-		return false
+		return nil
+	}
+	if flow.closed.Load() {
+		delete(f.flows, key)
+		return nil
 	}
 	now := time.Now()
-	if now.After(deadline) {
+	if now.After(flow.deadline) {
 		delete(f.flows, key)
-		return false
+		flow.close(FlowCloseTimeout)
+		return nil
 	}
-	f.flows[key] = now.Add(defaultICMPTimeout)
-	return true
+	flow.deadline = now.Add(defaultICMPTimeout)
+	return flow
 }
 
 type icmpForwarderReturn struct {
@@ -289,8 +379,12 @@ func (f *ICMPForwarder) returnPacket(packet []byte) bool {
 		default:
 			return false
 		}
-		if !f.lookupFlow(key) {
+		flow := f.lookupFlow(key)
+		if flow == nil {
 			return false
+		}
+		if flow.tracker != nil {
+			flow.tracker.CountReverse(len(packet))
 		}
 		return f.writeBack(packet, header.IPv4ProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress())
 	case header.IPv6Version:
@@ -308,8 +402,12 @@ func (f *ICMPForwarder) returnPacket(packet []byte) bool {
 			destination: AddrFromAddress(ipHdr.SourceAddress()),
 			identifier:  icmpHdr.Ident(),
 		}
-		if !f.lookupFlow(key) {
+		flow := f.lookupFlow(key)
+		if flow == nil {
 			return false
+		}
+		if flow.tracker != nil {
+			flow.tracker.CountReverse(len(packet))
 		}
 		return f.writeBack(packet, header.IPv6ProtocolNumber, ipHdr.SourceAddress(), ipHdr.DestinationAddress())
 	default:

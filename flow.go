@@ -6,6 +6,7 @@ type FlowVerdict struct {
 	Action      FlowAction
 	Port        Port
 	Destination netip.AddrPort
+	NewTracker  func() FlowTracker
 }
 
 type FlowAction uint8
@@ -17,6 +18,48 @@ const (
 	ActionDrop
 	ActionBypass
 )
+
+type FlowTracker interface {
+	AttachFlow(handle FlowHandle)
+	CountForward(n int)
+	CountReverse(n int)
+	FlowEstablished()
+	CloseFlow(reason FlowCloseReason)
+}
+
+type FlowHandle interface {
+	CloseFlow()
+}
+
+type FlowCloseReason uint8
+
+const (
+	FlowCloseReset FlowCloseReason = iota
+	FlowCloseFinished
+	FlowCloseTimeout
+	FlowCloseEvicted
+	FlowCloseShutdown
+	FlowCloseInterrupted
+)
+
+func (r FlowCloseReason) String() string {
+	switch r {
+	case FlowCloseReset:
+		return "connection reset"
+	case FlowCloseFinished:
+		return "finished"
+	case FlowCloseTimeout:
+		return "idle timeout"
+	case FlowCloseEvicted:
+		return "evicted"
+	case FlowCloseShutdown:
+		return "stack closed"
+	case FlowCloseInterrupted:
+		return "interrupted"
+	default:
+		return "unknown"
+	}
+}
 
 type Port interface {
 	PortAddresses() (v4 netip.Addr, v6 netip.Addr)
