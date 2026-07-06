@@ -43,12 +43,13 @@ func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
 
 func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) {
 	ep, err := fdbased.New(&fdbased.Options{
-		FDs:                 []int{t.tunFd},
-		MTU:                 t.options.MTU,
-		RXChecksumOffload:   true,
-		PacketDispatchMode:  fdbased.RecvMMsg,
-		MultiPendingPackets: t.options.EXP_MultiPendingPackets,
-		SendMsgX:            t.options.EXP_SendMsgX,
+		FDs:                  []int{t.tunFd},
+		MTU:                  t.options.MTU,
+		ProcessorsPerChannel: 1,
+		RXChecksumOffload:    true,
+		PacketDispatchMode:   fdbased.RecvMMsg,
+		MultiPendingPackets:  t.options.EXP_MultiPendingPackets,
+		SendMsgX:             t.options.EXP_SendMsgX,
 	})
 	if err != nil {
 		return nil, stack.NICOptions{}, err

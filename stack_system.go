@@ -229,7 +229,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 
 func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	packetBuffers := make([][]byte, batchSize)
-	writeBuffers := make([][]byte, batchSize)
+	writeBuffers := make([][]byte, 0, batchSize)
 	packetSizes := make([]int, batchSize)
 	for i := range packetBuffers {
 		packetBuffers[i] = make([]byte, s.mtu+s.frontHeadroom)

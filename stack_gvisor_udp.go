@@ -38,7 +38,7 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, t
 		stack:   stack,
 		handler: handler,
 	}
-	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout, true)
+	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout, false)
 	return forwarder
 }
 
