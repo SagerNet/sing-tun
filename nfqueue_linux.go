@@ -4,14 +4,12 @@ package tun
 
 import (
 	"context"
-	"errors"
+	"net/netip"
 	"sync/atomic"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 
 	"github.com/florianl/go-nfqueue/v2"
 	"github.com/mdlayher/netlink"
@@ -169,7 +167,7 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		return 0
 	}
 
-	var srcAddr, dstAddr M.Socksaddr
+	var sourceAddr, destinationAddr netip.Addr
 	var tcpOffset int
 
 	version := payload[0] >> 4
@@ -180,8 +178,8 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 			h.setVerdict(packetID, nfqueue.NfAccept, 0)
 			return 0
 		}
-		srcAddr = M.SocksaddrFrom(ipv4.SourceAddr(), 0)
-		dstAddr = M.SocksaddrFrom(ipv4.DestinationAddr(), 0)
+		sourceAddr = ipv4.SourceAddr()
+		destinationAddr = ipv4.DestinationAddr()
 		tcpOffset = int(ipv4.HeaderLength())
 	case 6:
 		transportProto, transportOffset, ok := parseIPv6TransportHeader(payload)
@@ -190,8 +188,8 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 			return 0
 		}
 		ipv6 := header.IPv6(payload)
-		srcAddr = M.SocksaddrFrom(ipv6.SourceAddr(), 0)
-		dstAddr = M.SocksaddrFrom(ipv6.DestinationAddr(), 0)
+		sourceAddr = ipv6.SourceAddr()
+		destinationAddr = ipv6.DestinationAddr()
 		tcpOffset = transportOffset
 	default:
 		h.setVerdict(packetID, nfqueue.NfAccept, 0)
@@ -204,8 +202,6 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	}
 
 	tcp := header.TCP(payload[tcpOffset:])
-	srcAddr = M.SocksaddrFrom(srcAddr.Addr, tcp.SourcePort())
-	dstAddr = M.SocksaddrFrom(dstAddr.Addr, tcp.DestinationPort())
 
 	flags := tcp.Flags()
 	if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
@@ -213,18 +209,22 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		return 0
 	}
 
-	_, pErr := h.handler.PrepareConnection(N.NetworkTCP, srcAddr, dstAddr, nil, 0)
+	verdict := h.handler.JudgeFlow(
+		uint8(unix.IPPROTO_TCP),
+		netip.AddrPortFrom(sourceAddr, tcp.SourcePort()),
+		netip.AddrPortFrom(destinationAddr, tcp.DestinationPort()),
+	)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
 	// from the beginning, allowing mark-checking rules to save the mark
 	// to conntrack. NfAccept is a terminal verdict in nftables — it exits
 	// the chain immediately, skipping any rules after the queue statement.
-	switch {
-	case errors.Is(pErr, ErrBypass):
+	switch verdict.Action {
+	case ActionBypass:
 		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
-	case errors.Is(pErr, ErrReset):
+	case ActionReject:
 		h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
-	case errors.Is(pErr, ErrDrop):
+	case ActionDrop:
 		h.setVerdict(packetID, nfqueue.NfDrop, 0)
 	default:
 		h.setVerdict(packetID, nfqueue.NfAccept, 0)
