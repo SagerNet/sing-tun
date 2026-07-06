@@ -6,8 +6,10 @@ import (
 	"context"
 	"net/netip"
 	"runtime"
+	"sync"
 	"time"
 
+	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
 	"github.com/sagernet/gvisor/pkg/tcpip/adapters/gonet"
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
@@ -40,6 +42,8 @@ type GVisor struct {
 	logger               logger.Logger
 	stack                *stack.Stack
 	endpoint             stack.LinkEndpoint
+	dispatcher           *ForwardDispatcher
+	icmpForwarder        *ICMPForwarder
 }
 
 type GVisorTun interface {
@@ -88,23 +92,39 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	linkEndpoint = &LinkEndpointFilter{linkEndpoint, t.broadcastAddr, t.tun}
+	if t.handler != nil {
+		t.dispatcher = NewForwardDispatcher(t.handler, &gvisorWriteback{tun: t.tun}, t.logger, t.udpTimeout, t.icmpTimeout)
+	}
+	linkEndpoint = &LinkEndpointFilter{
+		LinkEndpoint:         linkEndpoint,
+		BroadcastAddress:     t.broadcastAddr,
+		Writer:               t.tun,
+		Dispatcher:           t.dispatcher,
+		Inet4Address:         t.inet4Address,
+		Inet6Address:         t.inet6Address,
+		Inet4LoopbackAddress: t.inet4LoopbackAddress,
+		Inet6LoopbackAddress: t.inet6LoopbackAddress,
+	}
 	ipStack, err := newGVisorStack(linkEndpoint, nicOptions, false, true)
 	if err != nil {
 		return err
 	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
-	icmpForwarder := NewICMPForwarder(t.ctx, ipStack, t.logger, t.handler, t.icmpTimeout)
-	icmpForwarder.SetLocalAddresses(t.inet4Address, t.inet6Address)
+	icmpForwarder := NewICMPForwarder(ipStack, t.handler, t.logger)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
+	t.icmpForwarder = icmpForwarder
 	t.stack = ipStack
 	t.endpoint = linkEndpoint
 	return nil
 }
 
 func (t *GVisor) Close() error {
+	t.dispatcher.Close()
+	if t.icmpForwarder != nil {
+		t.icmpForwarder.Close()
+	}
 	if t.stack == nil {
 		return nil
 	}
@@ -114,6 +134,37 @@ func (t *GVisor) Close() error {
 		endpoint.Abort()
 	}
 	return nil
+}
+
+type gvisorWriteback struct {
+	tun    GVisorTun
+	access sync.Mutex
+}
+
+func (w *gvisorWriteback) ReturnHeadroom() int {
+	return 0
+}
+
+func (w *gvisorWriteback) WriteReturnPackets(packets [][]byte) error {
+	w.access.Lock()
+	defer w.access.Unlock()
+	var writeErrors []error
+	for _, packet := range packets {
+		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload: buffer.MakeWithData(packet),
+		})
+		if header.IPVersion(packet) == header.IPv6Version {
+			pkt.NetworkProtocolNumber = header.IPv6ProtocolNumber
+		} else {
+			pkt.NetworkProtocolNumber = header.IPv4ProtocolNumber
+		}
+		_, err := w.tun.WritePacket(pkt)
+		pkt.DecRef()
+		if err != nil {
+			writeErrors = append(writeErrors, err)
+		}
+	}
+	return E.Errors(writeErrors...)
 }
 
 func AddressFromAddr(destination netip.Addr) tcpip.Address {

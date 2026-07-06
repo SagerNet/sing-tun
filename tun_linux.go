@@ -568,8 +568,10 @@ func (t *NativeTun) readNonblocking(buffer []byte) (int, error) {
 func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) (int, error) {
 	t.writeAccess.Lock()
 	defer func() {
-		t.tcpGROTable.reset()
-		t.udpGROTable.reset()
+		if t.vnetHdr {
+			t.tcpGROTable.reset()
+			t.udpGROTable.reset()
+		}
 		t.writeAccess.Unlock()
 	}()
 	var (

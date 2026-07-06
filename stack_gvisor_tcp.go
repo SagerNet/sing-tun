@@ -4,7 +4,6 @@ package tun
 
 import (
 	"context"
-	"errors"
 	"net/netip"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -14,7 +13,6 @@ import (
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing/common"
 	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 type TCPForwarder struct {
@@ -79,9 +77,12 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 func (f *TCPForwarder) Forward(r *tcp.ForwarderRequest) {
 	source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-	_, pErr := f.handler.PrepareConnection(N.NetworkTCP, source, destination, nil, 0)
-	if pErr != nil {
-		r.Complete(!errors.Is(pErr, ErrDrop))
+	switch f.handler.JudgeFlow(uint8(header.TCPProtocolNumber), source.AddrPort(), destination.AddrPort()).Action {
+	case ActionReject:
+		r.Complete(true)
+		return
+	case ActionDrop:
+		r.Complete(false)
 		return
 	}
 	conn := &gLazyConn{
