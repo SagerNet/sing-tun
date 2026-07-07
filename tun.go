@@ -175,7 +175,7 @@ func (o *Options) Inet6GatewayAddr() netip.Addr {
 }
 
 func CalculateInterfaceName(name string) (tunName string) {
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
 		tunName = "utun"
 	} else if name != "" {
 		tunName = name
