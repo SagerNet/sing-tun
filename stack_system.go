@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sagernet/sing-tun/gtcpip"
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
@@ -448,36 +449,30 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 		if session == nil {
 			return false, E.New("ipv4: tcp: session not found: ", destination.Port())
 		}
-		ipHdr.SetSourceAddr(session.Destination.Addr())
-		tcpHdr.SetSourcePort(session.Destination.Port())
-		ipHdr.SetDestinationAddr(session.Source.Addr())
-		tcpHdr.SetDestinationPort(session.Source.Port())
+		rewriteIPv4TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+			session.Destination.Addr(), session.Destination.Port(), true,
+			session.Source.Addr(), session.Source.Port(), true)
 	} else {
 		var loopback bool
 		for _, inet4LoopbackAddress := range s.inet4LoopbackAddress {
 			if destination.Addr() == inet4LoopbackAddress {
-				ipHdr.SetDestinationAddr(ipHdr.SourceAddr())
-				ipHdr.SetSourceAddr(inet4LoopbackAddress)
+				rewriteIPv4TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+					inet4LoopbackAddress, 0, false,
+					source.Addr(), 0, false)
 				loopback = true
 				break
 			}
 		}
 		if !loopback {
 			natPort := s.tcpNat.Lookup(source, destination)
-			ipHdr.SetSourceAddr(s.inet4NextAddress)
-			tcpHdr.SetSourcePort(natPort)
-			ipHdr.SetDestinationAddr(s.inet4Address)
-			tcpHdr.SetDestinationPort(s.tcpPort)
+			if natPort == 0 {
+				return false, E.New("ipv4: tcp: NAT port space exhausted")
+			}
+			rewriteIPv4TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+				s.inet4NextAddress, natPort, true,
+				s.inet4Address, s.tcpPort, true)
 		}
 	}
-	if !s.txChecksumOffload {
-		tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
-			header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
-		)))
-	} else {
-		tcpHdr.SetChecksum(0)
-	}
-	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 	return true, nil
 }
 
@@ -491,36 +486,107 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 		if session == nil {
 			return false, E.New("ipv6: tcp: session not found: ", destination.Port())
 		}
-		ipHdr.SetSourceAddr(session.Destination.Addr())
-		tcpHdr.SetSourcePort(session.Destination.Port())
-		ipHdr.SetDestinationAddr(session.Source.Addr())
-		tcpHdr.SetDestinationPort(session.Source.Port())
+		rewriteIPv6TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+			session.Destination.Addr(), session.Destination.Port(), true,
+			session.Source.Addr(), session.Source.Port(), true)
 	} else {
 		var loopback bool
 		for _, inet6LoopbackAddress := range s.inet6LoopbackAddress {
 			if destination.Addr() == inet6LoopbackAddress {
-				ipHdr.SetDestinationAddr(ipHdr.SourceAddr())
-				ipHdr.SetSourceAddr(inet6LoopbackAddress)
+				rewriteIPv6TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+					inet6LoopbackAddress, 0, false,
+					source.Addr(), 0, false)
 				loopback = true
 				break
 			}
 		}
 		if !loopback {
 			natPort := s.tcpNat.Lookup(source, destination)
-			ipHdr.SetSourceAddr(s.inet6NextAddress)
-			tcpHdr.SetSourcePort(natPort)
-			ipHdr.SetDestinationAddr(s.inet6Address)
-			tcpHdr.SetDestinationPort(s.tcpPort6)
+			if natPort == 0 {
+				return false, E.New("ipv6: tcp: NAT port space exhausted")
+			}
+			rewriteIPv6TCP(ipHdr, tcpHdr, s.txChecksumOffload,
+				s.inet6NextAddress, natPort, true,
+				s.inet6Address, s.tcpPort6, true)
 		}
 	}
-	if !s.txChecksumOffload {
-		tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr.Payload(), tcpHdr.CalculateChecksum(
-			header.PseudoHeaderChecksum(header.TCPProtocolNumber, ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice(), ipHdr.PayloadLength()),
-		)))
-	} else {
-		tcpHdr.SetChecksum(0)
-	}
 	return true, nil
+}
+
+func rewriteIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP, txChecksumOffload bool,
+	newSource netip.Addr, newSourcePort uint16, rewriteSourcePort bool,
+	newDestination netip.Addr, newDestinationPort uint16, rewriteDestinationPort bool,
+) {
+	oldSource := ipHdr.SourceAddress()
+	oldDestination := ipHdr.DestinationAddress()
+	newSourceAddr := tcpip.AddrFrom4(newSource.As4())
+	newDestinationAddr := tcpip.AddrFrom4(newDestination.As4())
+	if newSourceAddr != oldSource {
+		ipHdr.SetSourceAddressWithChecksumUpdate(newSourceAddr)
+		if !txChecksumOffload {
+			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldSource, newSourceAddr, true)
+		}
+	}
+	if newDestinationAddr != oldDestination {
+		ipHdr.SetDestinationAddressWithChecksumUpdate(newDestinationAddr)
+		if !txChecksumOffload {
+			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldDestination, newDestinationAddr, true)
+		}
+	}
+	if txChecksumOffload {
+		if rewriteSourcePort {
+			tcpHdr.SetSourcePort(newSourcePort)
+		}
+		if rewriteDestinationPort {
+			tcpHdr.SetDestinationPort(newDestinationPort)
+		}
+		tcpHdr.SetChecksum(0)
+	} else {
+		if rewriteSourcePort {
+			tcpHdr.SetSourcePortWithChecksumUpdate(newSourcePort)
+		}
+		if rewriteDestinationPort {
+			tcpHdr.SetDestinationPortWithChecksumUpdate(newDestinationPort)
+		}
+	}
+}
+
+func rewriteIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP, txChecksumOffload bool,
+	newSource netip.Addr, newSourcePort uint16, rewriteSourcePort bool,
+	newDestination netip.Addr, newDestinationPort uint16, rewriteDestinationPort bool,
+) {
+	oldSource := ipHdr.SourceAddress()
+	oldDestination := ipHdr.DestinationAddress()
+	newSourceAddr := tcpip.AddrFrom16(newSource.As16())
+	newDestinationAddr := tcpip.AddrFrom16(newDestination.As16())
+	if newSourceAddr != oldSource {
+		ipHdr.SetSourceAddress(newSourceAddr)
+		if !txChecksumOffload {
+			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldSource, newSourceAddr, true)
+		}
+	}
+	if newDestinationAddr != oldDestination {
+		ipHdr.SetDestinationAddress(newDestinationAddr)
+		if !txChecksumOffload {
+			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldDestination, newDestinationAddr, true)
+		}
+	}
+	if txChecksumOffload {
+		if rewriteSourcePort {
+			tcpHdr.SetSourcePort(newSourcePort)
+		}
+		if rewriteDestinationPort {
+			tcpHdr.SetDestinationPort(newDestinationPort)
+		}
+		tcpHdr.SetChecksum(0)
+	} else {
+		if rewriteSourcePort {
+			tcpHdr.SetSourcePortWithChecksumUpdate(newSourcePort)
+		}
+		if rewriteDestinationPort {
+			tcpHdr.SetDestinationPortWithChecksumUpdate(newDestinationPort)
+		}
+	}
 }
 
 func (s *System) processIPv4UDP(ipHdr header.IPv4, udpHdr header.UDP) error {

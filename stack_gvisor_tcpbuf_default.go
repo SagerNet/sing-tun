@@ -9,10 +9,10 @@ import "github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 
 const (
 	tcpRXBufMinSize = tcp.MinBufferSize
-	tcpRXBufDefSize = tcp.DefaultSendBufferSize
+	tcpRXBufDefSize = tcp.DefaultReceiveBufferSize
 	tcpRXBufMaxSize = 8 << 20 // 8MiB
 
 	tcpTXBufMinSize = tcp.MinBufferSize
-	tcpTXBufDefSize = tcp.DefaultReceiveBufferSize
+	tcpTXBufDefSize = tcp.DefaultSendBufferSize
 	tcpTXBufMaxSize = 6 << 20 // 6MiB
 )

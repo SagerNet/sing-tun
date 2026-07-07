@@ -42,16 +42,22 @@ func (c *gLazyConn) HandshakeContext(ctx context.Context) error {
 		wq       waiter.Queue
 		endpoint tcpip.Endpoint
 	)
-	handshakeCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		select {
-		case <-c.parentCtx.Done():
-			wq.Notify(wq.Events())
-		case <-handshakeCtx.Done():
-		}
-	}()
+	var cancel context.CancelFunc
+	if parentDone := c.parentCtx.Done(); parentDone != nil {
+		var handshakeCtx context.Context
+		handshakeCtx, cancel = context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-parentDone:
+				wq.Notify(wq.Events())
+			case <-handshakeCtx.Done():
+			}
+		}()
+	}
 	endpoint, err := c.request.CreateEndpoint(&wq)
-	cancel()
+	if cancel != nil {
+		cancel()
+	}
 	if err != nil {
 		gErr := gonet.TranslateNetstackError(err)
 		c.handshakeErr = gErr
