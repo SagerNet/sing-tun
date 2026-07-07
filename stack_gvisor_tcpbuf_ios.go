@@ -12,10 +12,10 @@ const (
 	// unchanged on iOS for now as to not increase pressure towards the
 	// NetworkExtension memory limit.
 	tcpRXBufMinSize = tcp.MinBufferSize
-	tcpRXBufDefSize = tcp.DefaultSendBufferSize
+	tcpRXBufDefSize = tcp.DefaultReceiveBufferSize
 	tcpRXBufMaxSize = tcp.MaxBufferSize
 
 	tcpTXBufMinSize = tcp.MinBufferSize
-	tcpTXBufDefSize = tcp.DefaultReceiveBufferSize
+	tcpTXBufDefSize = tcp.DefaultSendBufferSize
 	tcpTXBufMaxSize = tcp.MaxBufferSize
 )

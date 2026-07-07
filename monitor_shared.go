@@ -39,8 +39,8 @@ type defaultInterfaceMonitor struct {
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
 	defaultInterface      atomic.Pointer[control.Interface]
-	androidVPNEnabled     bool
-	noRoute               bool
+	androidVPNEnabled     atomic.Bool
+	noRoute               atomic.Bool
 	networkMonitor        NetworkUpdateMonitor
 	logger                logger.Logger
 	checkAccess           sync.Mutex
@@ -88,8 +88,8 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
-		if !m.noRoute {
-			m.noRoute = true
+		if !m.noRoute.Load() {
+			m.noRoute.Store(true)
 			m.defaultInterface.Store(nil)
 			m.emit(nil, 0)
 		}
@@ -97,7 +97,7 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 		m.logger.Error("check interface: ", err)
 		m.delayCheckUpdate()
 	} else {
-		m.noRoute = false
+		m.noRoute.Store(false)
 	}
 }
 
@@ -117,7 +117,7 @@ func (m *defaultInterfaceMonitor) OverrideAndroidVPN() bool {
 }
 
 func (m *defaultInterfaceMonitor) AndroidVPNEnabled() bool {
-	return m.androidVPNEnabled
+	return m.androidVPNEnabled.Load()
 }
 
 func (m *defaultInterfaceMonitor) RegisterCallback(callback DefaultInterfaceUpdateCallback) *list.Element[DefaultInterfaceUpdateCallback] {

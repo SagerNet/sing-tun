@@ -54,18 +54,36 @@ func (n *TCPNat) loopCheckTimeout(ctx context.Context) {
 
 func (n *TCPNat) checkTimeout() {
 	now := time.Now()
-	n.addrAccess.Lock()
-	defer n.addrAccess.Unlock()
-	n.portAccess.Lock()
-	defer n.portAccess.Unlock()
+	type expiredSession struct {
+		port    uint16
+		session *TCPSession
+	}
+	var expired []expiredSession
+	n.portAccess.RLock()
 	for natPort, session := range n.portMap {
 		session.Lock()
-		if now.Sub(session.LastActive) > n.timeout {
-			delete(n.addrMap, tcpNatKey{Source: session.Source, Destination: session.Destination})
-			delete(n.portMap, natPort)
-		}
+		timedOut := now.Sub(session.LastActive) > n.timeout
 		session.Unlock()
+		if timedOut {
+			expired = append(expired, expiredSession{port: natPort, session: session})
+		}
 	}
+	n.portAccess.RUnlock()
+	if len(expired) == 0 {
+		return
+	}
+	n.addrAccess.Lock()
+	n.portAccess.Lock()
+	for _, e := range expired {
+		e.session.Lock()
+		if now.Sub(e.session.LastActive) > n.timeout {
+			delete(n.addrMap, tcpNatKey{Source: e.session.Source, Destination: e.session.Destination})
+			delete(n.portMap, e.port)
+		}
+		e.session.Unlock()
+	}
+	n.portAccess.Unlock()
+	n.addrAccess.Unlock()
 }
 
 func (n *TCPNat) LookupBack(port uint16) *TCPSession {
@@ -86,6 +104,15 @@ func (s *TCPSession) refresh() {
 	s.Unlock()
 }
 
+func (n *TCPNat) refresh(port uint16) {
+	n.portAccess.RLock()
+	session := n.portMap[port]
+	n.portAccess.RUnlock()
+	if session != nil {
+		session.refresh()
+	}
+}
+
 func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint16 {
 	key := tcpNatKey{Source: source, Destination: destination}
 	n.addrAccess.RLock()
@@ -104,8 +131,8 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint1
 	}
 	n.portAccess.Lock()
 	defer n.portAccess.Unlock()
-	nextPort, allocated := n.allocatePortLocked()
-	if !allocated {
+	nextPort, ok := n.allocatePortLocked()
+	if !ok {
 		return 0
 	}
 	n.portMap[nextPort] = &TCPSession{
@@ -115,15 +142,6 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint1
 	}
 	n.addrMap[key] = nextPort
 	return nextPort
-}
-
-func (n *TCPNat) refresh(port uint16) {
-	n.portAccess.RLock()
-	session := n.portMap[port]
-	n.portAccess.RUnlock()
-	if session != nil {
-		session.refresh()
-	}
 }
 
 func (n *TCPNat) allocatePortLocked() (uint16, bool) {

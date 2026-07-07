@@ -44,12 +44,9 @@ func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, t
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
 	source := M.SocksaddrFrom(AddrFromAddress(id.RemoteAddress), id.RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(id.LocalAddress), id.LocalPort)
-	bufferRange := pkt.Data().AsRange()
-	var bufferSlices [][]byte
-	rangeIterate(bufferRange, func(view *buffer.View) {
-		bufferSlices = append(bufferSlices, view.AsSlice())
-	})
-	f.udpNat.NewPacket(bufferSlices, source, destination, pkt)
+	data := pkt.Data()
+	payload, _ := data.PullUp(data.Size())
+	f.udpNat.NewPacket([][]byte{payload}, source, destination, pkt)
 	return true
 }
 
