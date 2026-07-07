@@ -5,7 +5,9 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
-const segmentScratchCount = 128
+// segmentRetainCount bounds how many segment buffers survive a Flush; the pool
+// grows to the burst high-water mark within a batch and is trimmed afterwards.
+const segmentRetainCount = 128
 
 // Linux delivers TSO aggregates to the TUN even with IFF_VNET_HDR off
 // (observed on 6.x: the pre-segmentation skb is handed to the fd as-is).
@@ -35,33 +37,39 @@ func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacke
 		gsoType = GSOTCPv6
 	}
 	neededSegments := max((len(raw)-totalHeaderLength+segmentSize-1)/segmentSize, 1)
-	if d.segmentBuffers == nil || len(d.segmentBuffers) < neededSegments || len(d.segmentBuffers[0]) < int(flow.effectiveMTU) {
-		bufferSize := int(flow.effectiveMTU)
-		if d.segmentBuffers != nil && len(d.segmentBuffers[0]) > bufferSize {
-			bufferSize = len(d.segmentBuffers[0])
-		}
-		segmentCount := max(neededSegments, segmentScratchCount, len(d.segmentBuffers))
-		d.segmentBuffers = make([][]byte, segmentCount)
-		for i := range d.segmentBuffers {
-			d.segmentBuffers[i] = make([]byte, bufferSize)
-		}
-		d.segmentSizes = make([]int, segmentCount)
-	}
+	bufs, sizes := d.reserveSegments(neededSegments, int(flow.effectiveMTU))
 	n, err := GSOSplit(raw, GSOOptions{
 		GSOType:    gsoType,
 		HdrLen:     uint16(totalHeaderLength),
 		CsumStart:  uint16(headerLength),
 		CsumOffset: header.TCPChecksumOffset,
 		GSOSize:    uint16(segmentSize),
-	}, d.segmentBuffers, d.segmentSizes, 0)
+	}, bufs, sizes, 0)
 	if err != nil {
 		d.logger.Trace(E.Cause(err, "resegment packet"))
 		return
 	}
 	for i := range n {
-		d.stagePort(flow.nat, d.segmentBuffers[i][:d.segmentSizes[i]])
+		d.stagePort(flow.nat, bufs[i][:sizes[i]])
 	}
-	d.flushPort(flow.nat)
+}
+
+func (d *ForwardDispatcher) reserveSegments(count, size int) ([][]byte, []int) {
+	start := d.segmentUsed
+	end := start + count
+	for len(d.segmentBuffers) < end {
+		d.segmentBuffers = append(d.segmentBuffers, make([]byte, size))
+		d.segmentSizes = append(d.segmentSizes, 0)
+	}
+	for i := start; i < end; i++ {
+		if cap(d.segmentBuffers[i]) < size {
+			d.segmentBuffers[i] = make([]byte, size)
+		} else {
+			d.segmentBuffers[i] = d.segmentBuffers[i][:size]
+		}
+	}
+	d.segmentUsed = end
+	return d.segmentBuffers[start:end], d.segmentSizes[start:end]
 }
 
 const synthesizedTTL = 64
@@ -79,7 +87,7 @@ func fragmentIPv4Packet(packet header.IPv4, effectiveMTU uint32) ([][]byte, bool
 	baseOffset := packet.FragmentOffset()
 	originalMore := packet.Flags()&header.IPv4FlagMoreFragments != 0
 	baseFlags := packet.Flags() &^ header.IPv4FlagMoreFragments
-	var fragments [][]byte
+	fragments := make([][]byte, 0, (len(payload)+maxFragmentPayload-1)/maxFragmentPayload)
 	for start := 0; start < len(payload); start += maxFragmentPayload {
 		end := min(start+maxFragmentPayload, len(payload))
 		fragment := header.IPv4(make([]byte, headerLength+end-start))

@@ -133,7 +133,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			DefaultNIC,
 			id.LocalAddress,
 			id.RemoteAddress,
-			header.IPv6ProtocolNumber,
+			header.IPv4ProtocolNumber,
 			false,
 		)
 		if gErr != nil {
@@ -184,7 +184,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 			PayloadCsum: pkt.Data().Checksum(),
 			PayloadLen:  pkt.Data().Size(),
 		}))
-		outgoingEP, gErr := f.stack.GetNetworkEndpoint(DefaultNIC, header.IPv4ProtocolNumber)
+		outgoingEP, gErr := f.stack.GetNetworkEndpoint(DefaultNIC, header.IPv6ProtocolNumber)
 		if gErr != nil {
 			f.logger.Error(E.Cause(gonet.TranslateNetstackError(gErr), "get IPv6 network endpoint"))
 			return true

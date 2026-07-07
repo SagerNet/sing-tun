@@ -156,6 +156,7 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 	} else {
 		protocol = ipProtoUDP
 	}
+	pseudoSumBase := header.PseudoHeaderChecksum(tcpip.TransportProtocolNumber(protocol), in[srcAddrOffset:srcAddrOffset+addrLen], in[srcAddrOffset+addrLen:srcAddrOffset+addrLen*2], 0)
 	nextSegmentDataAt := int(options.HdrLen)
 	i := 0
 	for ; nextSegmentDataAt < len(in); i++ {
@@ -168,7 +169,7 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 		sizes[i] = totalLen
 		out := outBufs[i][outOffset:]
 
-		copy(out, in[:iphLen])
+		copy(out[:options.HdrLen], in[:options.HdrLen])
 		if ipVersion == 4 {
 			// For IPv4 we are responsible for incrementing the ID field,
 			// updating the total len field, and recalculating the header
@@ -186,9 +187,6 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 			// For IPv6 we are responsible for updating the payload length field.
 			binary.BigEndian.PutUint16(out[4:], uint16(totalLen-iphLen))
 		}
-
-		// copy transport header
-		copy(out[options.CsumStart:options.HdrLen], in[options.CsumStart:options.HdrLen])
 
 		if protocol == ipProtoTCP {
 			// set TCP seq and adjust TCP flags
@@ -211,7 +209,7 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 		out[transportCsumAt], out[transportCsumAt+1] = 0, 0 // clear tcp/udp checksum
 		transportHeaderLen := int(options.HdrLen - options.CsumStart)
 		lenForPseudo := uint16(transportHeaderLen + segmentDataLen)
-		transportCSum := header.PseudoHeaderChecksum(tcpip.TransportProtocolNumber(protocol), in[srcAddrOffset:srcAddrOffset+addrLen], in[srcAddrOffset+addrLen:srcAddrOffset+addrLen*2], lenForPseudo)
+		transportCSum := checksum.Combine(pseudoSumBase, lenForPseudo)
 		transportCSum = ^checksum.Checksum(out[options.CsumStart:totalLen], transportCSum)
 		binary.BigEndian.PutUint16(out[options.CsumStart+options.CsumOffset:], transportCSum)
 
