@@ -1,11 +1,15 @@
 package tun
 
-import "net/netip"
+import (
+	"net/netip"
+	"time"
+)
 
 type FlowVerdict struct {
 	Action      FlowAction
 	Port        Port
 	Destination netip.AddrPort
+	UDPTimeout  time.Duration
 	NewTracker  func() FlowTracker
 }
 

@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"maps"
 	"net/netip"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,7 @@ type forwardFlow struct {
 	reverseRule  rewriteRule
 	effectiveMTU uint32
 	protocol     uint8
+	udpTimeout   time.Duration
 	tracker      FlowTracker
 
 	clientAddress            netip.Addr
@@ -293,6 +295,9 @@ func (d *ForwardDispatcher) flowIdle(flow *forwardFlow) time.Duration {
 	if flow.protocol == uint8(header.TCPProtocolNumber) && flow.finForward && flow.finReverse.Load() {
 		return tcpClosingTimeout
 	}
+	if flow.udpTimeout > 0 {
+		return flow.udpTimeout
+	}
 	established := flow.established.Load() && !flow.finForward && !flow.finReverse.Load()
 	return d.idleTimeout(flow.protocol, established)
 }
@@ -331,11 +336,16 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 	if !allocated {
 		return nil, false
 	}
+	var udpTimeout time.Duration
+	if packet.protocol == uint8(header.UDPProtocolNumber) {
+		udpTimeout = verdict.UDPTimeout
+	}
 	flow := &forwardFlow{
 		nat:                      nat,
 		reverseKey:               reverseKey,
 		effectiveMTU:             effectiveMTU,
 		protocol:                 packet.protocol,
+		udpTimeout:               udpTimeout,
 		clientAddress:            packet.source.Addr(),
 		clientSelector:           packet.source.Port(),
 		clientDestinationAddress: clientDestinationAddress,
@@ -399,9 +409,7 @@ func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	d.natList.Store(&natList)
 	revMap := make(map[netip.Addr]*portNAT)
 	if currentRev := d.revNAT.Load(); currentRev != nil {
-		for addr, existing := range *currentRev {
-			revMap[addr] = existing
-		}
+		maps.Copy(revMap, *currentRev)
 	}
 	v4Address, v6Address := port.PortAddresses()
 	if v4Address.IsValid() {
