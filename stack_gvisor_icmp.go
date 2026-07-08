@@ -57,7 +57,7 @@ func (f *icmpFlow) close(reason FlowCloseReason) {
 }
 
 func (f *icmpFlow) CloseFlow() {
-	f.close(FlowCloseInterrupted)
+	f.close(FlowCloseReset)
 }
 
 func NewICMPForwarder(stack *stack.Stack, handler Handler, logger logger.Logger) *ICMPForwarder {
@@ -77,7 +77,7 @@ func (f *ICMPForwarder) Close() error {
 	f.flowAccess.Lock()
 	defer f.flowAccess.Unlock()
 	for key, flow := range f.flows {
-		flow.close(FlowCloseShutdown)
+		flow.close(FlowCloseReset)
 		delete(f.flows, key)
 	}
 	for port := range f.attachedPorts {

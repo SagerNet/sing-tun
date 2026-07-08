@@ -41,27 +41,16 @@ const (
 	FlowCloseReset FlowCloseReason = iota
 	FlowCloseFinished
 	FlowCloseTimeout
-	FlowCloseEvicted
-	FlowCloseShutdown
-	FlowCloseInterrupted
 )
 
 func (r FlowCloseReason) String() string {
 	switch r {
-	case FlowCloseReset:
-		return "connection reset"
 	case FlowCloseFinished:
 		return "finished"
 	case FlowCloseTimeout:
 		return "idle timeout"
-	case FlowCloseEvicted:
-		return "evicted"
-	case FlowCloseShutdown:
-		return "stack closed"
-	case FlowCloseInterrupted:
-		return "interrupted"
 	default:
-		return "unknown"
+		return "connection reset"
 	}
 }
 
