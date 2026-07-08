@@ -73,6 +73,11 @@ type Port interface {
 	WritePackets(packets [][]byte) error
 }
 
+type PortWithSelectorRange interface {
+	Port
+	PortSelectorRange() (start uint16, count uint16)
+}
+
 type Return interface {
 	ReturnHeadroom() int
 	ReturnPackets(packets [][]byte) [][]byte
