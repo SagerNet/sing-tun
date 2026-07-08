@@ -15,10 +15,12 @@ const (
 )
 
 type portNAT struct {
-	port      Port
-	hasher    maphash.Hasher[flowKey]
-	shardMask uint32
-	shards    []natShard
+	port          Port
+	hasher        maphash.Hasher[flowKey]
+	shardMask     uint32
+	shards        []natShard
+	selectorStart uint16
+	selectorCount uint16
 
 	counter uint32
 	pending [][]byte
@@ -39,6 +41,9 @@ func newPortNAT(port Port) *portNAT {
 		hasher:    maphash.NewHasher[flowKey](),
 		shardMask: uint32(shardCount - 1),
 		shards:    make([]natShard, shardCount),
+	}
+	if rangedPort, isRanged := port.(PortWithSelectorRange); isRanged {
+		nat.selectorStart, nat.selectorCount = rangedPort.PortSelectorRange()
 	}
 	for i := range nat.shards {
 		nat.shards[i].flows = make(map[flowKey]*forwardFlow)
@@ -87,16 +92,26 @@ func (n *portNAT) reverseKeyFor(protocol uint8, portAddress, serverAddress netip
 	}
 }
 
+func (n *portNAT) selectorRange(protocol uint8) (uint16, uint32) {
+	if n.selectorCount == 0 ||
+		protocol == uint8(header.ICMPv4ProtocolNumber) || protocol == uint8(header.ICMPv6ProtocolNumber) {
+		return natSelectorMin, natSelectorMax - natSelectorMin + 1
+	}
+	return n.selectorStart, uint32(n.selectorCount)
+}
+
 func (n *portNAT) allocateSelector(protocol uint8, portAddress, serverAddress netip.Addr, serverPort, clientSelector uint16) (uint16, flowKey, bool) {
-	if clientSelector != 0 {
+	rangeStart, rangeCount := n.selectorRange(protocol)
+	if clientSelector != 0 &&
+		clientSelector >= rangeStart && uint32(clientSelector-rangeStart) < rangeCount {
 		key := n.reverseKeyFor(protocol, portAddress, serverAddress, serverPort, clientSelector)
 		if n.lookup(key) == nil {
 			return clientSelector, key, true
 		}
 	}
-	for range natSelectorMax - natSelectorMin + 1 {
+	for range rangeCount {
 		n.counter++
-		candidate := uint16(natSelectorMin + n.counter%(natSelectorMax-natSelectorMin+1))
+		candidate := rangeStart + uint16(n.counter%rangeCount)
 		key := n.reverseKeyFor(protocol, portAddress, serverAddress, serverPort, candidate)
 		if n.lookup(key) == nil {
 			return candidate, key, true
