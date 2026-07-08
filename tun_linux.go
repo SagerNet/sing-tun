@@ -76,6 +76,14 @@ func New(options Options) (Tun, error) {
 			tunFile: os.NewFile(uintptr(options.FileDescriptor), "tun"),
 			options: options,
 		}
+		if options.GSO {
+			err := nativeTun.enableGSO()
+			if err != nil {
+				if options.Logger != nil {
+					options.Logger.Warn(err)
+				}
+			}
+		}
 	}
 	return nativeTun, nil
 }
@@ -189,28 +197,38 @@ func (t *NativeTun) enableGSO() error {
 	if !vnetHdrEnabled {
 		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
 	}
+	t.vnetHdr = true
+	t.writeBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
+	t.pendingBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
+	t.tcpGROTable = newTCPGROTable()
+	t.udpGROTable = newUDPGROTable()
 	err = setTCPOffload(t.tunFd)
 	if err != nil {
-		return E.Cause(err, "enable TCP offload")
+		if !(errors.Is(err, unix.EPERM) && t.options.FileDescriptor != 0) {
+			t.options.Logger.Warn(E.Cause(err, "enable offload: set tcp offload"))
+			t.gro.disableTCPGRO()
+			t.gro.disableUDPGRO()
+		}
+	} else {
+		err = setUDPOffload(t.tunFd)
+		if err != nil {
+			t.options.Logger.Warn(E.Cause(err, "enable offload: set udp offload"))
+			t.gro.disableUDPGRO()
+		}
 	}
-	t.vnetHdr = true
-	t.writeBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
-	t.pendingBuffer = make([]byte, virtioNetHdrLen+int(gsoMaxSize))
 	t.readRawConn, err = t.tunFile.SyscallConn()
 	if err != nil {
 		return E.Cause(err, "enable offload: get raw conn")
-	}
-	t.tcpGROTable = newTCPGROTable()
-	t.udpGROTable = newUDPGROTable()
-	err = setUDPOffload(t.tunFd)
-	if err != nil {
-		t.gro.disableUDPGRO()
 	}
 	return nil
 }
 
 func (t *NativeTun) probeTCPGRO() error {
-	ipPort := netip.AddrPortFrom(t.options.Inet4Address[0].Addr(), 0)
+	probeAddr := netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	if len(t.options.Inet4Address) > 0 {
+		probeAddr = t.options.Inet4Address[0].Addr()
+	}
+	ipPort := netip.AddrPortFrom(probeAddr, 0)
 	fingerprint := []byte("sing-tun-probe-tun-gro")
 	segmentSize := len(fingerprint)
 	iphLen := 20
@@ -267,6 +285,16 @@ func (t *NativeTun) Name() (string, error) {
 }
 
 func (t *NativeTun) Start() error {
+	if t.vnetHdr && t.gro.canTCPGRO() {
+		err := t.probeTCPGRO()
+		if err != nil {
+			t.gro.disableTCPGRO()
+			t.gro.disableUDPGRO()
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
+			}
+		}
+	}
 	if t.options.FileDescriptor != 0 {
 		return nil
 	}
@@ -281,17 +309,6 @@ func (t *NativeTun) Start() error {
 	err = netlink.LinkSetUp(tunLink)
 	if err != nil {
 		return E.Cause(err, "set tun up")
-	}
-
-	if t.vnetHdr && len(t.options.Inet4Address) > 0 {
-		err = t.probeTCPGRO()
-		if err != nil {
-			t.gro.disableTCPGRO()
-			t.gro.disableUDPGRO()
-			if t.options.Logger != nil {
-				t.options.Logger.Warn(E.Cause(err, "disabled TUN TCP & UDP GRO due to GRO probe error"))
-			}
-		}
 	}
 
 	if t.options.EXP_ExternalConfiguration {

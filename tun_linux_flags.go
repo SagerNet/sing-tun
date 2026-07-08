@@ -7,8 +7,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	E "github.com/sagernet/sing/common/exceptions"
-
 	"golang.org/x/sys/unix"
 )
 
@@ -33,13 +31,17 @@ func checkVNETHDREnabled(fd int, name string) (bool, error) {
 func setTCPOffload(fd int) error {
 	err := unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunTCPOffloads)
 	if err != nil {
-		return E.Cause(os.NewSyscallError("TUNSETOFFLOAD", err), "enable offload")
+		return os.NewSyscallError("TUNSETOFFLOAD", err)
 	}
 	return nil
 }
 
 func setUDPOffload(fd int) error {
-	return unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunTCPOffloads|tunUDPOffloads)
+	err := unix.IoctlSetInt(fd, unix.TUNSETOFFLOAD, tunTCPOffloads|tunUDPOffloads)
+	if err != nil {
+		return os.NewSyscallError("TUNSETOFFLOAD", err)
+	}
+	return nil
 }
 
 type ifreqData struct {
