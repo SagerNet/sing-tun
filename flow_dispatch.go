@@ -113,6 +113,7 @@ type ForwardDispatcher struct {
 	activeNATs     []*portNAT
 	writebackBatch [][]byte
 	returnPath     forwardReturn
+	exhaustedLogAt int64
 
 	segmentBuffers [][]byte
 	segmentSizes   []int
@@ -247,12 +248,21 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 	switch verdict.Action {
 	case ActionFlow:
 		if verdict.Port != nil {
-			flow, created := d.createFlow(packet, verdict)
-			if created {
+			flow, result := d.createFlow(packet, verdict)
+			if result == createFlowOK {
 				entry := &flowEntry{action: ActionFlow, flow: flow, idle: d.flowIdle(flow)}
 				entry.deadline = now + int64(entry.idle)
 				d.insertEntry(key, entry, now)
 				d.forwardToPort(flow, packet, raw)
+				return true
+			}
+			if result == createFlowExhausted {
+				if now-d.exhaustedLogAt >= int64(exhaustedLogInterval) {
+					d.exhaustedLogAt = now
+					d.logger.Warn("port selector range exhausted, rejecting flow to ", packet.destination)
+				}
+				d.installSimple(key, ActionReject, packet.protocol, now)
+				d.stageReject(packet)
 				return true
 			}
 		}
@@ -302,7 +312,17 @@ func (d *ForwardDispatcher) flowIdle(flow *forwardFlow) time.Duration {
 	return d.idleTimeout(flow.protocol, established)
 }
 
-func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdict) (*forwardFlow, bool) {
+type createFlowResult uint8
+
+const (
+	createFlowOK createFlowResult = iota
+	createFlowUnsupported
+	createFlowExhausted
+)
+
+const exhaustedLogInterval = 5 * time.Second
+
+func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdict) (*forwardFlow, createFlowResult) {
 	var portAddress netip.Addr
 	inet4Address, inet6Address := verdict.Port.PortAddresses()
 	if packet.ipVersion == 6 {
@@ -311,11 +331,11 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 		portAddress = inet4Address
 	}
 	if !portAddress.IsValid() {
-		return nil, false
+		return nil, createFlowUnsupported
 	}
 	effectiveMTU := verdict.Port.PortMTU()
 	if packet.ipVersion == 6 && effectiveMTU != 0 && effectiveMTU < header.IPv6MinimumMTU {
-		return nil, false
+		return nil, createFlowUnsupported
 	}
 	isICMP := isICMPProtocol(packet.protocol)
 	clientDestinationAddress := packet.destination.Addr()
@@ -330,11 +350,11 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 	}
 	nat := d.natFor(verdict.Port)
 	if nat == nil {
-		return nil, false
+		return nil, createFlowUnsupported
 	}
 	selector, reverseKey, allocated := nat.allocateSelector(packet.protocol, portAddress, serverAddress, serverPort, packet.source.Port())
 	if !allocated {
-		return nil, false
+		return nil, createFlowExhausted
 	}
 	var udpTimeout time.Duration
 	if packet.protocol == uint8(header.UDPProtocolNumber) {
@@ -385,7 +405,7 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 		}
 	}
 	nat.insert(reverseKey, flow)
-	return flow, true
+	return flow, createFlowOK
 }
 
 func (d *ForwardDispatcher) natFor(port Port) *portNAT {
