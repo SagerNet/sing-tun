@@ -90,6 +90,8 @@ type recvMMsgDispatcher struct {
 	// fd is the file descriptor used to send and receive packets.
 	fd int
 
+	poller *rawfile.Poller
+
 	// e is the endpoint this dispatcher is attached to.
 	e *endpoint
 
@@ -123,9 +125,15 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 	} else {
 		batchSize = 1
 	}
+	poller, err := rawfile.NewPoller(stopFD.ReadFD, fd)
+	if err != nil {
+		stopFD.Close()
+		return nil, err
+	}
 	d := &recvMMsgDispatcher{
 		StopFD:  stopFD,
 		fd:      fd,
+		poller:  poller,
 		e:       e,
 		bufs:    make([]*iovecBuffer, batchSize),
 		msgHdrs: make([]rawfile.MsgHdrX, batchSize),
@@ -144,6 +152,7 @@ func (d *recvMMsgDispatcher) release() {
 	for _, iov := range d.bufs {
 		iov.release()
 	}
+	_ = d.poller.Close()
 	d.mgr.close()
 }
 
@@ -161,7 +170,7 @@ func (d *recvMMsgDispatcher) dispatch() (bool, tcpip.Error) {
 		d.msgHdrs[k].Msg.SetIovlen(iovLen)
 	}
 
-	nMsgs, errno := rawfile.BlockingRecvMMsgUntilStopped(d.ReadFD, d.fd, d.msgHdrs)
+	nMsgs, errno := rawfile.BlockingRecvMMsgUntilStopped(d.poller, d.fd, d.msgHdrs)
 	if errno != 0 {
 		return false, TranslateErrno(errno)
 	}

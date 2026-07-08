@@ -750,18 +750,49 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 	return common.Error(w.tun.Write(newPacket.Bytes()))
 }
 
-type systemWriteback struct {
-	tun           Tun
+func newSystemWriteback(tunInterface Tun, frontHeadroom int) ForwardWriteback {
+	if linuxTUN, isLinuxTUN := tunInterface.(LinuxTUN); isLinuxTUN {
+		return &systemWritebackLinux{linuxTUN: linuxTUN, frontHeadroom: frontHeadroom}
+	}
+	if darwinTUN, isDarwinTUN := tunInterface.(DarwinTUN); isDarwinTUN {
+		return &systemWritebackDarwin{darwinTUN: darwinTUN, frontHeadroom: frontHeadroom}
+	}
+	return &systemWriteback{tun: tunInterface, frontHeadroom: frontHeadroom}
+}
+
+type systemWritebackLinux struct {
 	linuxTUN      LinuxTUN
 	frontHeadroom int
 }
 
-func newSystemWriteback(tunInterface Tun, frontHeadroom int) *systemWriteback {
-	writeback := &systemWriteback{tun: tunInterface, frontHeadroom: frontHeadroom}
-	if linuxTUN, isLinuxTUN := tunInterface.(LinuxTUN); isLinuxTUN {
-		writeback.linuxTUN = linuxTUN
+func (w *systemWritebackLinux) ReturnHeadroom() int {
+	return w.frontHeadroom + PacketOffset
+}
+
+func (w *systemWritebackLinux) WriteReturnPackets(packets [][]byte) error {
+	return common.Error(w.linuxTUN.BatchWrite(packets, w.frontHeadroom))
+}
+
+type systemWritebackDarwin struct {
+	darwinTUN     DarwinTUN
+	frontHeadroom int
+}
+
+func (w *systemWritebackDarwin) ReturnHeadroom() int {
+	return w.frontHeadroom + PacketOffset
+}
+
+func (w *systemWritebackDarwin) WriteReturnPackets(packets [][]byte) error {
+	buffers := make([]*buf.Buffer, 0, len(packets))
+	for _, packet := range packets {
+		buffers = append(buffers, buf.As(packet[PacketOffset:]))
 	}
-	return writeback
+	return w.darwinTUN.BatchWrite(buffers)
+}
+
+type systemWriteback struct {
+	tun           Tun
+	frontHeadroom int
 }
 
 func (w *systemWriteback) ReturnHeadroom() int {
@@ -769,9 +800,6 @@ func (w *systemWriteback) ReturnHeadroom() int {
 }
 
 func (w *systemWriteback) WriteReturnPackets(packets [][]byte) error {
-	if w.linuxTUN != nil {
-		return common.Error(w.linuxTUN.BatchWrite(packets, w.frontHeadroom))
-	}
 	var writeErrors []error
 	for _, packet := range packets {
 		if PacketOffset > 0 {
