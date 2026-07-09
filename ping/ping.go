@@ -28,6 +28,7 @@ type Conn struct {
 	destination netip.Addr
 	source      common.TypedValue[netip.Addr]
 	closed      atomic.Bool
+	identFilter identFilterState
 	readMsg     func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
 }
 
@@ -268,6 +269,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
 			icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
+			c.updateIdentFilter(icmpHdr.Ident())
 		}
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
 		return common.Error(c.conn.Write(ipHdr.Payload()))
@@ -285,6 +287,7 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 				Src:    ipHdr.SourceAddressSlice(),
 				Dst:    ipHdr.DestinationAddressSlice(),
 			}))
+			c.updateIdentFilter(icmpHdr.Ident())
 		}
 		c.source.Store(M.AddrFromIP(ipHdr.SourceAddressSlice()))
 		return common.Error(c.conn.Write(ipHdr.Payload()))
