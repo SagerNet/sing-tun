@@ -250,11 +250,6 @@ func testPingIPv4WriteIP(t *testing.T, privileged bool, addr string) {
 	defer response.Release()
 	err = conn.ReadIP(response)
 	require.NoError(t, err)
-	if runtime.GOOS == "linux" && privileged {
-		response.Reset()
-		err = conn.ReadIP(response)
-		require.NoError(t, err)
-	}
 	respIP := header.IPv4(response.Bytes())
 	require.NotZero(t, respIP.TTL())
 	respICMP := header.ICMPv4(respIP.Payload())
@@ -299,7 +294,7 @@ func testPingIPv6WriteIP(t *testing.T, privileged bool, addr string) {
 	defer response.Release()
 	err = conn.ReadIP(response)
 	require.NoError(t, err)
-	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" && privileged {
+	if runtime.GOOS == "darwin" {
 		response.Reset()
 		err = conn.ReadIP(response)
 		require.NoError(t, err)
