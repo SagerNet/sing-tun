@@ -23,12 +23,13 @@ import (
 var _ tun.DirectRouteDestination = (*GVisorDestination)(nil)
 
 type GVisorDestination struct {
-	ctx      context.Context
-	logger   logger.ContextLogger
-	endpoint tcpip.Endpoint
-	conn     *gonet.TCPConn
-	rewriter *SourceRewriter
-	timeout  time.Duration
+	ctx        context.Context
+	logger     logger.ContextLogger
+	endpoint   tcpip.Endpoint
+	conn       *gonet.TCPConn
+	rewriter   *SourceRewriter
+	timeout    time.Duration
+	lastActive common.TypedValue[time.Time]
 }
 
 func ConnectGVisor(
@@ -86,6 +87,7 @@ func ConnectGVisor(
 		rewriter: rewriter,
 		timeout:  timeout,
 	}
+	destination.lastActive.Store(time.Now())
 	go destination.loopRead()
 	return destination, nil
 }
@@ -93,29 +95,41 @@ func ConnectGVisor(
 func (d *GVisorDestination) loopRead() {
 	defer d.endpoint.Close()
 	for {
-		buffer := buf.NewSize(maxICMPPacketSize)
-		err := d.conn.SetReadDeadline(time.Now().Add(d.timeout))
+		deadline := d.lastActive.Load().Add(d.timeout)
+		if !time.Now().Before(deadline) {
+			return
+		}
+		err := d.conn.SetReadDeadline(deadline)
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
 		}
+		buffer := buf.NewSize(maxICMPPacketSize)
 		n, err := d.conn.Read(buffer.FreeBytes())
 		if err != nil {
 			buffer.Release()
+			if E.IsTimeout(err) {
+				continue
+			}
 			if !E.IsClosed(err) {
 				d.logger.ErrorContext(d.ctx, E.Cause(err, "receive ICMP echo reply"))
 			}
 			return
 		}
 		buffer.Truncate(n)
-		_, err = d.rewriter.WriteBack(buffer.Bytes())
+		var matched bool
+		matched, err = d.rewriter.WriteBack(buffer.Bytes())
 		if err != nil {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "write ICMP echo reply"))
+		}
+		if matched {
+			d.lastActive.Store(time.Now())
 		}
 		buffer.Release()
 	}
 }
 
 func (d *GVisorDestination) WritePacket(packet *buf.Buffer) error {
+	d.lastActive.Store(time.Now())
 	d.rewriter.RewritePacket(packet.Bytes())
 	return common.Error(d.conn.Write(packet.Bytes()))
 }
