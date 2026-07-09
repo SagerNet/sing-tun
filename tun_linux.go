@@ -205,14 +205,18 @@ func (t *NativeTun) enableGSO() error {
 	err = setTCPOffload(t.tunFd)
 	if err != nil {
 		if !(errors.Is(err, unix.EPERM) && t.options.FileDescriptor != 0) {
-			t.options.Logger.Warn(E.Cause(err, "enable offload: set tcp offload"))
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(E.Cause(err, "enable offload: set tcp offload"))
+			}
 			t.gro.disableTCPGRO()
 			t.gro.disableUDPGRO()
 		}
 	} else {
 		err = setUDPOffload(t.tunFd)
 		if err != nil {
-			t.options.Logger.Warn(E.Cause(err, "enable offload: set udp offload"))
+			if t.options.Logger != nil {
+				t.options.Logger.Warn(E.Cause(err, "enable offload: set udp offload"))
+			}
 			t.gro.disableUDPGRO()
 		}
 	}
