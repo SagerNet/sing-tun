@@ -66,6 +66,7 @@ const (
 
 type Options struct {
 	Name                                  string
+	NetNs                                 string
 	Inet4Address                          []netip.Prefix
 	Inet6Address                          []netip.Prefix
 	MTU                                   uint32
