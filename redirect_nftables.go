@@ -299,25 +299,36 @@ func (r *autoRedirect) setupNFTables() error {
 	if err != nil {
 		return E.Cause(err, "flush nftables")
 	}
-	r.startDockerFirewallMonitor()
-	err = r.configureDockerFirewall(false)
-	if err != nil && r.logger != nil {
-		r.logger.Warn("configure docker firewall: ", err)
+	if r.tunOptions.NetNs == "" {
+		r.startDockerFirewallMonitor()
+		err = r.configureDockerFirewall(false)
+		if err != nil && r.logger != nil {
+			r.logger.Warn("configure docker firewall: ", err)
+		}
 	}
 
 	r.networkListener = r.networkMonitor.RegisterCallback(func() {
-		err = r.nftablesUpdateLocalAddressSet()
-		if err != nil {
-			r.logger.Error("update local address set: ", err)
-		}
-		if r.tunOptions.AutoRedirectMarkMode {
-			err = r.updateRedirectRoutes()
-			if err != nil {
-				r.logger.Error("update redirect routes: ", err)
-			}
+		updateErr := runInNetworkNamespace(r.tunOptions.NetNs, r.updateNetworkAddresses)
+		if updateErr != nil {
+			r.logger.Error(updateErr)
 		}
 	})
 	return nil
+}
+
+func (r *autoRedirect) updateNetworkAddresses() error {
+	err := r.nftablesUpdateLocalAddressSet()
+	if err != nil {
+		err = E.Cause(err, "update local address set")
+	}
+	if r.tunOptions.AutoRedirectMarkMode {
+		routeErr := r.updateRedirectRoutes()
+		if routeErr != nil {
+			routeErr = E.Cause(routeErr, "update redirect routes")
+		}
+		err = E.Errors(err, routeErr)
+	}
+	return err
 }
 
 // TODO: test if this works
@@ -376,6 +387,7 @@ func (r *autoRedirect) nftablesUpdateRouteAddressSet() error {
 func (r *autoRedirect) cleanupNFTables() {
 	if r.networkListener != nil {
 		r.networkMonitor.UnregisterCallback(r.networkListener)
+		r.networkListener = nil
 	}
 	r.stopDockerFirewallMonitor()
 	nft, err := nftables.New()
@@ -389,9 +401,11 @@ func (r *autoRedirect) cleanupNFTables() {
 	_ = r.configureOpenWRTFirewall4(nft, true)
 	_ = nft.Flush()
 	_ = nft.CloseLasting()
-	err = r.configureDockerFirewall(true)
-	if err != nil && r.logger != nil {
-		r.logger.Warn("cleanup docker firewall: ", err)
+	if r.tunOptions.NetNs == "" {
+		err = r.configureDockerFirewall(true)
+		if err != nil && r.logger != nil {
+			r.logger.Warn("cleanup docker firewall: ", err)
+		}
 	}
 }
 
