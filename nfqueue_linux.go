@@ -100,51 +100,150 @@ func (h *nfqueueHandler) Start() error {
 	return nil
 }
 
-func parseIPv6TransportHeader(payload []byte) (transportProto uint8, transportOffset int, ok bool) {
-	if len(payload) < header.IPv6MinimumSize {
-		return 0, 0, false
+const ipv6AuthenticationHeaderIdentifier header.IPv6ExtensionHeaderIdentifier = 51
+
+type preMatchPacket struct {
+	protocol    uint8
+	source      netip.AddrPort
+	destination netip.AddrPort
+	firstPacket []byte
+}
+
+func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
+	if len(packet) < 1 {
+		return preMatchPacket{}, false
+	}
+	var (
+		protocol        uint8
+		transportOffset int
+		source          netip.Addr
+		destination     netip.Addr
+	)
+	switch header.IPVersion(packet) {
+	case header.IPv4Version:
+		if len(packet) < header.IPv4MinimumSize {
+			return preMatchPacket{}, false
+		}
+		ipHdr := header.IPv4(packet)
+		transportOffset = int(ipHdr.HeaderLength())
+		if transportOffset < header.IPv4MinimumSize || transportOffset > len(packet) || int(ipHdr.TotalLength()) < transportOffset || ipHdr.FragmentOffset() != 0 {
+			return preMatchPacket{}, false
+		}
+		protocol = uint8(ipHdr.TransportProtocol())
+		source = ipHdr.SourceAddr()
+		destination = ipHdr.DestinationAddr()
+	case header.IPv6Version:
+		if len(packet) < header.IPv6MinimumSize {
+			return preMatchPacket{}, false
+		}
+		ipHdr := header.IPv6(packet)
+		var ok bool
+		protocol, transportOffset, ok = parsePreMatchIPv6Transport(packet)
+		if !ok {
+			return preMatchPacket{}, false
+		}
+		source = ipHdr.SourceAddr()
+		destination = ipHdr.DestinationAddr()
+	default:
+		return preMatchPacket{}, false
 	}
 
-	ipv6 := header.IPv6(payload)
-	nextHeader := ipv6.NextHeader()
+	transport := packet[transportOffset:]
+	parsed := preMatchPacket{protocol: protocol}
+	switch protocol {
+	case uint8(header.TCPProtocolNumber):
+		if len(transport) < header.TCPMinimumSize {
+			return preMatchPacket{}, false
+		}
+		tcpHdr := header.TCP(transport)
+		flags := tcpHdr.Flags()
+		if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
+			return preMatchPacket{}, false
+		}
+		parsed.source = netip.AddrPortFrom(source, tcpHdr.SourcePort())
+		parsed.destination = netip.AddrPortFrom(destination, tcpHdr.DestinationPort())
+	case uint8(header.UDPProtocolNumber):
+		if len(transport) < header.UDPMinimumSize {
+			return preMatchPacket{}, false
+		}
+		udpHdr := header.UDP(transport)
+		udpLength := int(udpHdr.Length())
+		if udpLength < header.UDPMinimumSize {
+			return preMatchPacket{}, false
+		}
+		if udpLength < len(transport) {
+			transport = transport[:udpLength]
+		}
+		parsed.source = netip.AddrPortFrom(source, udpHdr.SourcePort())
+		parsed.destination = netip.AddrPortFrom(destination, udpHdr.DestinationPort())
+		parsed.firstPacket = header.UDP(transport).Payload()
+	case uint8(header.ICMPv4ProtocolNumber):
+		if !source.Is4() || len(transport) < header.ICMPv4MinimumSize {
+			return preMatchPacket{}, false
+		}
+		icmpHdr := header.ICMPv4(transport)
+		if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != 0 {
+			return preMatchPacket{}, false
+		}
+		identifier := icmpHdr.Ident()
+		parsed.source = netip.AddrPortFrom(source, identifier)
+		parsed.destination = netip.AddrPortFrom(destination, identifier)
+	case uint8(header.ICMPv6ProtocolNumber):
+		if !source.Is6() || len(transport) < header.ICMPv6MinimumSize {
+			return preMatchPacket{}, false
+		}
+		icmpHdr := header.ICMPv6(transport)
+		if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
+			return preMatchPacket{}, false
+		}
+		identifier := icmpHdr.Ident()
+		parsed.source = netip.AddrPortFrom(source, identifier)
+		parsed.destination = netip.AddrPortFrom(destination, identifier)
+	default:
+		return preMatchPacket{}, false
+	}
+	return parsed, true
+}
+
+func parsePreMatchIPv6Transport(packet []byte) (transportProto uint8, transportOffset int, ok bool) {
+	nextHeader := header.IPv6(packet).NextHeader()
 	offset := header.IPv6MinimumSize
-
 	for {
-		switch nextHeader {
-		case unix.IPPROTO_HOPOPTS,
-			unix.IPPROTO_ROUTING,
-			unix.IPPROTO_DSTOPTS:
-			if len(payload) < offset+2 {
+		switch header.IPv6ExtensionHeaderIdentifier(nextHeader) {
+		case header.IPv6HopByHopOptionsExtHdrIdentifier,
+			header.IPv6RoutingExtHdrIdentifier,
+			header.IPv6DestinationOptionsExtHdrIdentifier:
+			if len(packet) < offset+2 {
 				return 0, 0, false
 			}
-			nextHeader = payload[offset]
-			extLen := int(payload[offset+1]+1) * 8
-			if len(payload) < offset+extLen {
+			nextHeader = packet[offset]
+			extensionLength := (int(packet[offset+1]) + 1) * 8
+			if len(packet) < offset+extensionLength {
 				return 0, 0, false
 			}
-			offset += extLen
-
-		case unix.IPPROTO_FRAGMENT:
-			if len(payload) < offset+8 {
+			offset += extensionLength
+		case header.IPv6FragmentExtHdrIdentifier:
+			if len(packet) < offset+header.IPv6FragmentHeaderSize {
 				return 0, 0, false
 			}
-			nextHeader = payload[offset]
-			offset += 8
-
-		case unix.IPPROTO_AH:
-			if len(payload) < offset+2 {
+			fragmentHdr := header.IPv6Fragment(packet[offset:])
+			if fragmentHdr.FragmentOffset() != 0 {
 				return 0, 0, false
 			}
-			nextHeader = payload[offset]
-			extLen := int(payload[offset+1]+2) * 4
-			if len(payload) < offset+extLen {
+			nextHeader = fragmentHdr.NextHeader()
+			offset += header.IPv6FragmentHeaderSize
+		case ipv6AuthenticationHeaderIdentifier:
+			if len(packet) < offset+2 {
 				return 0, 0, false
 			}
-			offset += extLen
-
-		case unix.IPPROTO_NONE:
+			nextHeader = packet[offset]
+			extensionLength := (int(packet[offset+1]) + 2) * 4
+			if len(packet) < offset+extensionLength {
+				return 0, 0, false
+			}
+			offset += extensionLength
+		case header.IPv6NoNextHeaderIdentifier:
 			return 0, 0, false
-
 		default:
 			return nextHeader, offset, true
 		}
@@ -162,58 +261,17 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	packetID := *attr.PacketID
 	payload := *attr.Payload
 
-	if len(payload) < header.IPv4MinimumSize {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
-		return 0
-	}
-
-	var sourceAddr, destinationAddr netip.Addr
-	var tcpOffset int
-
-	version := payload[0] >> 4
-	switch version {
-	case 4:
-		ipv4 := header.IPv4(payload)
-		if !ipv4.IsValid(len(payload)) || ipv4.Protocol() != uint8(unix.IPPROTO_TCP) {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
-			return 0
-		}
-		sourceAddr = ipv4.SourceAddr()
-		destinationAddr = ipv4.DestinationAddr()
-		tcpOffset = int(ipv4.HeaderLength())
-	case 6:
-		transportProto, transportOffset, ok := parseIPv6TransportHeader(payload)
-		if !ok || transportProto != unix.IPPROTO_TCP {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
-			return 0
-		}
-		ipv6 := header.IPv6(payload)
-		sourceAddr = ipv6.SourceAddr()
-		destinationAddr = ipv6.DestinationAddr()
-		tcpOffset = transportOffset
-	default:
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
-		return 0
-	}
-
-	if len(payload) < tcpOffset+header.TCPMinimumSize {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
-		return 0
-	}
-
-	tcp := header.TCP(payload[tcpOffset:])
-
-	flags := tcp.Flags()
-	if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
+	packet, loaded := parsePreMatchPacket(payload)
+	if !loaded {
 		h.setVerdict(packetID, nfqueue.NfAccept, 0)
 		return 0
 	}
 
 	verdict := h.handler.JudgeFlow(
-		uint8(unix.IPPROTO_TCP),
-		netip.AddrPortFrom(sourceAddr, tcp.SourcePort()),
-		netip.AddrPortFrom(destinationAddr, tcp.DestinationPort()),
-		nil,
+		packet.protocol,
+		packet.source,
+		packet.destination,
+		packet.firstPacket,
 	)
 
 	// Use NfRepeat for bypass/reset so the packet re-enters the chain
@@ -224,7 +282,11 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	case ActionBypass:
 		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
 	case ActionReject:
-		h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
+		if packet.protocol == uint8(unix.IPPROTO_TCP) {
+			h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
+		} else {
+			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		}
 	case ActionDrop:
 		h.setVerdict(packetID, nfqueue.NfDrop, 0)
 	default:
