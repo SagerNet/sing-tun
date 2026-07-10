@@ -28,6 +28,7 @@ type System struct {
 	ctx                  context.Context
 	tun                  Tun
 	tunName              string
+	netNs                string
 	mtu                  int
 	handler              Handler
 	logger               logger.Logger
@@ -68,6 +69,7 @@ func NewSystem(options StackOptions) (Stack, error) {
 		ctx:                  options.Context,
 		tun:                  options.Tun,
 		tunName:              options.TunOptions.Name,
+		netNs:                options.TunOptions.NetNs,
 		mtu:                  int(options.TunOptions.MTU),
 		inet4LoopbackAddress: options.TunOptions.Inet4LoopbackAddress,
 		inet6LoopbackAddress: options.TunOptions.Inet6LoopbackAddress,
@@ -135,7 +137,7 @@ func (s *System) start() error {
 	var err error
 	if s.inet4NextAddress.IsValid() {
 		for range 3 {
-			tcpListener, err = listener.Listen(s.ctx, "tcp4", net.JoinHostPort(s.inet4Address.String(), "0"))
+			tcpListener, err = listenNetworkNamespace(s.ctx, s.netNs, listener, "tcp4", net.JoinHostPort(s.inet4Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
 			}
@@ -150,7 +152,7 @@ func (s *System) start() error {
 	}
 	if s.inet6NextAddress.IsValid() {
 		for range 3 {
-			tcpListener, err = listener.Listen(s.ctx, "tcp6", net.JoinHostPort(s.inet6Address.String(), "0"))
+			tcpListener, err = listenNetworkNamespace(s.ctx, s.netNs, listener, "tcp6", net.JoinHostPort(s.inet6Address.String(), "0"))
 			if !retryableListenError(err) {
 				break
 			}
