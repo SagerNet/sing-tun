@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"reflect"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,22 +22,27 @@ import (
 )
 
 type Conn struct {
-	ctx         context.Context
-	privileged  bool
-	conn        net.Conn
-	controlConn net.Conn
-	destination netip.Addr
-	source      common.TypedValue[netip.Addr]
-	closed      atomic.Bool
-	identFilter identFilterState
-	readMsg     func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
+	ctx          context.Context
+	privileged   bool
+	conn         net.Conn
+	controlConn  net.Conn
+	destination  netip.Addr
+	source       common.TypedValue[netip.Addr]
+	closed       atomic.Bool
+	identFilter  identFilterState
+	readMsg      func(b, oob []byte) (n, oobn int, addr netip.Addr, err error)
+	writeAccess  sync.Mutex
+	lastTTL      int
+	lastHopLimit int
 }
 
 func Connect(ctx context.Context, privileged bool, controlFunc control.Func, destination netip.Addr, idleTimeout time.Duration) (*Conn, error) {
 	c := &Conn{
-		ctx:         ctx,
-		privileged:  privileged,
-		destination: destination,
+		ctx:          ctx,
+		privileged:   privileged,
+		destination:  destination,
+		lastTTL:      -1,
+		lastHopLimit: -1,
 	}
 	err := c.connect(controlFunc, idleTimeout)
 	if err != nil {
@@ -259,12 +265,18 @@ func (c *Conn) ReadICMP(buffer *buf.Buffer) error {
 
 func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	defer buffer.Release()
+	c.writeAccess.Lock()
+	defer c.writeAccess.Unlock()
 	if !c.destination.Is6() {
 		ipHdr := header.IPv4(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
-			err := ipv4.NewConn(c.controlConn).SetTTL(int(ipHdr.TTL()))
-			if err != nil {
-				return err
+			ttl := int(ipHdr.TTL())
+			if ttl != c.lastTTL {
+				err := ipv4.NewConn(c.controlConn).SetTTL(ttl)
+				if err != nil {
+					return err
+				}
+				c.lastTTL = ttl
 			}
 			icmpHdr := header.ICMPv4(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
@@ -276,9 +288,13 @@ func (c *Conn) WriteIP(buffer *buf.Buffer) error {
 	} else {
 		ipHdr := header.IPv6(buffer.Bytes())
 		if !c.isLinuxUnprivileged() {
-			err := ipv6.NewConn(c.controlConn).SetHopLimit(int(ipHdr.HopLimit()))
-			if err != nil {
-				return err
+			hopLimit := int(ipHdr.HopLimit())
+			if hopLimit != c.lastHopLimit {
+				err := ipv6.NewConn(c.controlConn).SetHopLimit(hopLimit)
+				if err != nil {
+					return err
+				}
+				c.lastHopLimit = hopLimit
 			}
 			icmpHdr := header.ICMPv6(ipHdr.Payload())
 			icmpHdr.SetIdent(^icmpHdr.Ident())
