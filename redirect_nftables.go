@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
+	"github.com/sagernet/sing-tun/internal/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -393,7 +394,10 @@ func (r *autoRedirect) nftablesCreatePreMatchChains(nft *nftables.Conn, table *n
 		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest - 1),
 		Type:     nftables.ChainTypeFilter,
 	})
-	r.nftablesAddPreMatchRules(nft, table, chainPreroutingPreMatch, true)
+	err := r.nftablesAddPreMatchRules(nft, table, chainPreroutingPreMatch, true)
+	if err != nil {
+		return err
+	}
 
 	if !r.shouldSkipOutputChain() {
 		chainOutputPreMatch := nft.AddChain(&nftables.Chain{
@@ -403,13 +407,16 @@ func (r *autoRedirect) nftablesCreatePreMatchChains(nft *nftables.Conn, table *n
 			Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityMangle - 1),
 			Type:     nftables.ChainTypeFilter,
 		})
-		r.nftablesAddPreMatchRules(nft, table, chainOutputPreMatch, false)
+		err = r.nftablesAddPreMatchRules(nft, table, chainOutputPreMatch, false)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain, isPrerouting bool) {
+func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain, isPrerouting bool) error {
 	ifnameKey := expr.MetaKeyOIFNAME
 	if isPrerouting {
 		ifnameKey = expr.MetaKeyIIFNAME
@@ -424,12 +431,35 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		},
 	})
 
+	preMatchProtocols := &nftables.Set{
+		Table:     table,
+		Anonymous: true,
+		Constant:  true,
+		KeyType:   nftables.TypeInetProto,
+	}
+	preMatchProtocolElements := []nftables.SetElement{{Key: []byte{unix.IPPROTO_TCP}}}
+	if r.tunOptions.AutoRedirectMarkMode {
+		preMatchProtocolElements = append(preMatchProtocolElements,
+			nftables.SetElement{Key: []byte{unix.IPPROTO_UDP}},
+			nftables.SetElement{Key: []byte{unix.IPPROTO_ICMP}},
+			nftables.SetElement{Key: []byte{unix.IPPROTO_ICMPV6}},
+		)
+	}
+	err := nft.AddSet(preMatchProtocols, preMatchProtocolElements)
+	if err != nil {
+		return E.Cause(err, "add pre-match protocol set")
+	}
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+			&expr.Lookup{
+				SourceRegister: 1,
+				SetID:          preMatchProtocols.ID,
+				SetName:        preMatchProtocols.Name,
+				Invert:         true,
+			},
 			&expr.Verdict{Kind: expr.VerdictReturn},
 		},
 	})
@@ -459,6 +489,8 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.effectiveResetMark())},
 			&expr.Counter{},
@@ -477,11 +509,32 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		},
 	})
 
+	if r.tunOptions.AutoRedirectMarkMode {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			},
+		})
+	}
+
+	queueExpression := func() *expr.Queue {
+		return &expr.Queue{
+			Num:  r.effectiveNFQueue(),
+			Flag: expr.QueueFlagBypass,
+		}
+	}
+
 	// TCP SYN: send to NFQUEUE for pre-match evaluation.
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
 		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 			&expr.Payload{
 				OperationType: expr.PayloadLoad,
 				DestRegister:  1,
@@ -498,10 +551,45 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 			},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}},
 			&expr.Counter{},
-			&expr.Queue{
-				Num:  r.effectiveNFQueue(),
-				Flag: expr.QueueFlagBypass,
-			},
+			queueExpression(),
 		},
 	})
+
+	if r.tunOptions.AutoRedirectMarkMode {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
+				&expr.Counter{},
+				queueExpression(),
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMP}},
+				&expr.Payload{OperationType: expr.PayloadLoad, DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{byte(header.ICMPv4Echo), 0}},
+				&expr.Counter{},
+				queueExpression(),
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+				&expr.Payload{OperationType: expr.PayloadLoad, DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{byte(header.ICMPv6EchoRequest), 0}},
+				&expr.Counter{},
+				queueExpression(),
+			},
+		})
+	}
+	return nil
 }
