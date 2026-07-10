@@ -28,6 +28,7 @@ type autoRedirect struct {
 	logger                  logger.Logger
 	tableName               string
 	networkMonitor          NetworkUpdateMonitor
+	ownedNetworkMonitor     bool
 	networkListener         *list.Element[NetworkUpdateCallback]
 	interfaceFinder         control.InterfaceFinder
 	localAddresses          []netip.Prefix
@@ -53,7 +54,7 @@ type autoRedirect struct {
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
-	return &autoRedirect{
+	r := &autoRedirect{
 		tunOptions:             options.TunOptions,
 		ctx:                    options.Context,
 		handler:                options.Handler,
@@ -65,7 +66,11 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		customRedirectPortFunc: options.CustomRedirectPort,
 		routeAddressSet:        options.RouteAddressSet,
 		routeExcludeAddressSet: options.RouteExcludeAddressSet,
-	}, nil
+	}
+	if options.TunOptions.NetNs != "" {
+		r.interfaceFinder = &networkNamespaceInterfaceFinder{control.NewDefaultInterfaceFinder(), options.TunOptions}
+	}
+	return r, nil
 }
 
 func findAndroidSuPath() (string, error) {
@@ -103,8 +108,11 @@ func (r *autoRedirect) Start() error {
 			}
 		}
 	} else {
+		if r.tunOptions.NetNs != "" && !r.useNFTables {
+			return E.New("auto_redirect in network namespace requires nftables")
+		}
 		if r.useNFTables {
-			err = r.initializeNFTables()
+			err = runInNetworkNamespace(r.tunOptions.NetNs, r.initializeNFTables)
 			if err != nil {
 				return E.Cause(err, "missing nftables support")
 			}
@@ -146,7 +154,7 @@ func (r *autoRedirect) Start() error {
 			listenAddr = netip.IPv4Unspecified()
 		}
 		server := newRedirectServer(r.ctx, r.handler, r.logger, listenAddr)
-		err = server.Start()
+		err = runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
 		if err != nil {
 			return E.Cause(err, "start redirect server")
 		}
@@ -165,24 +173,43 @@ func (r *autoRedirect) Start() error {
 			})
 			if err != nil {
 				r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
-			} else if err = handler.Start(); err != nil {
+			} else if err = runInNetworkNamespace(r.tunOptions.NetNs, handler.Start); err != nil {
 				r.logger.Warn("nfqueue start failed, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
 			} else {
 				r.nfqueueHandler = handler
 				r.nfqueueEnabled = true
 			}
 		}
-		r.cleanupNFTables()
-		err = r.setupNFTables()
-		if err != nil {
-			return E.Cause(err, "setup nftables")
-		}
-		if r.tunOptions.AutoRedirectMarkMode {
-			err = r.setupRedirectRoutes()
+		if r.tunOptions.NetNs != "" {
+			var monitor NetworkUpdateMonitor
+			monitor, err = NewNetworkUpdateMonitor(r.logger)
 			if err != nil {
-				r.cleanupNFTables()
-				return E.Cause(err, "setup redirect routes")
+				return E.Cause(err, "create netns network monitor")
 			}
+			err = runInNetworkNamespace(r.tunOptions.NetNs, monitor.Start)
+			if err != nil {
+				return E.Cause(err, "start netns network monitor")
+			}
+			r.networkMonitor = monitor
+			r.ownedNetworkMonitor = true
+		}
+		err = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+			r.cleanupNFTables()
+			setupErr := r.setupNFTables()
+			if setupErr != nil {
+				return E.Cause(setupErr, "setup nftables")
+			}
+			if r.tunOptions.AutoRedirectMarkMode {
+				setupErr = r.setupRedirectRoutes()
+				if setupErr != nil {
+					r.cleanupNFTables()
+					return E.Cause(setupErr, "setup redirect routes")
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	} else {
 		r.cleanupIPTables()
@@ -199,8 +226,14 @@ func (r *autoRedirect) Close() error {
 		r.nfqueueHandler.Close()
 	}
 	if r.useNFTables {
-		r.cleanupNFTables()
-		r.cleanupRedirectRoutes()
+		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+			r.cleanupNFTables()
+			r.cleanupRedirectRoutes()
+			return nil
+		})
+		if r.ownedNetworkMonitor {
+			_ = r.networkMonitor.Close()
+		}
 	} else {
 		r.cleanupIPTables()
 	}
@@ -211,7 +244,7 @@ func (r *autoRedirect) Close() error {
 
 func (r *autoRedirect) UpdateRouteAddressSet() {
 	if r.useNFTables {
-		err := r.nftablesUpdateRouteAddressSet()
+		err := runInNetworkNamespace(r.tunOptions.NetNs, r.nftablesUpdateRouteAddressSet)
 		if err != nil {
 			r.logger.Error("update route address set: ", err)
 		}
