@@ -17,8 +17,11 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-// Although its theoretical maximum may be 64k, I don’t yet know of any practical use case for that. For memory-usage reasons, I’m just using a 2k buffer.
-const maxICMPPacketSize = 2048
+const (
+	// Although its theoretical maximum may be 64k, I don’t yet know of any practical use case for that. For memory-usage reasons, I’m just using a 2k buffer.
+	maxICMPPacketSize = 2048
+	requestsLimit     = 1024
+)
 
 type PacketWriter interface {
 	WritePacket(packet []byte) error
@@ -33,7 +36,11 @@ type Destination struct {
 	timeout       time.Duration
 	lastActive    common.TypedValue[time.Time]
 	requestAccess sync.Mutex
-	requests      map[pingRequest]time.Time
+	requests      map[pingRequest]int
+	requestSlots  []trackedPingRequest
+	requestHead   int
+	requestTail   int
+	requestFree   int
 }
 
 type pingRequest struct {
@@ -41,6 +48,13 @@ type pingRequest struct {
 	Destination netip.Addr
 	Identifier  uint16
 	Sequence    uint16
+}
+
+type trackedPingRequest struct {
+	request   pingRequest
+	createdAt time.Time
+	previous  int
+	next      int
 }
 
 func ConnectDestination(
@@ -74,7 +88,10 @@ func ConnectDestination(
 		destination: destination,
 		writer:      writer,
 		timeout:     timeout,
-		requests:    make(map[pingRequest]time.Time),
+		requests:    make(map[pingRequest]int),
+		requestHead: -1,
+		requestTail: -1,
+		requestFree: -1,
 	}
 	d.lastActive.Store(time.Now())
 	go d.loopRead()
@@ -120,10 +137,7 @@ func (d *Destination) loopRead() {
 				case header.ICMPv4EchoReply:
 					request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
 					d.requestAccess.Lock()
-					_, loaded := d.requests[request]
-					if loaded {
-						delete(d.requests, request)
-					}
+					loaded := d.removeRequest(request)
 					d.requestAccess.Unlock()
 					if !loaded {
 						continue
@@ -157,11 +171,7 @@ func (d *Destination) loopRead() {
 				var requestExists bool
 				request := pingRequest{Source: ipHdr.DestinationAddr(), Destination: ipHdr.SourceAddr(), Identifier: icmpHdr.Ident(), Sequence: icmpHdr.Sequence()}
 				d.requestAccess.Lock()
-				_, loaded := d.requests[request]
-				if loaded {
-					requestExists = true
-					delete(d.requests, request)
-				}
+				requestExists = d.removeRequest(request)
 				d.requestAccess.Unlock()
 				if !requestExists {
 					continue
@@ -254,26 +264,77 @@ func (d *Destination) needFilter() bool {
 }
 
 func (d *Destination) registerRequest(request pingRequest) {
-	const requestsLimit = 1024
 	d.requestAccess.Lock()
 	defer d.requestAccess.Unlock()
 	now := time.Now()
-	var (
-		oldestRequest  pingRequest
-		oldestCreateAt = now
-	)
-	for oldRequest, createdAt := range d.requests {
-		if now.Sub(createdAt) > d.timeout {
-			delete(d.requests, oldRequest)
-		} else if createdAt.Before(oldestCreateAt) {
-			oldestRequest = oldRequest
-			oldestCreateAt = createdAt
+	d.pruneRequests(now)
+	if existing, loaded := d.requests[request]; loaded {
+		d.removeRequestAt(existing)
+	}
+	if len(d.requests) >= requestsLimit {
+		d.removeRequestAt(d.requestHead)
+	}
+	var requestIndex int
+	if d.requestFree >= 0 {
+		requestIndex = d.requestFree
+		d.requestFree = d.requestSlots[requestIndex].next
+		d.requestSlots[requestIndex] = trackedPingRequest{
+			request:   request,
+			createdAt: now,
+			previous:  d.requestTail,
+			next:      -1,
 		}
+	} else {
+		requestIndex = len(d.requestSlots)
+		d.requestSlots = append(d.requestSlots, trackedPingRequest{
+			request:   request,
+			createdAt: now,
+			previous:  d.requestTail,
+			next:      -1,
+		})
 	}
-	if len(d.requests) > requestsLimit {
-		delete(d.requests, oldestRequest)
+	if d.requestTail >= 0 {
+		d.requestSlots[d.requestTail].next = requestIndex
+	} else {
+		d.requestHead = requestIndex
 	}
-	d.requests[request] = now
+	d.requestTail = requestIndex
+	d.requests[request] = requestIndex
+}
+
+func (d *Destination) pruneRequests(now time.Time) {
+	for d.requestHead >= 0 && now.Sub(d.requestSlots[d.requestHead].createdAt) > d.timeout {
+		d.removeRequestAt(d.requestHead)
+	}
+}
+
+func (d *Destination) removeRequest(request pingRequest) bool {
+	requestIndex, loaded := d.requests[request]
+	if !loaded {
+		return false
+	}
+	d.removeRequestAt(requestIndex)
+	return true
+}
+
+func (d *Destination) removeRequestAt(requestIndex int) {
+	trackedRequest := &d.requestSlots[requestIndex]
+	if trackedRequest.previous >= 0 {
+		d.requestSlots[trackedRequest.previous].next = trackedRequest.next
+	} else {
+		d.requestHead = trackedRequest.next
+	}
+	if trackedRequest.next >= 0 {
+		d.requestSlots[trackedRequest.next].previous = trackedRequest.previous
+	} else {
+		d.requestTail = trackedRequest.previous
+	}
+	delete(d.requests, trackedRequest.request)
+	trackedRequest.request = pingRequest{}
+	trackedRequest.createdAt = time.Time{}
+	trackedRequest.previous = -1
+	trackedRequest.next = d.requestFree
+	d.requestFree = requestIndex
 }
 
 func (d *Destination) Close() error {
