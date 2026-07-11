@@ -177,31 +177,8 @@ func (r *autoRedirect) cleanupDockerFirewallRules(nft *nftables.Conn, rules []*n
 	return deleteErr
 }
 
-func (r *autoRedirect) reconcileDockerFirewallRules(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain, rules []*nftables.Rule) error {
-	outputComment := r.nftablesDockerCompatibilityComment("output to tun")
-	inputComment := r.nftablesDockerCompatibilityComment("input from tun")
-	var hasOutputRule bool
-	var hasInputRule bool
-	var deleteErr error
-	for _, rule := range rules {
-		if nftablesDockerCompatibilityRuleMatches(rule, r.tunOptions.Name, expr.MetaKeyOIFNAME, outputComment) && !hasOutputRule {
-			hasOutputRule = true
-		} else if nftablesDockerCompatibilityRuleMatches(rule, r.tunOptions.Name, expr.MetaKeyIIFNAME, inputComment) && !hasInputRule {
-			hasInputRule = true
-		} else if r.nftablesIsDockerCompatibilityRule(rule) {
-			deleteErr = E.Errors(deleteErr, nft.DelRule(rule))
-		}
-	}
-	if deleteErr != nil {
-		return deleteErr
-	}
-	if !hasOutputRule {
-		nft.InsertRule(nftablesDockerCompatibilityRule(table, chain, r.tunOptions.Name, expr.MetaKeyOIFNAME, outputComment))
-	}
-	if !hasInputRule {
-		nft.InsertRule(nftablesDockerCompatibilityRule(table, chain, r.tunOptions.Name, expr.MetaKeyIIFNAME, inputComment))
-	}
-	return nil
+func (r *autoRedirect) reconcileDockerFirewallRules(nft *nftables.Conn, _ *nftables.Table, _ *nftables.Chain, rules []*nftables.Rule) error {
+	return r.cleanupDockerFirewallRules(nft, rules)
 }
 
 func nftablesDockerCompatibilityRule(table *nftables.Table, chain *nftables.Chain, ifName string, ifNameKey expr.MetaKey, comment string) *nftables.Rule {

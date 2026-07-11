@@ -287,12 +287,6 @@ func (r *autoRedirect) setupNFTables() error {
 	if err != nil {
 		return E.Cause(err, "flush nftables")
 	}
-	r.startDockerFirewallMonitor()
-	err = r.configureDockerFirewall(false)
-	if err != nil && r.logger != nil {
-		r.logger.Warn("configure docker firewall: ", err)
-	}
-
 	r.networkListener = r.networkMonitor.RegisterCallback(func() {
 		err = r.nftablesUpdateLocalAddressSet()
 		if err != nil {
