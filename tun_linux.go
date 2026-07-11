@@ -289,6 +289,17 @@ func (t *NativeTun) Name() (string, error) {
 }
 
 func (t *NativeTun) Start() error {
+	if t.options.FileDescriptor == 0 {
+		if !t.options.EXP_ExternalConfiguration {
+			t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
+		}
+		err := t.start()
+		if err != nil {
+			return err
+		}
+	}
+	// The kernel rejects writes with EIO while the device is not up (tun_get_user),
+	// so the probe must run after LinkSetUp.
 	if t.vnetHdr && t.gro.canTCPGRO() {
 		err := t.probeTCPGRO()
 		if err != nil {
@@ -299,12 +310,10 @@ func (t *NativeTun) Start() error {
 			}
 		}
 	}
-	if t.options.FileDescriptor != 0 {
-		return nil
-	}
-	if !t.options.EXP_ExternalConfiguration {
-		t.options.InterfaceMonitor.RegisterMyInterface(t.options.Name)
-	}
+	return nil
+}
+
+func (t *NativeTun) start() error {
 	tunLink, err := netlink.LinkByName(t.options.Name)
 	if err != nil {
 		return E.Cause(err, "find tun interface")
