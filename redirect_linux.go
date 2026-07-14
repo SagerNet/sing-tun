@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
@@ -43,7 +44,8 @@ type autoRedirect struct {
 	nfqueueHandler          *nfqueueHandler
 	nfqueueEnabled          bool
 	redirectRouteTableIndex int
-	redirectInterfaces      []control.Interface
+	redirectRouteAccess     sync.Mutex
+	redirectRoutesActive    bool
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -179,8 +181,8 @@ func (r *autoRedirect) Close() error {
 		r.nfqueueHandler.Close()
 	}
 	if r.useNFTables {
-		r.cleanupRedirectRoutes()
 		r.cleanupNFTables()
+		r.cleanupRedirectRoutes()
 	} else {
 		r.cleanupIPTables()
 	}
