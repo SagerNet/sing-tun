@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 
 	"github.com/sagernet/nftables"
 	"github.com/sagernet/sing/common"
@@ -44,7 +45,8 @@ type autoRedirect struct {
 	nfqueueHandler          *nfqueueHandler
 	nfqueueEnabled          bool
 	redirectRouteTableIndex int
-	redirectInterfaces      []control.Interface
+	redirectRouteAccess     sync.Mutex
+	redirectRoutesActive    bool
 	dockerFirewallMonitor   *nftables.Monitor
 	dockerFirewallDone      chan struct{}
 }
@@ -211,8 +213,8 @@ func (r *autoRedirect) Close() error {
 	}
 	if r.useNFTables {
 		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
-			r.cleanupRedirectRoutes()
 			r.cleanupNFTables()
+			r.cleanupRedirectRoutes()
 			return nil
 		})
 		if r.ownedNetworkMonitor {

@@ -3,9 +3,9 @@
 package tun
 
 import (
+	"errors"
 	"math/rand"
 	"net"
-	"net/netip"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
@@ -34,16 +34,19 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	if err != nil {
 		return E.Cause(err, "update interfaces")
 	}
-	tunName := r.tunOptions.Name
-	r.redirectInterfaces = common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
-		return it.Name != "lo" && it.Name != tunName && it.Flags&net.FlagUp != 0
-	})
-	r.cleanupRedirectRoutes()
-	for _, iface := range r.redirectInterfaces {
-		err = r.addRedirectRoutes(iface)
+	redirectInterfaces := r.currentRedirectInterfaces()
+	r.redirectRouteAccess.Lock()
+	defer r.redirectRouteAccess.Unlock()
+	r.redirectRoutesActive = false
+	r.cleanupRedirectRoutesLocked()
+	defer func() {
 		if err != nil {
-			return E.Cause(err, "add redirect routes for ", iface.Name)
+			r.cleanupRedirectRoutesLocked()
 		}
+	}()
+	err = r.reconcileRedirectRoutesLocked(redirectInterfaces)
+	if err != nil {
+		return err
 	}
 	if r.enableIPv4 {
 		rule := netlink.NewRule()
@@ -65,58 +68,27 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 			return E.Cause(err, "add ipv6 redirect rule")
 		}
 	}
+	r.redirectRoutesActive = true
 	return nil
 }
 
-func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
-	if r.enableIPv4 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
-		return it.Addr().Is4()
-	}) {
-		err := netlink.RouteAppend(&netlink.Route{
-			LinkIndex: iface.Index,
-			Dst:       &net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(32, 32)},
-			Table:     r.redirectRouteTableIndex,
-			Type:      unix.RTN_LOCAL,
-			Scope:     netlink.SCOPE_HOST,
-		})
-		if err != nil {
-			return E.Cause(err, "append ipv4 loopback route")
-		}
-	}
-	if r.enableIPv6 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
-		return it.Addr().Is6() && !it.Addr().Is4In6()
-	}) {
-		err := netlink.RouteAppend(&netlink.Route{
-			LinkIndex: iface.Index,
-			Dst:       &net.IPNet{IP: net.IPv6loopback, Mask: net.CIDRMask(128, 128)},
-			Table:     r.redirectRouteTableIndex,
-			Type:      unix.RTN_LOCAL,
-			Scope:     netlink.SCOPE_HOST,
-		})
-		if err != nil {
-			return E.Cause(err, "append ipv6 loopback route")
-		}
-	}
-	return nil
+func (r *autoRedirect) currentRedirectInterfaces() []control.Interface {
+	tunName := r.tunOptions.Name
+	return common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
+		return it.Name != "lo" && it.Name != tunName && it.Flags&net.FlagUp != 0
+	})
 }
 
-func (r *autoRedirect) removeRedirectRoutes(linkIndex int) {
-	if r.enableIPv4 {
-		_ = netlink.RouteDel(&netlink.Route{
-			LinkIndex: linkIndex,
-			Dst:       &net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(32, 32)},
-			Table:     r.redirectRouteTableIndex,
-			Type:      unix.RTN_LOCAL,
-		})
+func redirectRouteAddressFamilies(iface control.Interface) (hasIPv4Address bool, hasIPv6Address bool) {
+	for _, prefix := range iface.Addresses {
+		address := prefix.Addr()
+		if address.Is4() {
+			hasIPv4Address = true
+		} else if address.Is6() && !address.Is4In6() {
+			hasIPv6Address = true
+		}
 	}
-	if r.enableIPv6 {
-		_ = netlink.RouteDel(&netlink.Route{
-			LinkIndex: linkIndex,
-			Dst:       &net.IPNet{IP: net.IPv6loopback, Mask: net.CIDRMask(128, 128)},
-			Table:     r.redirectRouteTableIndex,
-			Type:      unix.RTN_LOCAL,
-		})
-	}
+	return
 }
 
 func (r *autoRedirect) updateRedirectRoutes() error {
@@ -124,36 +96,23 @@ func (r *autoRedirect) updateRedirectRoutes() error {
 	if err != nil {
 		return E.Cause(err, "update interfaces")
 	}
-	tunName := r.tunOptions.Name
-	newInterfaces := common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
-		return it.Name != "lo" && it.Name != tunName && it.Flags&net.FlagUp != 0
-	})
-	oldMap := make(map[int]bool, len(r.redirectInterfaces))
-	for _, iface := range r.redirectInterfaces {
-		oldMap[iface.Index] = true
+	redirectInterfaces := r.currentRedirectInterfaces()
+	r.redirectRouteAccess.Lock()
+	defer r.redirectRouteAccess.Unlock()
+	if !r.redirectRoutesActive {
+		return nil
 	}
-	newMap := make(map[int]bool, len(newInterfaces))
-	for _, iface := range newInterfaces {
-		newMap[iface.Index] = true
-	}
-	for _, iface := range newInterfaces {
-		if !oldMap[iface.Index] {
-			err = r.addRedirectRoutes(iface)
-			if err != nil {
-				return E.Cause(err, "add redirect routes for ", iface.Name)
-			}
-		}
-	}
-	for _, iface := range r.redirectInterfaces {
-		if !newMap[iface.Index] {
-			r.removeRedirectRoutes(iface.Index)
-		}
-	}
-	r.redirectInterfaces = newInterfaces
-	return nil
+	return r.reconcileRedirectRoutesLocked(redirectInterfaces)
 }
 
 func (r *autoRedirect) cleanupRedirectRoutes() {
+	r.redirectRouteAccess.Lock()
+	defer r.redirectRouteAccess.Unlock()
+	r.redirectRoutesActive = false
+	r.cleanupRedirectRoutesLocked()
+}
+
+func (r *autoRedirect) cleanupRedirectRoutesLocked() {
 	if r.redirectRouteTableIndex == 0 {
 		return
 	}
@@ -177,4 +136,109 @@ func (r *autoRedirect) cleanupRedirectRoutes() {
 		rule.Family = unix.AF_INET6
 		_ = netlink.RuleDel(rule)
 	}
+}
+
+type redirectRouteKey struct {
+	linkIndex int
+	family    int
+}
+
+func (r *autoRedirect) reconcileRedirectRoutesLocked(redirectInterfaces []control.Interface) error {
+	// Interface snapshots are not sufficient here: network managers can flush a
+	// route while a fast reconnect leaves the interface index and address families
+	// unchanged. Reconcile against the kernel's route table on every update.
+	currentRoutes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL,
+		&netlink.Route{Table: r.redirectRouteTableIndex},
+		netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return E.Cause(err, "list redirect routes")
+	}
+	routesToAdd, routesToDelete := calculateRedirectRouteChanges(
+		r.redirectRouteTableIndex,
+		redirectInterfaces,
+		currentRoutes,
+		r.enableIPv4,
+		r.enableIPv6,
+	)
+	for index := range routesToDelete {
+		route := &routesToDelete[index]
+		err = netlink.RouteDel(route)
+		if err != nil && !errors.Is(err, unix.ESRCH) && !errors.Is(err, unix.ENOENT) {
+			return E.Cause(err, "delete redirect route ", route)
+		}
+	}
+	for index := range routesToAdd {
+		route := &routesToAdd[index]
+		err = netlink.RouteAppend(route)
+		if err != nil {
+			return E.Cause(err, "append redirect route ", route)
+		}
+	}
+	return nil
+}
+
+func calculateRedirectRouteChanges(
+	tableIndex int,
+	redirectInterfaces []control.Interface,
+	currentRoutes []netlink.Route,
+	enableIPv4 bool,
+	enableIPv6 bool,
+) (routesToAdd []netlink.Route, routesToDelete []netlink.Route) {
+	desiredRoutes := make(map[redirectRouteKey]struct{}, len(redirectInterfaces)*2)
+	for _, iface := range redirectInterfaces {
+		hasIPv4Address, hasIPv6Address := redirectRouteAddressFamilies(iface)
+		if enableIPv4 && hasIPv4Address {
+			desiredRoutes[redirectRouteKey{linkIndex: iface.Index, family: unix.AF_INET}] = struct{}{}
+		}
+		if enableIPv6 && hasIPv6Address {
+			desiredRoutes[redirectRouteKey{linkIndex: iface.Index, family: unix.AF_INET6}] = struct{}{}
+		}
+	}
+	for _, route := range currentRoutes {
+		key, isRedirectRoute := redirectRouteKeyFromRoute(route)
+		if !isRedirectRoute {
+			continue
+		}
+		if _, desired := desiredRoutes[key]; desired {
+			delete(desiredRoutes, key)
+			continue
+		}
+		routesToDelete = append(routesToDelete, route)
+	}
+	for key := range desiredRoutes {
+		routesToAdd = append(routesToAdd, newRedirectRoute(tableIndex, key))
+	}
+	return
+}
+
+func newRedirectRoute(tableIndex int, key redirectRouteKey) netlink.Route {
+	destination := net.IPv6loopback
+	if key.family == unix.AF_INET {
+		destination = net.IPv4(127, 0, 0, 1)
+	}
+	return netlink.Route{
+		LinkIndex: key.linkIndex,
+		Dst:       netlink.NewIPNet(destination),
+		Table:     tableIndex,
+		Type:      unix.RTN_LOCAL,
+		Scope:     netlink.SCOPE_HOST,
+	}
+}
+
+func redirectRouteKeyFromRoute(route netlink.Route) (redirectRouteKey, bool) {
+	if redirectRouteDestinationMatches(route.Dst, net.IPv4(127, 0, 0, 1), 32) {
+		return redirectRouteKey{linkIndex: route.LinkIndex, family: unix.AF_INET}, true
+	}
+	if redirectRouteDestinationMatches(route.Dst, net.IPv6loopback, 128) {
+		return redirectRouteKey{linkIndex: route.LinkIndex, family: unix.AF_INET6}, true
+	}
+	return redirectRouteKey{}, false
+}
+
+func redirectRouteDestinationMatches(destination *net.IPNet, address net.IP, prefixBits int) bool {
+	if destination == nil || !destination.IP.Equal(address) {
+		return false
+	}
+	ones, bits := destination.Mask.Size()
+	return ones == prefixBits && bits == prefixBits
 }

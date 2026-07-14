@@ -15,9 +15,10 @@ import (
 )
 
 type networkUpdateMonitor struct {
-	routeUpdate chan netlink.RouteUpdate
-	linkUpdate  chan netlink.LinkUpdate
-	close       chan struct{}
+	routeUpdate   chan netlink.RouteUpdate
+	linkUpdate    chan netlink.LinkUpdate
+	addressUpdate chan netlink.AddrUpdate
+	close         chan struct{}
 
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]
@@ -32,10 +33,11 @@ var ErrNetlinkBanned = E.New(
 
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	monitor := &networkUpdateMonitor{
-		routeUpdate: make(chan netlink.RouteUpdate, 2),
-		linkUpdate:  make(chan netlink.LinkUpdate, 2),
-		close:       make(chan struct{}),
-		logger:      logger,
+		routeUpdate:   make(chan netlink.RouteUpdate, 2),
+		linkUpdate:    make(chan netlink.LinkUpdate, 2),
+		addressUpdate: make(chan netlink.AddrUpdate, 2),
+		close:         make(chan struct{}),
+		logger:        logger,
 	}
 	// check is netlink banned by google
 	if runtime.GOOS == "android" {
@@ -63,28 +65,46 @@ func (m *networkUpdateMonitor) Start() error {
 	if err != nil {
 		return E.Cause(err, "subscribe link updates")
 	}
-	go m.loopUpdate()
+	err = netlink.AddrSubscribe(m.addressUpdate, m.close)
+	if err != nil {
+		return E.Cause(err, "subscribe address updates")
+	}
+	go m.loopUpdate(time.Second)
 	return nil
 }
 
-func (m *networkUpdateMonitor) loopUpdate() {
-	const minDuration = time.Second
+func (m *networkUpdateMonitor) loopUpdate(minDuration time.Duration) {
 	timer := time.NewTimer(minDuration)
+	timer.Stop()
 	defer timer.Stop()
+	var (
+		timerC  <-chan time.Time
+		pending bool
+	)
 	for {
 		select {
 		case <-m.close:
 			return
 		case <-m.routeUpdate:
 		case <-m.linkUpdate:
+		case <-m.addressUpdate:
+		case <-timerC:
+			if pending {
+				m.emit()
+				pending = false
+				timer.Reset(minDuration)
+				continue
+			}
+			timerC = nil
+			continue
+		}
+		if timerC != nil {
+			pending = true
+			continue
 		}
 		m.emit()
-		select {
-		case <-m.close:
-			return
-		case <-timer.C:
-			timer.Reset(minDuration)
-		}
+		timer.Reset(minDuration)
+		timerC = timer.C
 	}
 }
 
