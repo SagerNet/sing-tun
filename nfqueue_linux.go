@@ -16,8 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const nfqueueMaxPacketLen = 512
-
 type nfqueueHandler struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -67,11 +65,11 @@ func (h *nfqueueHandler) setVerdict(packetID uint32, verdict int, mark uint32) {
 func (h *nfqueueHandler) Start() error {
 	config := nfqueue.Config{
 		NfQueue:      h.queue,
-		MaxPacketLen: nfqueueMaxPacketLen,
+		MaxPacketLen: 0xFFFF,
 		MaxQueueLen:  4096,
 		Copymode:     nfqueue.NfQnlCopyPacket,
 		AfFamily:     unix.AF_UNSPEC,
-		Flags:        nfqueue.NfQaCfgFlagFailOpen,
+		Flags:        nfqueue.NfQaCfgFlagFailOpen | nfqueue.NfQaCfgFlagGSO,
 	}
 
 	nfq, err := nfqueue.Open(&config)
