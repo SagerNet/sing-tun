@@ -5,7 +5,6 @@ package tun
 import (
 	"math/rand"
 	"net"
-	"net/netip"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
@@ -69,9 +68,8 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 }
 
 func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
-	if r.enableIPv4 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
-		return it.Addr().Is4()
-	}) {
+	hasIPv4Address, hasIPv6Address := redirectRouteAddressFamilies(iface)
+	if r.enableIPv4 && hasIPv4Address {
 		err := netlink.RouteAppend(&netlink.Route{
 			LinkIndex: iface.Index,
 			Dst:       &net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(32, 32)},
@@ -83,9 +81,7 @@ func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
 			return E.Cause(err, "append ipv4 loopback route")
 		}
 	}
-	if r.enableIPv6 && common.Any(iface.Addresses, func(it netip.Prefix) bool {
-		return it.Addr().Is6() && !it.Addr().Is4In6()
-	}) {
+	if r.enableIPv6 && hasIPv6Address {
 		err := netlink.RouteAppend(&netlink.Route{
 			LinkIndex: iface.Index,
 			Dst:       &net.IPNet{IP: net.IPv6loopback, Mask: net.CIDRMask(128, 128)},
@@ -98,6 +94,18 @@ func (r *autoRedirect) addRedirectRoutes(iface control.Interface) error {
 		}
 	}
 	return nil
+}
+
+func redirectRouteAddressFamilies(iface control.Interface) (hasIPv4Address bool, hasIPv6Address bool) {
+	for _, prefix := range iface.Addresses {
+		address := prefix.Addr()
+		if address.Is4() {
+			hasIPv4Address = true
+		} else if address.Is6() && !address.Is4In6() {
+			hasIPv6Address = true
+		}
+	}
+	return
 }
 
 func (r *autoRedirect) removeRedirectRoutes(linkIndex int) {
@@ -128,20 +136,28 @@ func (r *autoRedirect) updateRedirectRoutes() error {
 	newInterfaces := common.Filter(r.interfaceFinder.Interfaces(), func(it control.Interface) bool {
 		return it.Name != "lo" && it.Name != tunName && it.Flags&net.FlagUp != 0
 	})
-	oldMap := make(map[int]bool, len(r.redirectInterfaces))
+	oldMap := make(map[int]control.Interface, len(r.redirectInterfaces))
 	for _, iface := range r.redirectInterfaces {
-		oldMap[iface.Index] = true
+		oldMap[iface.Index] = iface
 	}
 	newMap := make(map[int]bool, len(newInterfaces))
 	for _, iface := range newInterfaces {
 		newMap[iface.Index] = true
 	}
 	for _, iface := range newInterfaces {
-		if !oldMap[iface.Index] {
-			err = r.addRedirectRoutes(iface)
-			if err != nil {
-				return E.Cause(err, "add redirect routes for ", iface.Name)
+		oldInterface, loaded := oldMap[iface.Index]
+		if loaded {
+			oldHasIPv4Address, oldHasIPv6Address := redirectRouteAddressFamilies(oldInterface)
+			hasIPv4Address, hasIPv6Address := redirectRouteAddressFamilies(iface)
+			if (!r.enableIPv4 || oldHasIPv4Address == hasIPv4Address) &&
+				(!r.enableIPv6 || oldHasIPv6Address == hasIPv6Address) {
+				continue
 			}
+			r.removeRedirectRoutes(iface.Index)
+		}
+		err = r.addRedirectRoutes(iface)
+		if err != nil {
+			return E.Cause(err, "add redirect routes for ", iface.Name)
 		}
 	}
 	for _, iface := range r.redirectInterfaces {
