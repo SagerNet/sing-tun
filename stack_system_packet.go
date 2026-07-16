@@ -5,7 +5,6 @@ import (
 	"syscall"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
-	"github.com/sagernet/sing/common"
 )
 
 func PacketIPVersion(packet []byte) int {
@@ -14,7 +13,7 @@ func PacketIPVersion(packet []byte) int {
 
 func PacketFillHeader(packet []byte, ipVersion int) {
 	if PacketOffset > 0 {
-		common.ClearArray(packet[:3])
+		clear(packet[:3])
 		switch ipVersion {
 		case header.IPv4Version:
 			packet[3] = syscall.AF_INET
