@@ -23,6 +23,9 @@ type StackOptions struct {
 	TunOptions             Options
 	UDPTimeout             time.Duration
 	ICMPTimeout            time.Duration
+	UDPMapping             NATMapping
+	UDPFiltering           NATFiltering
+	UDPNATMax              uint32
 	Handler                Handler
 	Logger                 logger.Logger
 	ForwarderBindInterface bool

@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"os"
 	"sync"
-	"time"
 	_ "unsafe"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
@@ -21,24 +20,33 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/common/udpnat2"
 )
 
 type UDPForwarder struct {
 	ctx     context.Context
 	stack   *stack.Stack
 	handler Handler
-	udpNat  *udpnat.Service
+	udpNat  *UDPNat
 }
 
-func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, timeout time.Duration) *UDPForwarder {
+func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, options UDPNatOptions) *UDPForwarder {
 	forwarder := &UDPForwarder{
 		ctx:     ctx,
 		stack:   stack,
 		handler: handler,
 	}
-	forwarder.udpNat = udpnat.New(handler, forwarder.PreparePacketConnection, timeout, false)
+	options.Handler = handler
+	options.Prepare = forwarder.PreparePacketConnection
+	forwarder.udpNat = NewUDPNat(options)
 	return forwarder
+}
+
+func (f *UDPForwarder) Start() error {
+	return f.udpNat.Start()
+}
+
+func (f *UDPForwarder) Close() error {
+	return f.udpNat.Close()
 }
 
 func (f *UDPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.PacketBuffer) bool {
