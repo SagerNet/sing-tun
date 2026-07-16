@@ -1,10 +1,9 @@
 package ping
 
 import (
+	"encoding/binary"
 	"fmt"
 	"unsafe"
-
-	"github.com/sagernet/sing/common"
 
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/windows"
@@ -37,9 +36,9 @@ func parseIPv6ControlMessage(cmsg []byte) (*ipv6.ControlMessage, error) {
 		}
 		switch cmsghdr.Type {
 		case IPV6_TCLASS:
-			controlMessage.TrafficClass = int(common.NativeEndian.Uint32(cmsg[alignedSizeofCmsghdr : alignedSizeofCmsghdr+4]))
+			controlMessage.TrafficClass = int(binary.NativeEndian.Uint32(cmsg[alignedSizeofCmsghdr : alignedSizeofCmsghdr+4]))
 		case IPV6_HOPLIMIT:
-			controlMessage.HopLimit = int(common.NativeEndian.Uint32(cmsg[alignedSizeofCmsghdr : alignedSizeofCmsghdr+4]))
+			controlMessage.HopLimit = int(binary.NativeEndian.Uint32(cmsg[alignedSizeofCmsghdr : alignedSizeofCmsghdr+4]))
 		}
 		cmsg = cmsg[msgSize:]
 	}
