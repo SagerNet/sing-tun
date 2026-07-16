@@ -22,7 +22,6 @@ import (
 
 	"github.com/sagernet/sing-tun/gtcpip"
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
-	"github.com/sagernet/sing/common"
 )
 
 // RFC 971 defines the fields of the IPv4 header on page 11 using the following
@@ -335,7 +334,7 @@ func (b IPv4) FragmentOffset() uint16 {
 }
 
 func (b IPv4) FragmentOffsetDarwinRaw() uint16 {
-	return common.NativeEndian.Uint16(b[flagsFO:]) << 3
+	return binary.NativeEndian.Uint16(b[flagsFO:]) << 3
 }
 
 // TotalLength returns the "total length" field of the IPv4 header.
@@ -344,7 +343,7 @@ func (b IPv4) TotalLength() uint16 {
 }
 
 func (b IPv4) TotalLengthDarwinRaw() uint16 {
-	return common.NativeEndian.Uint16(b[IPv4TotalLenOffset:]) + uint16(b.HeaderLength())
+	return binary.NativeEndian.Uint16(b[IPv4TotalLenOffset:]) + uint16(b.HeaderLength())
 }
 
 // Checksum returns the checksum field of the IPv4 header.
@@ -441,7 +440,7 @@ func (b IPv4) SetTotalLength(totalLength uint16) {
 }
 
 func (b IPv4) SetTotalLengthDarwinRaw(totalLength uint16) {
-	common.NativeEndian.PutUint16(b[IPv4TotalLenOffset:], totalLength)
+	binary.NativeEndian.PutUint16(b[IPv4TotalLenOffset:], totalLength)
 }
 
 // SetChecksum sets the checksum field of the IPv4 header.
@@ -458,7 +457,7 @@ func (b IPv4) SetFlagsFragmentOffset(flags uint8, offset uint16) {
 
 func (b IPv4) SetFlagsFragmentOffsetDarwinRaw(flags uint8, offset uint16) {
 	v := (uint16(flags) << 13) | (offset >> 3)
-	common.NativeEndian.PutUint16(b[flagsFO:], v)
+	binary.NativeEndian.PutUint16(b[flagsFO:], v)
 }
 
 // SetID sets the identification field.
@@ -1179,7 +1178,7 @@ func (s IPv4OptionsSerializer) Serialize(b []byte) uint8 {
 	//  header ends on a 32 bit boundary. The padding is zero.
 	padded := padIPv4OptionsLength(total)
 	b = b[:padded-total]
-	common.ClearArray(b)
+	clear(b)
 	return padded
 }
 

@@ -21,7 +21,6 @@ import (
 	"math"
 
 	"github.com/sagernet/sing-tun/gtcpip"
-	"github.com/sagernet/sing/common"
 )
 
 // IPv6ExtensionHeaderIdentifier is an IPv6 extension header identifier.
@@ -129,7 +128,7 @@ func padIPv6Option(b []byte) {
 		b[ipv6ExtHdrOptionTypeOffset] = uint8(ipv6Pad1ExtHdrOptionIdentifier)
 	default: // Pad with PadN.
 		s := b[ipv6ExtHdrOptionPayloadOffset:]
-		common.ClearArray(s)
+		clear(s)
 		b[ipv6ExtHdrOptionTypeOffset] = uint8(ipv6PadNExtHdrOptionIdentifier)
 		b[ipv6ExtHdrOptionLengthOffset] = uint8(len(s))
 	}
