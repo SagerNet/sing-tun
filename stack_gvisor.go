@@ -35,8 +35,8 @@ type GVisor struct {
 	inet6Address         netip.Addr
 	inet4LoopbackAddress []netip.Addr
 	inet6LoopbackAddress []netip.Addr
-	udpTimeout           time.Duration
 	icmpTimeout          time.Duration
+	udpNATOptions        UDPNatOptions
 	broadcastAddr        netip.Addr
 	handler              Handler
 	logger               logger.Logger
@@ -44,6 +44,7 @@ type GVisor struct {
 	endpoint             stack.LinkEndpoint
 	dispatcher           *ForwardDispatcher
 	icmpForwarder        *ICMPForwarder
+	udpForwarder         *UDPForwarder
 }
 
 type GVisorTun interface {
@@ -78,11 +79,18 @@ func NewGVisor(
 		inet6Address:         inet6Address,
 		inet4LoopbackAddress: options.TunOptions.Inet4LoopbackAddress,
 		inet6LoopbackAddress: options.TunOptions.Inet6LoopbackAddress,
-		udpTimeout:           options.UDPTimeout,
 		icmpTimeout:          options.ICMPTimeout,
-		broadcastAddr:        BroadcastAddr(options.TunOptions.Inet4Address),
-		handler:              options.Handler,
-		logger:               options.Logger,
+		udpNATOptions: UDPNatOptions{
+			Timeout:          options.UDPTimeout,
+			Mapping:          options.UDPMapping,
+			Filtering:        options.UDPFiltering,
+			MaxSize:          options.UDPNATMax,
+			InterfaceFinder:  options.InterfaceFinder,
+			ExcludeInterface: []string{options.TunOptions.Name},
+		},
+		broadcastAddr: BroadcastAddr(options.TunOptions.Inet4Address),
+		handler:       options.Handler,
+		logger:        options.Logger,
 	}
 	return gStack, nil
 }
@@ -93,7 +101,7 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	if t.handler != nil {
-		t.dispatcher = NewForwardDispatcher(t.handler, &gvisorWriteback{tun: t.tun}, t.logger, t.udpTimeout, t.icmpTimeout)
+		t.dispatcher = NewForwardDispatcher(t.handler, &gvisorWriteback{tun: t.tun}, t.logger, t.udpNATOptions.Timeout, t.icmpTimeout)
 	}
 	linkEndpoint = &LinkEndpointFilter{
 		LinkEndpoint:         linkEndpoint,
@@ -110,7 +118,13 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
-	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpTimeout).HandlePacket)
+	udpForwarder := NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpNATOptions)
+	err = udpForwarder.Start()
+	if err != nil {
+		return err
+	}
+	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+	t.udpForwarder = udpForwarder
 	icmpForwarder := NewICMPForwarder(ipStack, t.handler, t.logger)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
@@ -124,6 +138,9 @@ func (t *GVisor) Close() error {
 	t.dispatcher.Close()
 	if t.icmpForwarder != nil {
 		t.icmpForwarder.Close()
+	}
+	if t.udpForwarder != nil {
+		t.udpForwarder.Close()
 	}
 	if t.stack == nil {
 		return nil
