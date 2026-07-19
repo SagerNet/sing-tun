@@ -113,6 +113,16 @@ func NewSystem(options StackOptions) (Stack, error) {
 	return stack, nil
 }
 
+func (s *System) ResetNetwork() {
+	if s.tcpNat != nil {
+		s.tcpNat.Purge()
+	}
+	if s.udpNat != nil {
+		s.udpNat.Purge()
+	}
+	s.dispatcher.ResetNetwork()
+}
+
 func (s *System) Close() error {
 	s.dispatcher.Close()
 	if s.udpNat != nil {

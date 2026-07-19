@@ -72,6 +72,15 @@ func NewICMPForwarder(stack *stack.Stack, handler Handler, logger logger.Logger)
 	return forwarder
 }
 
+func (f *ICMPForwarder) Purge() {
+	f.flowAccess.Lock()
+	for key, flow := range f.flows {
+		flow.close(FlowCloseReset)
+		delete(f.flows, key)
+	}
+	f.flowAccess.Unlock()
+}
+
 func (f *ICMPForwarder) Close() error {
 	f.returnPath.closed.Store(true)
 	f.flowAccess.Lock()
