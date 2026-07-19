@@ -71,18 +71,26 @@ func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M
 			firstPacket = append(firstPacket[:len(firstPacket):len(firstPacket)], view.AsSlice()...)
 		}
 	})
+	var sourceNetwork tcpip.NetworkProtocolNumber
+	if source.Addr.Is4() {
+		sourceNetwork = header.IPv4ProtocolNumber
+	} else {
+		sourceNetwork = header.IPv6ProtocolNumber
+	}
 	switch f.handler.JudgeFlow(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort(), firstPacket).Action {
 	case ActionReject:
 		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer))
 		return false, nil, nil, nil
 	case ActionDrop:
 		return false, nil, nil, nil
-	}
-	var sourceNetwork tcpip.NetworkProtocolNumber
-	if source.Addr.Is4() {
-		sourceNetwork = header.IPv4ProtocolNumber
-	} else {
-		sourceNetwork = header.IPv6ProtocolNumber
+	case ActionHijackDNS:
+		f.handler.NewDNSPacket(firstPacket, source, destination, &UDPBackWriter{
+			stack:         f.stack,
+			source:        AddressFromAddr(source.Addr),
+			sourcePort:    source.Port,
+			sourceNetwork: sourceNetwork,
+		})
+		return false, nil, nil, nil
 	}
 	writer := &UDPBackWriter{
 		stack:         f.stack,
