@@ -21,6 +21,7 @@ const (
 	ActionReject
 	ActionDrop
 	ActionBypass
+	ActionHijackDNS
 )
 
 type FlowTracker interface {

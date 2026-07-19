@@ -291,6 +291,13 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 	case ActionDrop:
 		d.installSimple(key, ActionDrop, packet.protocol, now)
 		return true
+	case ActionHijackDNS:
+		if packet.protocol == uint8(header.UDPProtocolNumber) {
+			d.hijackDNSPacket(packet)
+			return true
+		}
+		d.installSimple(key, ActionAccept, packet.protocol, now)
+		return false
 	default:
 		d.installSimple(key, ActionAccept, packet.protocol, now)
 		return false
