@@ -86,6 +86,15 @@ func (n *TCPNat) checkTimeout() {
 	n.addrAccess.Unlock()
 }
 
+func (n *TCPNat) Purge() {
+	n.addrAccess.Lock()
+	n.portAccess.Lock()
+	clear(n.addrMap)
+	clear(n.portMap)
+	n.portAccess.Unlock()
+	n.addrAccess.Unlock()
+}
+
 func (n *TCPNat) LookupBack(port uint16) *TCPSession {
 	n.portAccess.RLock()
 	session := n.portMap[port]

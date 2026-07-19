@@ -114,11 +114,12 @@ type ForwardDispatcher struct {
 	udpTimeout  time.Duration
 	icmpTimeout time.Duration
 
-	table     map[flowKey]*flowEntry
-	lastSweep int64
-	ports     map[Port]*portNAT
-	natList   atomic.Pointer[[]*portNAT]
-	revNAT    atomic.Pointer[map[netip.Addr]*portNAT]
+	table        map[flowKey]*flowEntry
+	lastSweep    int64
+	resetPending atomic.Bool
+	ports        map[Port]*portNAT
+	natList      atomic.Pointer[[]*portNAT]
+	revNAT       atomic.Pointer[map[netip.Addr]*portNAT]
 
 	activeNATs     []*portNAT
 	writebackBatch [][]byte
@@ -544,9 +545,21 @@ func (d *ForwardDispatcher) stageReject(packet *forwardPacket) {
 	}
 }
 
+func (d *ForwardDispatcher) ResetNetwork() {
+	if d == nil {
+		return
+	}
+	d.resetPending.Store(true)
+}
+
 func (d *ForwardDispatcher) Flush() {
 	if d == nil {
 		return
+	}
+	if d.resetPending.Swap(false) {
+		for key, entry := range d.table {
+			d.removeEntry(key, entry, FlowCloseReset)
+		}
 	}
 	for _, nat := range d.activeNATs {
 		d.flushPort(nat)
