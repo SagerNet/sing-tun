@@ -62,6 +62,13 @@ func (m *Mixed) Start() error {
 	return nil
 }
 
+func (m *Mixed) ResetNetwork() {
+	m.System.ResetNetwork()
+	if m.udpForwarder != nil {
+		m.udpForwarder.udpNat.Purge()
+	}
+}
+
 func (m *Mixed) Close() error {
 	if m.stack == nil {
 		return nil

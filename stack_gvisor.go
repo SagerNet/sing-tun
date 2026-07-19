@@ -134,6 +134,16 @@ func (t *GVisor) Start() error {
 	return nil
 }
 
+func (t *GVisor) ResetNetwork() {
+	if t.udpForwarder != nil {
+		t.udpForwarder.udpNat.Purge()
+	}
+	if t.icmpForwarder != nil {
+		t.icmpForwarder.Purge()
+	}
+	t.dispatcher.ResetNetwork()
+}
+
 func (t *GVisor) Close() error {
 	t.dispatcher.Close()
 	if t.icmpForwarder != nil {

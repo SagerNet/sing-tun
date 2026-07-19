@@ -14,6 +14,7 @@ import (
 
 type Stack interface {
 	Start() error
+	ResetNetwork()
 	Close() error
 }
 
