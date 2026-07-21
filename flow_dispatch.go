@@ -3,6 +3,7 @@ package tun
 import (
 	"maps"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -113,6 +114,7 @@ type ForwardDispatcher struct {
 	logger      logger.Logger
 	udpTimeout  time.Duration
 	icmpTimeout time.Duration
+	access      sync.RWMutex
 
 	table        map[flowKey]*flowEntry
 	lastSweep    int64
@@ -168,24 +170,39 @@ func (d *ForwardDispatcher) Close() {
 		return
 	}
 	d.returnPath.closed.Store(true)
+	d.access.Lock()
+	flows := make([]*forwardFlow, 0, len(d.table))
 	for _, entry := range d.table {
 		if entry.flow != nil {
-			entry.flow.close(FlowCloseReset)
+			flows = append(flows, entry.flow)
 		}
 	}
+	ports := make([]Port, 0, len(d.ports))
 	for port, nat := range d.ports {
 		if nat != nil {
-			port.DetachReturn(&d.returnPath)
+			ports = append(ports, port)
 		}
+	}
+	d.access.Unlock()
+	for _, flow := range flows {
+		flow.close(FlowCloseReset)
+	}
+	for _, port := range ports {
+		port.DetachReturn(&d.returnPath)
 	}
 }
 
 func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
-	if d == nil {
+	if d == nil || d.returnPath.closed.Load() {
 		return false
 	}
 	parsed, ok := parseForwardPacket(packet)
 	if !ok || parsed.fragment || !parsed.hasFlow {
+		return false
+	}
+	d.access.RLock()
+	defer d.access.RUnlock()
+	if d.returnPath.closed.Load() {
 		return false
 	}
 	key := parsed.flowKey()
@@ -553,7 +570,12 @@ func (d *ForwardDispatcher) ResetNetwork() {
 }
 
 func (d *ForwardDispatcher) Flush() {
-	if d == nil {
+	if d == nil || d.returnPath.closed.Load() {
+		return
+	}
+	d.access.RLock()
+	defer d.access.RUnlock()
+	if d.returnPath.closed.Load() {
 		return
 	}
 	if d.resetPending.Swap(false) {
