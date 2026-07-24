@@ -123,6 +123,17 @@ func (r *autoRedirect) setupNFTables() error {
 		}
 	}
 
+	if r.redirectServer != nil {
+		chainInput := nft.AddChain(&nftables.Chain{
+			Name:     "input",
+			Table:    table,
+			Hooknum:  nftables.ChainHookInput,
+			Priority: nftables.ChainPriorityFilter,
+			Type:     nftables.ChainTypeFilter,
+		})
+		r.nftablesCreateRedirectPortReject(nft, table, chainInput)
+	}
+
 	chainPreRouting := nft.AddChain(&nftables.Chain{
 		Name:     "prerouting",
 		Table:    table,

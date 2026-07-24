@@ -44,6 +44,24 @@ func (r *autoRedirect) setupIPTablesForFamily(iptablesPath string) error {
 	if err != nil {
 		return err
 	}
+	if r.redirectServer != nil {
+		tableNameInput := r.tableName + "-input"
+		err = r.runShell(iptablesPath, "-t filter -N", tableNameInput)
+		if err != nil {
+			return err
+		}
+		err = r.runShell(iptablesPath, "-t filter -A", tableNameInput,
+			"-p tcp --dport", redirectPort,
+			"-m conntrack ! --ctstate DNAT",
+			"-j REJECT --reject-with tcp-reset")
+		if err != nil {
+			return err
+		}
+		err = r.runShell(iptablesPath, "-t filter -I INPUT -j", tableNameInput)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -58,10 +76,14 @@ func (r *autoRedirect) cleanupIPTables() {
 
 func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
 	tableNameOutput := r.tableName + "-output"
+	tableNameInput := r.tableName + "-input"
 
 	_ = r.runShell(iptablesPath, "-t nat -D OUTPUT -j", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -F", tableNameOutput)
 	_ = r.runShell(iptablesPath, "-t nat -X", tableNameOutput)
+	_ = r.runShell(iptablesPath, "-t filter -D INPUT -j", tableNameInput)
+	_ = r.runShell(iptablesPath, "-t filter -F", tableNameInput)
+	_ = r.runShell(iptablesPath, "-t filter -X", tableNameInput)
 }
 
 func (r *autoRedirect) runShell(commands ...any) error {

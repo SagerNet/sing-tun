@@ -54,22 +54,33 @@ func (s *redirectServer) Close() error {
 }
 
 func (s *redirectServer) loopIn() {
+	var retryDelay time.Duration
 	for {
 		conn, err := s.listener.AcceptTCP()
 		if err != nil {
-			var netError net.Error
-			//nolint:staticcheck
-			if errors.As(err, &netError) && netError.Temporary() {
-				s.logger.Error(err)
-				continue
-			}
 			if s.inShutdown.Load() && E.IsClosed(err) {
 				return
 			}
+			var netError net.Error
+			//nolint:staticcheck
+			if errors.As(err, &netError) && netError.Temporary() {
+				if retryDelay == 0 {
+					retryDelay = 5 * time.Millisecond
+				} else {
+					retryDelay *= 2
+				}
+				if retryDelay > time.Second {
+					retryDelay = time.Second
+				}
+				s.logger.Error("accept: ", err, ": retrying in ", retryDelay)
+				time.Sleep(retryDelay)
+				continue
+			}
 			s.listener.Close()
 			s.logger.Error("serve error: ", err)
-			continue
+			return
 		}
+		retryDelay = 0
 		source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
 		destination, err := control.GetOriginalDestination(conn)
 		if err != nil {

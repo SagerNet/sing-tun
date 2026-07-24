@@ -613,6 +613,59 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	return nil
 }
 
+// IPS_DST_NAT in linux/netfilter/nf_conntrack_common.h, not exported by golang.org/x/sys
+const conntrackStatusDstNAT = 1 << 5
+
+func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Meta{
+				Key:      expr.MetaKeyL4PROTO,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{unix.IPPROTO_TCP},
+			},
+			&expr.Payload{
+				OperationType: expr.PayloadLoad,
+				DestRegister:  1,
+				Base:          expr.PayloadBaseTransportHeader,
+				Offset:        2,
+				Len:           2,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     binaryutil.BigEndian.PutUint16(r.redirectPort()),
+			},
+			&expr.Ct{
+				Key:      expr.CtKeySTATUS,
+				Register: 1,
+			},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            4,
+				Mask:           binaryutil.NativeEndian.PutUint32(conntrackStatusDstNAT),
+				Xor:            make([]byte, 4),
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     make([]byte, 4),
+			},
+			&expr.Counter{},
+			&expr.Reject{
+				Type: unix.NFT_REJECT_TCP_RST,
+			},
+		},
+	})
+}
+
 func (r *autoRedirect) nftablesCreateMark(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
 	nft.AddRule(&nftables.Rule{
 		Table: table,
