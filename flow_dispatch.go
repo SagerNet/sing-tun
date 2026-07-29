@@ -201,8 +201,8 @@ func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
 		return false
 	}
 	d.access.RLock()
-	defer d.access.RUnlock()
 	if d.returnPath.closed.Load() {
+		d.access.RUnlock()
 		return false
 	}
 	key := parsed.flowKey()
@@ -213,13 +213,16 @@ func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
 		loaded = false
 	}
 	if loaded {
-		return d.handleHit(key, entry, &parsed, packet, now)
+		handled := d.handleHit(key, entry, &parsed, packet, now)
+		d.access.RUnlock()
+		return handled
 	}
+	d.access.RUnlock()
 	if parsed.protocol == uint8(header.TCPProtocolNumber) &&
 		(parsed.tcpFlags&header.TCPFlagSyn == 0 || parsed.tcpFlags&header.TCPFlagAck != 0) {
 		return false
 	}
-	return d.judgeAndInstall(key, &parsed, packet, now)
+	return d.judgeAndInstall(key, &parsed, packet)
 }
 
 func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *forwardPacket, raw []byte, now int64) bool {
@@ -273,12 +276,18 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 	}
 }
 
-func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte, now int64) bool {
+func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte) bool {
 	var firstPacket []byte
 	if packet.protocol == uint8(header.UDPProtocolNumber) {
 		firstPacket = header.UDP(packet.transport).Payload()
 	}
 	verdict := d.handler.JudgeFlow(packet.protocol, packet.source, packet.destination, firstPacket)
+	d.access.RLock()
+	defer d.access.RUnlock()
+	if d.returnPath.closed.Load() {
+		return false
+	}
+	now := d.now()
 	switch verdict.Action {
 	case ActionFlow:
 		if verdict.Port != nil {
