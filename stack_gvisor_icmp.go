@@ -155,8 +155,14 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 	} else {
 		ipHdr := header.IPv6(pkt.NetworkHeader().Slice())
 		icmpHdr := header.ICMPv6(pkt.TransportHeader().Slice())
-		if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
+		if icmpHdr.Type() != header.ICMPv6EchoRequest {
 			return false
+		}
+		if icmpHdr.Code() != 0 {
+			// The IPv6 built-in echo reply path lacks the LocalAddressTemporary
+			// check its IPv4 sibling has, so returning false would make the stack
+			// reply on behalf of arbitrary forwarded destinations.
+			return true
 		}
 		identifier := icmpHdr.Ident()
 		key := icmpFlowKey{
