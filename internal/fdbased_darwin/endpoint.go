@@ -199,10 +199,6 @@ type Options struct {
 	// include CapabilitySaveRestore
 	SaveRestore bool
 
-	// DisconnectOk if true, indicates that this NIC capability set should
-	// include CapabilityDisconnectOk.
-	DisconnectOk bool
-
 	// PacketDispatchMode specifies the type of inbound dispatcher to be
 	// used for this endpoint.
 	PacketDispatchMode PacketDispatchMode
@@ -254,10 +250,6 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 
 	if opts.SaveRestore {
 		caps |= stack.CapabilitySaveRestore
-	}
-
-	if opts.DisconnectOk {
-		caps |= stack.CapabilityDisconnectOk
 	}
 
 	if len(opts.FDs) == 0 {
