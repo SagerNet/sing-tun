@@ -272,10 +272,9 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		packet.firstPacket,
 	)
 
-	// Use NfRepeat for bypass/reset so the packet re-enters the chain
-	// from the beginning, allowing mark-checking rules to save the mark
-	// to conntrack. NfAccept is a terminal verdict in nftables — it exits
-	// the chain immediately, skipping any rules after the queue statement.
+	// nf_reinject: NF_REPEAT re-runs the queueing chain from its first rule,
+	// while NF_ACCEPT continues at the next hook, skipping the remaining
+	// rules of the chain.
 	switch verdict.Action {
 	case ActionBypass:
 		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
