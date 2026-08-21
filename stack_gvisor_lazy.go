@@ -15,7 +15,6 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
 	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
 	"github.com/sagernet/gvisor/pkg/waiter"
-	"github.com/sagernet/sing/common"
 )
 
 type gLazyConn struct {
@@ -64,8 +63,6 @@ func (c *gLazyConn) HandshakeContext(ctx context.Context) error {
 	}
 	c.request.Complete(false)
 	endpoint.SocketOptions().SetKeepAlive(true)
-	endpoint.SetSockOpt(common.Ptr(tcpip.KeepaliveIdleOption(15 * time.Second)))
-	endpoint.SetSockOpt(common.Ptr(tcpip.KeepaliveIntervalOption(15 * time.Second)))
 	tcpConn := gonet.NewTCPConn(&wq, endpoint)
 	c.tcpConn = tcpConn
 	return nil
