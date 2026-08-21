@@ -328,6 +328,8 @@ func (t *NativeTun) start() error {
 		return nil
 	}
 
+	_ = os.WriteFile("/proc/sys/net/ipv4/conf/"+t.options.Name+"/rp_filter", []byte("2"), 0o644)
+
 	if t.options.IPRoute2TableIndex == 0 {
 		for {
 			t.options.IPRoute2TableIndex = int(rand.Uint32())
