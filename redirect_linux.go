@@ -5,7 +5,9 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/sagernet/nftables"
@@ -64,6 +66,27 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 	}, nil
 }
 
+func findAndroidSuPath() (string, error) {
+	searchPaths := common.Uniq(common.FilterNotDefault(append(
+		strings.Split(os.Getenv("PATH"), ":"),
+		"/system/bin",
+		"/system/xbin",
+		"/product/bin",
+		"/odm/bin",
+		"/vendor/bin",
+		"/vendor/xbin",
+		"/apex/com.android.runtime/bin",
+		"/sbin",
+	)))
+	for _, searchPath := range searchPaths {
+		suPath, err := exec.LookPath(filepath.Join(searchPath, "su"))
+		if err == nil {
+			return suPath, nil
+		}
+	}
+	return "", E.New("su not found in ", strings.Join(searchPaths, ":"))
+}
+
 func (r *autoRedirect) Start() error {
 	var err error
 	if runtime.GOOS == "android" {
@@ -72,18 +95,9 @@ func (r *autoRedirect) Start() error {
 		userId := os.Getuid()
 		if userId != 0 {
 			r.androidSu = true
-			for _, suPath := range []string{
-				"su",
-				"/product/bin/su",
-				"/system/bin/su",
-			} {
-				r.suPath, err = exec.LookPath(suPath)
-				if err == nil {
-					break
-				}
-			}
+			r.suPath, err = findAndroidSuPath()
 			if err != nil {
-				return E.Extend(E.Cause(err, "root permission is required for auto redirect"), os.Getenv("PATH"))
+				return E.Cause(err, "root permission is required for auto redirect")
 			}
 		}
 	} else {
