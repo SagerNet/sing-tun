@@ -44,7 +44,8 @@ type System struct {
 	tcpListener6         net.Listener
 	tcpPort              uint16
 	tcpPort6             uint16
-	tcpNat               *TCPNat
+	tcpNat4              *TCPNat
+	tcpNat6              *TCPNat
 	udpNat               *udpnat.Service
 	directNat            *DirectRouteMapping
 	bindInterface        bool
@@ -143,7 +144,8 @@ func (s *System) start() error {
 		}
 		s.tcpListener = tcpListener
 		s.tcpPort = M.SocksaddrFromNet(tcpListener.Addr()).Port
-		go s.acceptLoop(tcpListener)
+		s.tcpNat4 = NewNat(s.ctx, s.udpTimeout)
+		go s.acceptLoop(tcpListener, s.tcpNat4)
 	}
 	if s.inet6NextAddress.IsValid() {
 		for range 3 {
@@ -158,9 +160,9 @@ func (s *System) start() error {
 		}
 		s.tcpListener6 = tcpListener
 		s.tcpPort6 = M.SocksaddrFromNet(tcpListener.Addr()).Port
-		go s.acceptLoop(tcpListener)
+		s.tcpNat6 = NewNat(s.ctx, s.udpTimeout)
+		go s.acceptLoop(tcpListener, s.tcpNat6)
 	}
-	s.tcpNat = NewNat(s.ctx, s.udpTimeout)
 	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)
 	s.directNat = NewDirectRouteMapping(s.icmpTimeout)
 	return nil
@@ -322,14 +324,14 @@ func (s *System) processPacket(packet []byte) bool {
 	return writeBack
 }
 
-func (s *System) acceptLoop(listener net.Listener) {
+func (s *System) acceptLoop(listener net.Listener, tcpNat *TCPNat) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
 		connPort := M.SocksaddrFromNet(conn.RemoteAddr()).Port
-		session := s.tcpNat.LookupBack(connPort)
+		session := tcpNat.LookupBack(connPort)
 		if session == nil {
 			s.logger.Trace(E.New("unknown session with port ", connPort))
 			continue
@@ -385,7 +387,7 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 	if !destination.Addr().IsGlobalUnicast() {
 		return false, nil
 	} else if source.Addr() == s.inet4Address && source.Port() == s.tcpPort {
-		session := s.tcpNat.LookupBack(destination.Port())
+		session := s.tcpNat4.LookupBack(destination.Port())
 		if session == nil {
 			return false, E.New("ipv4: tcp: session not found: ", destination.Port())
 		}
@@ -404,7 +406,7 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 			}
 		}
 		if !loopback {
-			natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+			natPort, err := s.tcpNat4.Lookup(source, destination, s.handler)
 			if err != nil {
 				if errors.Is(err, ErrDrop) {
 					return false, nil
@@ -480,7 +482,7 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 	if !destination.Addr().IsGlobalUnicast() {
 		return false, nil
 	} else if source.Addr() == s.inet6Address && source.Port() == s.tcpPort6 {
-		session := s.tcpNat.LookupBack(destination.Port())
+		session := s.tcpNat6.LookupBack(destination.Port())
 		if session == nil {
 			return false, E.New("ipv6: tcp: session not found: ", destination.Port())
 		}
@@ -499,7 +501,7 @@ func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, err
 			}
 		}
 		if !loopback {
-			natPort, err := s.tcpNat.Lookup(source, destination, s.handler)
+			natPort, err := s.tcpNat6.Lookup(source, destination, s.handler)
 			if err != nil {
 				if errors.Is(err, ErrDrop) {
 					return false, nil

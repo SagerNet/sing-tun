@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -57,10 +58,10 @@ func (n *TCPNat) loopCheckTimeout(ctx context.Context) {
 
 func (n *TCPNat) checkTimeout() {
 	now := time.Now()
-	n.portAccess.Lock()
-	defer n.portAccess.Unlock()
 	n.addrAccess.Lock()
 	defer n.addrAccess.Unlock()
+	n.portAccess.Lock()
+	defer n.portAccess.Unlock()
 	for natPort, session := range n.portMap {
 		session.Lock()
 		if now.Sub(session.LastActive) > n.timeout {
@@ -76,13 +77,17 @@ func (n *TCPNat) LookupBack(port uint16) *TCPSession {
 	session := n.portMap[port]
 	n.portAccess.RUnlock()
 	if session != nil {
-		session.Lock()
-		if time.Since(session.LastActive) > time.Second {
-			session.LastActive = time.Now()
-		}
-		session.Unlock()
+		session.refresh()
 	}
 	return session
+}
+
+func (s *TCPSession) refresh() {
+	s.Lock()
+	if time.Since(s.LastActive) > time.Second {
+		s.LastActive = time.Now()
+	}
+	s.Unlock()
 }
 
 func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handler Handler) (uint16, error) {
@@ -91,6 +96,7 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handl
 	port, loaded := n.addrMap[key]
 	n.addrAccess.RUnlock()
 	if loaded {
+		n.refresh(port)
 		return port, nil
 	}
 	_, pErr := handler.PrepareConnection(N.NetworkTCP, M.SocksaddrFromNetIP(source), M.SocksaddrFromNetIP(destination), nil, 0)
@@ -98,21 +104,48 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, handl
 		return 0, pErr
 	}
 	n.addrAccess.Lock()
-	nextPort := n.portIndex
-	if nextPort == 0 {
-		nextPort = 10000
-		n.portIndex = 10001
-	} else {
-		n.portIndex++
+	defer n.addrAccess.Unlock()
+	port, loaded = n.addrMap[key]
+	if loaded {
+		n.refresh(port)
+		return port, nil
 	}
-	n.addrMap[key] = nextPort
-	n.addrAccess.Unlock()
 	n.portAccess.Lock()
+	defer n.portAccess.Unlock()
+	nextPort, allocated := n.allocatePortLocked()
+	if !allocated {
+		return 0, E.New("NAT port space exhausted")
+	}
 	n.portMap[nextPort] = &TCPSession{
 		Source:      source,
 		Destination: destination,
 		LastActive:  time.Now(),
 	}
-	n.portAccess.Unlock()
+	n.addrMap[key] = nextPort
 	return nextPort, nil
+}
+
+func (n *TCPNat) refresh(port uint16) {
+	n.portAccess.RLock()
+	session := n.portMap[port]
+	n.portAccess.RUnlock()
+	if session != nil {
+		session.refresh()
+	}
+}
+
+func (n *TCPNat) allocatePortLocked() (uint16, bool) {
+	for range 65535 - 10000 + 1 {
+		nextPort := n.portIndex
+		if nextPort == 0 {
+			nextPort = 10000
+			n.portIndex = 10001
+		} else {
+			n.portIndex++
+		}
+		if _, occupied := n.portMap[nextPort]; !occupied {
+			return nextPort, true
+		}
+	}
+	return 0, false
 }
