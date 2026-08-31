@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/netlink"
@@ -20,6 +21,8 @@ type networkUpdateMonitor struct {
 	addressUpdate chan netlink.AddrUpdate
 	close         chan struct{}
 
+	dirty atomic.Bool
+
 	access    sync.Mutex
 	callbacks list.List[NetworkUpdateCallback]
 	logger    logger.Logger
@@ -31,11 +34,17 @@ var ErrNetlinkBanned = E.New(
 		"or switch to the sing-box Android graphical interface client",
 )
 
+const (
+	routeUpdateBufferSize = 8192
+	linkUpdateBufferSize  = 32
+	addrUpdateBufferSize  = 32
+)
+
 func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error) {
 	monitor := &networkUpdateMonitor{
-		routeUpdate:   make(chan netlink.RouteUpdate, 2),
-		linkUpdate:    make(chan netlink.LinkUpdate, 2),
-		addressUpdate: make(chan netlink.AddrUpdate, 2),
+		routeUpdate:   make(chan netlink.RouteUpdate, routeUpdateBufferSize),
+		linkUpdate:    make(chan netlink.LinkUpdate, linkUpdateBufferSize),
+		addressUpdate: make(chan netlink.AddrUpdate, addrUpdateBufferSize),
 		close:         make(chan struct{}),
 		logger:        logger,
 	}
@@ -69,42 +78,58 @@ func (m *networkUpdateMonitor) Start() error {
 	if err != nil {
 		return E.Cause(err, "subscribe address updates")
 	}
-	go m.loopUpdate(time.Second)
+	go m.readRouteLoop()
+	go m.readLinkLoop()
+	go m.readAddrLoop()
+	go m.emitLoop(time.Second)
 	return nil
 }
 
-func (m *networkUpdateMonitor) loopUpdate(minDuration time.Duration) {
-	timer := time.NewTimer(minDuration)
-	timer.Stop()
-	defer timer.Stop()
-	var (
-		timerC  <-chan time.Time
-		pending bool
-	)
+func (m *networkUpdateMonitor) readRouteLoop() {
 	for {
 		select {
 		case <-m.close:
 			return
 		case <-m.routeUpdate:
+			m.dirty.Store(true)
+		}
+	}
+}
+
+func (m *networkUpdateMonitor) readLinkLoop() {
+	for {
+		select {
+		case <-m.close:
+			return
 		case <-m.linkUpdate:
+			m.dirty.Store(true)
+		}
+	}
+}
+
+func (m *networkUpdateMonitor) readAddrLoop() {
+	for {
+		select {
+		case <-m.close:
+			return
 		case <-m.addressUpdate:
-		case <-timerC:
-			if pending {
+			m.dirty.Store(true)
+		}
+	}
+}
+
+func (m *networkUpdateMonitor) emitLoop(minDuration time.Duration) {
+	ticker := time.NewTicker(minDuration)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.close:
+			return
+		case <-ticker.C:
+			if m.dirty.CompareAndSwap(true, false) {
 				m.emit()
-				pending = false
-				timer.Reset(minDuration)
-				continue
 			}
-			timerC = nil
-			continue
 		}
-		if timerC != nil {
-			pending = true
-			continue
-		}
-		m.emit()
-		timer.Reset(minDuration)
-		timerC = timer.C
 	}
 }
 
