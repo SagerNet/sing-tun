@@ -686,8 +686,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 		inserts = append(inserts, iptablesInsert{iptablesTableFilter, "FORWARD", []string{"-j", forward.name}})
 	}
 
-	for index := len(inserts) - 1; index >= 0; index-- {
-		insert := inserts[index]
+	for _, insert := range slices.Backward(inserts) {
 		err := iptablesRun(family.path, slices.Concat([]string{"-t", insert.table, "-I", insert.base}, insert.args)...)
 		if err != nil {
 			return err
@@ -781,7 +780,7 @@ func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
 		}
 		var chains []string
 		var references [][]string
-		for _, line := range strings.Split(output, "\n") {
+		for line := range strings.SplitSeq(output, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
 				continue
