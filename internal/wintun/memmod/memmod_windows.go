@@ -67,7 +67,7 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 			// Always use position from file to support alignments smaller than page size (allocation above will align to page size).
 			dest := module.codeBase + uintptr(sections[i].VirtualAddress)
 			// NOTE: On 64bit systems we truncate to 32bit here but expand again later when "PhysicalAddress" is used.
-			sections[i].SetPhysicalAddress((uint32)(dest & 0xffffffff))
+			sections[i].SetPhysicalAddress(uint32(dest & 0xffffffff))
 			dst := unsafe.Slice((*byte)(a2p(dest)), sectionSize)
 			for j := range dst {
 				dst[j] = 0
@@ -94,7 +94,7 @@ func (module *Module) copySections(address, size uintptr, oldHeaders *IMAGE_NT_H
 			address+uintptr(sections[i].PointerToRawData),
 			uintptr(sections[i].SizeOfRawData))
 		// NOTE: On 64bit systems we truncate to 32bit here but expand again later when "PhysicalAddress" is used.
-		sections[i].SetPhysicalAddress((uint32)(dest & 0xffffffff))
+		sections[i].SetPhysicalAddress(uint32(dest & 0xffffffff))
 	}
 
 	return nil
