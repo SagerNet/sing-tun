@@ -64,7 +64,7 @@ func (p *Port) AttachReturn(returnPath tun.Return) error {
 	if slices.Contains(p.returnPaths, returnPath) {
 		return nil
 	}
-	p.returnPaths = append(p.returnPaths[:len(p.returnPaths):len(p.returnPaths)], returnPath)
+	p.returnPaths = append(slices.Clip(p.returnPaths), returnPath)
 	return nil
 }
 
