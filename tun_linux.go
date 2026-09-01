@@ -3,13 +3,13 @@ package tun
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -329,19 +329,31 @@ func (t *NativeTun) start() error {
 		return nil
 	}
 
-	_ = os.WriteFile("/proc/sys/net/ipv4/conf/"+t.options.Name+"/rp_filter", []byte("2"), 0o644)
+	// The kernel uses max(all, interface) as the effective rp_filter value, so
+	// writing loose mode here relaxes an inherited strict mode but tightens a
+	// disabled one, where loose mode still drops replies whose source has no
+	// route on any interface.
+	rpFilter := 0
+	for _, procPath := range []string{
+		"/proc/sys/net/ipv4/conf/all/rp_filter",
+		"/proc/sys/net/ipv4/conf/" + t.options.Name + "/rp_filter",
+	} {
+		content, readErr := os.ReadFile(procPath)
+		if readErr != nil {
+			continue
+		}
+		value, parseErr := strconv.Atoi(strings.TrimSpace(string(content)))
+		if parseErr != nil {
+			continue
+		}
+		rpFilter = max(rpFilter, value)
+	}
+	if rpFilter == 1 {
+		_ = os.WriteFile("/proc/sys/net/ipv4/conf/"+t.options.Name+"/rp_filter", []byte("2"), 0o644)
+	}
 
 	if t.options.IPRoute2TableIndex == 0 {
-		for {
-			t.options.IPRoute2TableIndex = int(rand.Uint32() & 0x7fffffff)
-			if t.options.IPRoute2TableIndex <= 255 {
-				continue
-			}
-			routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: t.options.IPRoute2TableIndex}, netlink.RT_FILTER_TABLE)
-			if len(routeList) == 0 || fErr != nil {
-				break
-			}
-		}
+		t.options.IPRoute2TableIndex = chooseRouteTableIndex()
 	}
 
 	err = t.setRoute(tunLink)
@@ -675,11 +687,15 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	priority6 := priority
 
 	if t.options.AutoRedirectMarkMode {
-		markMask := int(t.options.AutoRedirectInputMark | t.options.AutoRedirectOutputMark | t.options.AutoRedirectResetMark)
+		inputMark := effectiveMark(t.options.AutoRedirectInputMark, DefaultAutoRedirectInputMark, DefaultAutoRedirectInputMarkAndroid)
+		outputMark := effectiveMark(t.options.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark, DefaultAutoRedirectOutputMarkAndroid)
+		resetMark := effectiveMark(t.options.AutoRedirectResetMark, DefaultAutoRedirectResetMark, DefaultAutoRedirectResetMarkAndroid)
+		tproxyMark := effectiveMark(t.options.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark, DefaultAutoRedirectTProxyMarkAndroid)
+		markMask := int(inputMark | outputMark | resetMark | tproxyMark)
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Mark = t.options.AutoRedirectOutputMark
+			it.Mark = outputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Goto = priority + 2
@@ -689,7 +705,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 			it = netlink.NewRule()
 			it.Priority = priority
-			it.Mark = t.options.AutoRedirectInputMark
+			it.Mark = inputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
@@ -705,7 +721,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p6 {
 			it = netlink.NewRule()
 			it.Priority = priority6
-			it.Mark = t.options.AutoRedirectOutputMark
+			it.Mark = outputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Goto = priority6 + 2
@@ -715,7 +731,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 
 			it = netlink.NewRule()
 			it.Priority = priority6
-			it.Mark = t.options.AutoRedirectInputMark
+			it.Mark = inputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
@@ -728,12 +744,10 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
 		}
-		// Fallback rules after system default rules (32766: main, 32767: default)
-		// Only reached when main and default tables have no route
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
-			it.Mark = t.options.AutoRedirectOutputMark
+			it.Mark = outputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Invert = true
@@ -744,7 +758,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p6 {
 			it = netlink.NewRule()
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
-			it.Mark = t.options.AutoRedirectOutputMark
+			it.Mark = outputMark
 			it.MarkSet = true
 			it.Mask = markMask
 			it.Invert = true
@@ -1001,6 +1015,14 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		// priority++
 	}
 	if p6 {
+		it = netlink.NewRule()
+		it.Priority = priority6
+		it.IifName = t.options.Name
+		it.Goto = nopPriority
+		it.Family = unix.AF_INET6
+		rules = append(rules, it)
+		priority6++
+
 		for _, address := range t.options.Inet6Address {
 			it = netlink.NewRule()
 			it.Priority = priority6
@@ -1011,13 +1033,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			rules = append(rules, it)
 		}
 		priority6++
-
-		it = netlink.NewRule()
-		it.Priority = priority6
-		it.IifName = t.options.Name
-		it.Goto = nopPriority
-		it.Family = unix.AF_INET6
-		rules = append(rules, it)
 
 		it = netlink.NewRule()
 		it.Priority = priority6
@@ -1073,7 +1088,6 @@ func (t *NativeTun) setRoute(tunLink netlink.Link) error {
 }
 
 func (t *NativeTun) setRules() error {
-	var uidRangeChecked bool
 	for i, rule := range t.rules() {
 		err := netlink.RuleAdd(rule)
 		if err != nil {
@@ -1086,15 +1100,6 @@ func (t *NativeTun) setRules() error {
 				}
 			}
 			return E.Cause(err, "add rule ", i, "/", len(t.rules()))
-		}
-		if rule.UIDRange != nil && !uidRangeChecked {
-			uidRangeChecked = true
-			installedRules, listErr := netlink.RuleListFiltered(rule.Family, &netlink.Rule{Priority: rule.Priority}, netlink.RT_FILTER_PRIORITY)
-			if listErr == nil && !slices.ContainsFunc(installedRules, func(it netlink.Rule) bool {
-				return it.UIDRange != nil
-			}) {
-				return E.New("uid range rules are not supported by the kernel (Linux 4.10 or later is required)")
-			}
 		}
 	}
 	return nil
