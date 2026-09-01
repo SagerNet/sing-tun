@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"slices"
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing/common"
@@ -18,18 +19,6 @@ import (
 const redirectRouteRulePriority = 1
 
 func (r *autoRedirect) setupRedirectRoutes() error {
-	for {
-		r.redirectRouteTableIndex = int(rand.Uint32())
-		if r.redirectRouteTableIndex == r.tunOptions.IPRoute2TableIndex {
-			continue
-		}
-		routeList, fErr := netlink.RouteListFiltered(netlink.FAMILY_ALL,
-			&netlink.Route{Table: r.redirectRouteTableIndex},
-			netlink.RT_FILTER_TABLE)
-		if len(routeList) == 0 || fErr != nil {
-			break
-		}
-	}
 	err := r.interfaceFinder.Update()
 	if err != nil {
 		return E.Cause(err, "update interfaces")
@@ -39,6 +28,11 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 	defer r.redirectRouteAccess.Unlock()
 	r.redirectRoutesActive = false
 	r.cleanupRedirectRoutesLocked()
+	r.cleanupStaleRouteRules(redirectRouteRulePriority, 0)
+	if r.tproxyEnabled() {
+		r.cleanupStaleRouteRules(redirectRouteRulePriority, r.tunOptions.AutoRedirectTProxyMark)
+	}
+	r.redirectRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.tproxyRouteTableIndex)
 	defer func() {
 		if err != nil {
 			r.cleanupRedirectRoutesLocked()
@@ -68,8 +62,50 @@ func (r *autoRedirect) setupRedirectRoutes() error {
 			return E.Cause(err, "add ipv6 redirect rule")
 		}
 	}
+	if r.tproxyEnabled() {
+		err = r.setupTProxyRouteLocked()
+		if err != nil {
+			return err
+		}
+	}
 	r.redirectRoutesActive = true
 	return nil
+}
+
+func (r *autoRedirect) setupTProxyRouteLocked() error {
+	r.tproxyRouteTableIndex = chooseRouteTableIndex(r.tunOptions.IPRoute2TableIndex, r.redirectRouteTableIndex)
+	loopbackLink, err := netlink.LinkByName("lo")
+	if err != nil {
+		return E.Cause(err, "find loopback interface")
+	}
+	route := netlink.Route{
+		LinkIndex: loopbackLink.Attrs().Index,
+		Dst:       defaultDestination(unix.AF_INET6),
+		Table:     r.tproxyRouteTableIndex,
+		Type:      unix.RTN_LOCAL,
+		Scope:     netlink.SCOPE_HOST,
+	}
+	err = netlink.RouteAdd(&route)
+	if err != nil {
+		return E.Cause(err, "add tproxy route")
+	}
+	rule := r.tproxyRouteRule()
+	err = netlink.RuleAdd(rule)
+	if err != nil {
+		return E.Cause(err, "add tproxy rule")
+	}
+	return nil
+}
+
+func (r *autoRedirect) tproxyRouteRule() *netlink.Rule {
+	rule := netlink.NewRule()
+	rule.Priority = redirectRouteRulePriority
+	rule.Family = unix.AF_INET6
+	rule.Mark = r.tunOptions.AutoRedirectTProxyMark
+	rule.MarkSet = true
+	rule.Mask = int(r.effectiveMarkMask())
+	rule.Table = r.tproxyRouteTableIndex
+	return rule
 }
 
 func (r *autoRedirect) currentRedirectInterfaces() []control.Interface {
@@ -136,6 +172,10 @@ func (r *autoRedirect) cleanupRedirectRoutesLocked() {
 		rule.Family = unix.AF_INET6
 		_ = netlink.RuleDel(rule)
 	}
+	if r.tproxyRouteTableIndex != 0 {
+		flushRouteTable(r.tproxyRouteTableIndex)
+		_ = netlink.RuleDel(r.tproxyRouteRule())
+	}
 }
 
 type redirectRouteKey struct {
@@ -144,9 +184,6 @@ type redirectRouteKey struct {
 }
 
 func (r *autoRedirect) reconcileRedirectRoutesLocked(redirectInterfaces []control.Interface) error {
-	// Interface snapshots are not sufficient here: network managers can flush a
-	// route while a fast reconnect leaves the interface index and address families
-	// unchanged. Reconcile against the kernel's route table on every update.
 	currentRoutes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL,
 		&netlink.Route{Table: r.redirectRouteTableIndex},
 		netlink.RT_FILTER_TABLE)
@@ -241,4 +278,73 @@ func redirectRouteDestinationMatches(destination *net.IPNet, address net.IP, pre
 	}
 	ones, bits := destination.Mask.Size()
 	return ones == prefixBits && bits == prefixBits
+}
+
+func chooseRouteTableIndex(excludedIndexes ...int) int {
+	for {
+		tableIndex := int(rand.Uint32() & 0x7fffffff)
+		if tableIndex <= 255 || slices.Contains(excludedIndexes, tableIndex) {
+			continue
+		}
+		if !routeTableOccupied(tableIndex) {
+			return tableIndex
+		}
+	}
+}
+
+func routeTableOccupied(tableIndex int) bool {
+	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+		routes, err := netlink.RouteListFiltered(family,
+			&netlink.Route{Table: tableIndex},
+			netlink.RT_FILTER_TABLE)
+		if err == nil && len(routes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func flushRouteTable(tableIndex int) {
+	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+		flushRouteTableFamily(tableIndex, family)
+	}
+}
+
+func flushRouteTableFamily(tableIndex int, family int) {
+	routes, _ := netlink.RouteListFiltered(family,
+		&netlink.Route{Table: tableIndex},
+		netlink.RT_FILTER_TABLE)
+	for index := range routes {
+		route := &routes[index]
+		if route.Dst == nil {
+			route.Dst = defaultDestination(family)
+		}
+		_ = netlink.RouteDel(route)
+	}
+}
+
+func (r *autoRedirect) cleanupStaleRouteRules(priority int, mark uint32) {
+	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
+		rules, err := netlink.RuleListFiltered(family,
+			&netlink.Rule{Priority: priority},
+			netlink.RT_FILTER_PRIORITY)
+		if err != nil {
+			continue
+		}
+		for index := range rules {
+			staleRule := &rules[index]
+			if staleRule.Mark != mark || staleRule.Table <= 255 {
+				continue
+			}
+			flushRouteTable(staleRule.Table)
+			_ = netlink.RuleDel(staleRule)
+		}
+	}
+}
+
+func defaultDestination(family int) *net.IPNet {
+	if family == unix.AF_INET6 {
+		return &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+	}
+	return &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}
 }
