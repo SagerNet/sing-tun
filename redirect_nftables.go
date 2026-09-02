@@ -415,11 +415,14 @@ func (r *autoRedirect) cleanupNFTables() {
 }
 
 func (r *autoRedirect) nftablesCreatePreMatchChains(nft *nftables.Conn, table *nftables.Table) error {
+	// Every nat chain of a hook is evaluated from the single nat hook netfilter registers at
+	// NF_IP_PRI_NAT_DST, whatever priority the chain itself declares, so a chain that must see the
+	// original destination has to sit below that priority rather than below the redirect chain.
 	chainPreroutingPreMatch := nft.AddChain(&nftables.Chain{
 		Name:     "prerouting_prematch",
 		Table:    table,
 		Hooknum:  nftables.ChainHookPrerouting,
-		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 1),
+		Priority: nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest - 1),
 		Type:     nftables.ChainTypeFilter,
 	})
 	err := r.nftablesAddPreMatchRules(nft, table, chainPreroutingPreMatch, true)
