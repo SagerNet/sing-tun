@@ -111,3 +111,20 @@ func (w *networkDispatcherFilter) dispatch(protocol tcpip.NetworkProtocolNumber,
 	}
 	return w.dispatcher.Dispatch(view)
 }
+
+// The embedded interface promotes only LinkEndpoint's methods, so without
+// these the stack cannot see the wrapped endpoint's segmentation offload and
+// every TCP segment leaves at MSS size.
+func (w *LinkEndpointFilter) GSOMaxSize() uint32 {
+	if gso, ok := w.LinkEndpoint.(stack.GSOEndpoint); ok {
+		return gso.GSOMaxSize()
+	}
+	return 0
+}
+
+func (w *LinkEndpointFilter) SupportedGSO() stack.SupportedGSO {
+	if gso, ok := w.LinkEndpoint.(stack.GSOEndpoint); ok {
+		return gso.SupportedGSO()
+	}
+	return stack.GSONotSupported
+}
