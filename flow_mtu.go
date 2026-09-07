@@ -17,7 +17,7 @@ func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacke
 	}
 	headerLength := len(raw) - len(packet.transport)
 	if packet.ipVersion == 6 && headerLength != header.IPv6MinimumSize {
-		reply, ok := buildPacketTooBig(packet.network.(header.IPv6), flow.effectiveMTU, d.writeback.ReturnHeadroom())
+		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, d.writeback.ReturnHeadroom())
 		if ok {
 			d.writebackBatch = append(d.writebackBatch, reply)
 		}
