@@ -629,6 +629,28 @@ func (t *NativeTun) TXChecksumOffload() bool {
 	return t.txChecksumOffload
 }
 
+func (t *NativeTun) rawFileDescriptor() int {
+	return t.tunFd
+}
+
+// os.NewFile registers a non-blocking descriptor with the runtime poller, which then wakes an
+// idle thread for every packet the engine loop is already waiting for on its own epoll.
+func (t *NativeTun) detachRuntimePoller() error {
+	duplicated, err := unix.FcntlInt(uintptr(t.tunFd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	previous := t.tunFile
+	t.tunFd = duplicated
+	t.tunFile = newUnpolledFile(duplicated, "tun")
+	t.readRawConn, err = t.tunFile.SyscallConn()
+	return E.Errors(err, previous.Close())
+}
+
+func (t *NativeTun) vnetHeaderEnabled() (bool, error) {
+	return checkVNETHDREnabled(t.tunFd, t.options.Name)
+}
+
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
 	return &net.IPNet{
 		IP:   prefix.Addr().AsSlice(),

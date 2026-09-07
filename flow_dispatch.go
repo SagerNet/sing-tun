@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"encoding/binary"
 	"maps"
 	"net/netip"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-tun/gtcpip"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -35,11 +37,34 @@ type ForwardWriteback interface {
 	WriteReturnPackets(packets [][]byte) error
 }
 
+type ForwardFrameMeta struct {
+	needsChecksum  bool
+	checksumStart  uint16
+	checksumOffset uint16
+	gsoType        uint8
+	gsoSize        uint16
+}
+
+func (m *ForwardFrameMeta) completeChecksum(raw []byte) {
+	if !m.needsChecksum {
+		return
+	}
+	m.needsChecksum = false
+	checksumAt := int(m.checksumStart) + int(m.checksumOffset)
+	if int(m.checksumStart) >= len(raw) || checksumAt+2 > len(raw) {
+		return
+	}
+	initial := binary.BigEndian.Uint16(raw[checksumAt:])
+	raw[checksumAt], raw[checksumAt+1] = 0, 0
+	binary.BigEndian.PutUint16(raw[checksumAt:], ^checksum.Checksum(raw[m.checksumStart:], initial))
+}
+
 type flowEntry struct {
 	action   FlowAction
 	deadline int64
 	idle     time.Duration
 	flow     *forwardFlow
+	verdict  FlowVerdict
 }
 
 type forwardFlow struct {
@@ -197,7 +222,21 @@ func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
 		return false
 	}
 	parsed, ok := parseForwardPacket(packet)
-	if !ok || parsed.fragment || !parsed.hasFlow {
+	if !ok {
+		return false
+	}
+	return d.dispatch(packet, &parsed, nil)
+}
+
+func (d *ForwardDispatcher) DispatchParsed(packet []byte, meta ForwardFrameMeta, parsed *forwardPacket) bool {
+	if d == nil || d.returnPath.closed.Load() {
+		return false
+	}
+	return d.dispatch(packet, parsed, &meta)
+}
+
+func (d *ForwardDispatcher) dispatch(packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
+	if parsed.fragment || !parsed.hasFlow {
 		return false
 	}
 	d.access.RLock()
@@ -213,7 +252,7 @@ func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
 		loaded = false
 	}
 	if loaded {
-		handled := d.handleHit(key, entry, &parsed, packet, now)
+		handled := d.handleHit(key, entry, parsed, packet, now, meta)
 		d.access.RUnlock()
 		return handled
 	}
@@ -222,10 +261,25 @@ func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
 		(parsed.tcpFlags&header.TCPFlagSyn == 0 || parsed.tcpFlags&header.TCPFlagAck != 0) {
 		return false
 	}
-	return d.judgeAndInstall(key, &parsed, packet)
+	return d.judgeAndInstall(key, parsed, packet, meta)
 }
 
-func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *forwardPacket, raw []byte, now int64) bool {
+func (d *ForwardDispatcher) teardownFlow(key flowKey, reason FlowCloseReason) {
+	if d == nil || d.returnPath.closed.Load() {
+		return
+	}
+	d.access.RLock()
+	defer d.access.RUnlock()
+	if d.returnPath.closed.Load() {
+		return
+	}
+	entry, loaded := d.table[key]
+	if loaded {
+		d.removeEntry(key, entry, reason)
+	}
+}
+
+func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *forwardPacket, raw []byte, now int64, meta *ForwardFrameMeta) bool {
 	switch entry.action {
 	case ActionFlow:
 		flow := entry.flow
@@ -236,7 +290,7 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 		var flowFinished bool
 		if packet.protocol == uint8(header.TCPProtocolNumber) {
 			if packet.tcpFlags&header.TCPFlagRst != 0 {
-				d.forwardToPort(flow, packet, raw)
+				d.forwardToPort(flow, packet, raw, meta)
 				flow.close(FlowCloseReset)
 				d.tombstoneEntry(entry, now)
 				return true
@@ -249,7 +303,7 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 		}
 		entry.idle = d.flowIdle(flow)
 		entry.deadline = now + int64(entry.idle)
-		d.forwardToPort(flow, packet, raw)
+		d.forwardToPort(flow, packet, raw, meta)
 		if flowFinished {
 			flow.report(FlowCloseFinished)
 		}
@@ -263,12 +317,14 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 			if packet.tcpFlags&header.TCPFlagSyn == 0 {
 				entry.idle = tcpEstablishedTimeout
 			}
+		} else if packet.protocol == uint8(header.UDPProtocolNumber) {
+			packet.verdict = entry.verdict
 		}
 		entry.deadline = now + int64(entry.idle)
 		return false
 	case ActionReject:
 		entry.deadline = now + int64(entry.idle)
-		d.stageReject(packet)
+		d.stageReject(packet, raw, meta)
 		return true
 	default:
 		entry.deadline = now + int64(entry.idle)
@@ -276,7 +332,7 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 	}
 }
 
-func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte) bool {
+func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) bool {
 	var firstPacket []byte
 	if packet.protocol == uint8(header.UDPProtocolNumber) {
 		firstPacket = header.UDP(packet.transport).Payload()
@@ -299,7 +355,7 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 				entry := &flowEntry{action: ActionFlow, flow: flow, idle: d.flowIdle(flow)}
 				entry.deadline = now + int64(entry.idle)
 				d.insertEntry(key, entry, now)
-				d.forwardToPort(flow, packet, raw)
+				d.forwardToPort(flow, packet, raw, meta)
 				return true
 			}
 			if result == createFlowExhausted {
@@ -308,15 +364,15 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 					d.logger.Warn("port selector range exhausted, rejecting flow to ", packet.destination)
 				}
 				d.installSimple(key, ActionReject, packet.protocol, now)
-				d.stageReject(packet)
+				d.stageReject(packet, raw, meta)
 				return true
 			}
 		}
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		d.installAccept(key, packet, verdict, now)
 		return false
 	case ActionReject:
 		d.installSimple(key, ActionReject, packet.protocol, now)
-		d.stageReject(packet)
+		d.stageReject(packet, raw, meta)
 		return true
 	case ActionDrop:
 		d.installSimple(key, ActionDrop, packet.protocol, now)
@@ -326,18 +382,27 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 			d.hijackDNSPacket(packet)
 			return true
 		}
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		d.installAccept(key, packet, verdict, now)
 		return false
 	default:
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		d.installAccept(key, packet, verdict, now)
 		return false
 	}
 }
 
-func (d *ForwardDispatcher) installSimple(key flowKey, action FlowAction, protocol uint8, now int64) {
+func (d *ForwardDispatcher) installSimple(key flowKey, action FlowAction, protocol uint8, now int64) *flowEntry {
 	entry := &flowEntry{action: action, idle: d.idleTimeout(protocol, false)}
 	entry.deadline = now + int64(entry.idle)
 	d.insertEntry(key, entry, now)
+	return entry
+}
+
+func (d *ForwardDispatcher) installAccept(key flowKey, packet *forwardPacket, verdict FlowVerdict, now int64) {
+	entry := d.installSimple(key, ActionAccept, packet.protocol, now)
+	if packet.protocol == uint8(header.UDPProtocolNumber) {
+		entry.verdict = verdict
+		packet.verdict = verdict
+	}
 }
 
 func (d *ForwardDispatcher) idleTimeout(protocol uint8, established bool) time.Duration {
@@ -495,7 +560,10 @@ func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	return nat
 }
 
-func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPacket, raw []byte) {
+func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) {
+	if meta != nil {
+		meta.completeChecksum(raw)
+	}
 	if flow.effectiveMTU != 0 && uint32(len(raw)) > flow.effectiveMTU {
 		if packet.protocol == uint8(header.TCPProtocolNumber) {
 			if flow.tracker != nil {
@@ -536,7 +604,16 @@ func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPack
 		flow.tracker.CountForward(len(raw))
 	}
 	d.rewriteForward(flow, packet)
+	if meta != nil {
+		raw = d.copyForStage(raw)
+	}
 	d.stagePort(flow.nat, raw)
+}
+
+func (d *ForwardDispatcher) copyForStage(raw []byte) []byte {
+	staged, _ := d.reserveSegments(1, len(raw))
+	copy(staged[0], raw)
+	return staged[0]
 }
 
 func (d *ForwardDispatcher) rewriteForward(flow *forwardFlow, packet *forwardPacket) {
@@ -567,7 +644,10 @@ func (d *ForwardDispatcher) flushPort(nat *portNAT) {
 	nat.pending = nat.pending[:0]
 }
 
-func (d *ForwardDispatcher) stageReject(packet *forwardPacket) {
+func (d *ForwardDispatcher) stageReject(packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) {
+	if meta != nil {
+		meta.completeChecksum(raw)
+	}
 	reply, ok := buildReject(packet, d.writeback.ReturnHeadroom())
 	if ok {
 		d.writebackBatch = append(d.writebackBatch, reply)
