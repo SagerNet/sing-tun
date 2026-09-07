@@ -386,6 +386,31 @@ func raiseReceiveBuffer(tunFd int) int {
 	return current
 }
 
+func (t *NativeTun) rawFileDescriptor() int {
+	return t.tunFd
+}
+
+// os.NewFile registers a non-blocking descriptor with the runtime poller, which then wakes an
+// idle thread for every packet the engine loop is already waiting for on its own kqueue.
+func (t *NativeTun) detachRuntimePoller() error {
+	duplicated, err := unix.FcntlInt(uintptr(t.tunFd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	previous := t.tunFile
+	t.tunFd = duplicated
+	t.tunFile = newUnpolledFile(duplicated, "utun")
+	return previous.Close()
+}
+
+func (t *NativeTun) transmitAccess() *sync.Mutex {
+	return &t.writeAccess
+}
+
+func (t *NativeTun) enableMaxPendingPackets() error {
+	return configure(t.tunFd, true, int(t.options.MTU))
+}
+
 func (t *NativeTun) BatchRead() ([]*buf.Buffer, error) {
 	for i := 0; i < t.batchSize; i++ {
 		iovecs := t.iovecs[i].nextIovecs()
