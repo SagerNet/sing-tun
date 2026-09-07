@@ -28,6 +28,7 @@ type forwardPacket struct {
 	icmpType    uint8
 	fragment    bool
 	hasFlow     bool
+	verdict     FlowVerdict
 }
 
 func (p *forwardPacket) flowKey() flowKey {
