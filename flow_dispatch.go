@@ -1,13 +1,16 @@
 package tun
 
 import (
+	"encoding/binary"
 	"maps"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-tun/gtcpip"
+	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -25,6 +28,7 @@ const (
 	flowTombstoneTimeout = 4 * time.Minute
 
 	flowTableCapacity = 16384
+	flowStageCapacity = 1024
 
 	flowSweepInterval = 30 * time.Second
 	flowSweepLimit    = flowTableCapacity / int(flowTombstoneTimeout/flowSweepInterval)
@@ -35,15 +39,39 @@ type ForwardWriteback interface {
 	WriteReturnPackets(packets [][]byte) error
 }
 
+type ForwardFrameMeta struct {
+	needsChecksum  bool
+	checksumStart  uint16
+	checksumOffset uint16
+	gsoType        uint8
+	gsoSize        uint16
+}
+
+func (m *ForwardFrameMeta) completeChecksum(raw []byte) {
+	if !m.needsChecksum {
+		return
+	}
+	m.needsChecksum = false
+	checksumAt := int(m.checksumStart) + int(m.checksumOffset)
+	if int(m.checksumStart) >= len(raw) || checksumAt+2 > len(raw) {
+		return
+	}
+	initial := binary.BigEndian.Uint16(raw[checksumAt:])
+	raw[checksumAt], raw[checksumAt+1] = 0, 0
+	binary.BigEndian.PutUint16(raw[checksumAt:], ^checksum.Checksum(raw[m.checksumStart:], initial))
+}
+
 type flowEntry struct {
 	action   FlowAction
 	deadline int64
 	idle     time.Duration
 	flow     *forwardFlow
+	verdict  FlowVerdict
 }
 
 type forwardFlow struct {
 	nat          *portNAT
+	owner        *ForwardStage
 	reverseKey   flowKey
 	forwardRule  rewriteRule
 	reverseRule  rewriteRule
@@ -114,20 +142,34 @@ type ForwardDispatcher struct {
 	logger      logger.Logger
 	udpTimeout  time.Duration
 	icmpTimeout time.Duration
-	access      sync.RWMutex
 
-	table        map[flowKey]*flowEntry
-	lastSweep    int64
-	resetPending atomic.Bool
-	ports        map[Port]*portNAT
-	natList      atomic.Pointer[[]*portNAT]
-	revNAT       atomic.Pointer[map[netip.Addr]*portNAT]
+	portsAccess     sync.Mutex
+	ports           map[Port]*portNAT
+	natList         atomic.Pointer[[]*portNAT]
+	revNAT          atomic.Pointer[map[netip.Addr]*portNAT]
+	returnPath      forwardReturn
+	stagesAccess    sync.Mutex
+	stages          []*ForwardStage
+	stageCount      atomic.Int32
+	resetGeneration atomic.Uint32
+}
 
-	activeNATs     []*portNAT
-	writebackBatch [][]byte
-	returnPath     forwardReturn
+type stagedPort struct {
+	nat     *portNAT
+	packets [][]byte
+}
+
+type ForwardStage struct {
+	dispatcher *ForwardDispatcher
+	writeback  ForwardWriteback
+	access     sync.Mutex
+	table      map[flowKey]*flowEntry
+	lastSweep  int64
+	resetSeen  uint32
+
 	exhaustedLogAt int64
-
+	ports          []stagedPort
+	writebackBatch [][]byte
 	segmentBuffers [][]byte
 	segmentSizes   []int
 	segmentUsed    int
@@ -148,7 +190,6 @@ func NewForwardDispatcher(handler Handler, writeback ForwardWriteback, logger lo
 		logger:      logger,
 		udpTimeout:  udpTimeout,
 		icmpTimeout: icmpTimeout,
-		table:       make(map[flowKey]*flowEntry),
 		ports:       make(map[Port]*portNAT),
 	}
 	if dispatcher.udpTimeout <= 0 {
@@ -161,6 +202,26 @@ func NewForwardDispatcher(handler Handler, writeback ForwardWriteback, logger lo
 	return dispatcher
 }
 
+func (d *ForwardDispatcher) NewStage(writeback ForwardWriteback) *ForwardStage {
+	if d == nil {
+		return nil
+	}
+	if writeback == nil {
+		writeback = d.writeback
+	}
+	stage := &ForwardStage{
+		dispatcher: d,
+		writeback:  writeback,
+		table:      make(map[flowKey]*flowEntry),
+		resetSeen:  d.resetGeneration.Load(),
+	}
+	d.stagesAccess.Lock()
+	d.stages = append(d.stages, stage)
+	d.stageCount.Store(int32(len(d.stages)))
+	d.stagesAccess.Unlock()
+	return stage
+}
+
 func (d *ForwardDispatcher) now() int64 {
 	return int64(time.Since(d.epoch))
 }
@@ -170,76 +231,100 @@ func (d *ForwardDispatcher) Close() {
 		return
 	}
 	d.returnPath.closed.Store(true)
-	d.access.Lock()
-	flows := make([]*forwardFlow, 0, len(d.table))
-	for _, entry := range d.table {
-		if entry.flow != nil {
-			flows = append(flows, entry.flow)
+	d.stagesAccess.Lock()
+	stages := d.stages
+	d.stagesAccess.Unlock()
+	for _, stage := range stages {
+		stage.access.Lock()
+		for key, entry := range stage.table {
+			stage.removeEntry(key, entry, FlowCloseReset)
 		}
+		stage.access.Unlock()
 	}
+	d.portsAccess.Lock()
 	ports := make([]Port, 0, len(d.ports))
-	for port, nat := range d.ports {
-		if nat != nil {
-			ports = append(ports, port)
-		}
+	for port := range d.ports {
+		ports = append(ports, port)
 	}
-	d.access.Unlock()
-	for _, flow := range flows {
-		flow.close(FlowCloseReset)
-	}
+	d.portsAccess.Unlock()
 	for _, port := range ports {
 		port.DetachReturn(&d.returnPath)
 	}
 }
 
-func (d *ForwardDispatcher) Dispatch(packet []byte) bool {
-	if d == nil || d.returnPath.closed.Load() {
+func (s *ForwardStage) Dispatch(packet []byte) bool {
+	if s == nil || s.dispatcher.returnPath.closed.Load() {
 		return false
 	}
 	parsed, ok := parseForwardPacket(packet)
-	if !ok || parsed.fragment || !parsed.hasFlow {
+	if !ok {
 		return false
 	}
-	d.access.RLock()
-	if d.returnPath.closed.Load() {
-		d.access.RUnlock()
+	return s.dispatch(packet, &parsed, nil)
+}
+
+func (s *ForwardStage) DispatchParsed(packet []byte, meta ForwardFrameMeta, parsed *forwardPacket) bool {
+	if s == nil || s.dispatcher.returnPath.closed.Load() {
+		return false
+	}
+	return s.dispatch(packet, parsed, &meta)
+}
+
+func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
+	if parsed.fragment || !parsed.hasFlow {
 		return false
 	}
 	key := parsed.flowKey()
-	now := d.now()
-	entry, loaded := d.table[key]
-	if loaded && d.entryExpired(entry, now) {
-		d.removeEntry(key, entry, FlowCloseTimeout)
-		loaded = false
-	}
+	now := s.dispatcher.now()
+	s.access.Lock()
+	entry, loaded := s.table[key]
 	if loaded {
-		handled := d.handleHit(key, entry, &parsed, packet, now)
-		d.access.RUnlock()
-		return handled
+		if entryExpired(entry, now) {
+			s.removeEntry(key, entry, FlowCloseTimeout)
+		} else {
+			handled, remove := s.handleHit(entry, parsed, packet, now, meta)
+			if remove {
+				s.removeEntry(key, entry, FlowCloseReset)
+			}
+			s.access.Unlock()
+			return handled
+		}
 	}
-	d.access.RUnlock()
+	s.access.Unlock()
 	if parsed.protocol == uint8(header.TCPProtocolNumber) &&
 		(parsed.tcpFlags&header.TCPFlagSyn == 0 || parsed.tcpFlags&header.TCPFlagAck != 0) {
 		return false
 	}
-	return d.judgeAndInstall(key, &parsed, packet)
+	return s.judgeAndInstall(key, parsed, packet, meta)
 }
 
-func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *forwardPacket, raw []byte, now int64) bool {
+func (s *ForwardStage) teardownFlow(key flowKey, reason FlowCloseReason) {
+	if s == nil || s.dispatcher.returnPath.closed.Load() {
+		return
+	}
+	s.access.Lock()
+	entry, loaded := s.table[key]
+	if loaded {
+		s.removeEntry(key, entry, reason)
+	}
+	s.access.Unlock()
+}
+
+func (s *ForwardStage) handleHit(entry *flowEntry, packet *forwardPacket, raw []byte, now int64, meta *ForwardFrameMeta) (handled bool, remove bool) {
 	switch entry.action {
 	case ActionFlow:
 		flow := entry.flow
 		if flow.closed.Load() {
-			d.tombstoneEntry(entry, now)
-			return true
+			tombstoneEntry(entry, now)
+			return true, false
 		}
 		var flowFinished bool
 		if packet.protocol == uint8(header.TCPProtocolNumber) {
 			if packet.tcpFlags&header.TCPFlagRst != 0 {
-				d.forwardToPort(flow, packet, raw)
+				s.forwardToPort(flow, packet, raw, meta)
 				flow.close(FlowCloseReset)
-				d.tombstoneEntry(entry, now)
-				return true
+				tombstoneEntry(entry, now)
+				return true, false
 			}
 			if packet.tcpFlags&header.TCPFlagFin != 0 {
 				flow.finForward.Store(true)
@@ -247,36 +332,38 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 				flowFinished = true
 			}
 		}
-		entry.idle = d.flowIdle(flow)
+		entry.idle = s.dispatcher.flowIdle(flow)
 		entry.deadline = now + int64(entry.idle)
-		d.forwardToPort(flow, packet, raw)
+		s.forwardToPort(flow, packet, raw, meta)
 		if flowFinished {
 			flow.report(FlowCloseFinished)
 		}
-		return true
+		return true, false
 	case ActionAccept:
 		if packet.protocol == uint8(header.TCPProtocolNumber) {
 			if packet.tcpFlags&header.TCPFlagRst != 0 {
-				d.removeEntry(key, entry, FlowCloseReset)
-				return false
+				return false, true
 			}
 			if packet.tcpFlags&header.TCPFlagSyn == 0 {
 				entry.idle = tcpEstablishedTimeout
 			}
+		} else if packet.protocol == uint8(header.UDPProtocolNumber) {
+			packet.verdict = entry.verdict
 		}
 		entry.deadline = now + int64(entry.idle)
-		return false
+		return false, false
 	case ActionReject:
 		entry.deadline = now + int64(entry.idle)
-		d.stageReject(packet)
-		return true
+		s.stageReject(packet, raw, meta)
+		return true, false
 	default:
 		entry.deadline = now + int64(entry.idle)
-		return true
+		return true, false
 	}
 }
 
-func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte) bool {
+func (s *ForwardStage) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) bool {
+	d := s.dispatcher
 	var firstPacket []byte
 	if packet.protocol == uint8(header.UDPProtocolNumber) {
 		firstPacket = header.UDP(packet.transport).Payload()
@@ -285,59 +372,80 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 	if verdict.Action == ActionBypass && verdict.Port != nil {
 		verdict.Action = ActionFlow
 	}
-	d.access.RLock()
-	defer d.access.RUnlock()
+	s.access.Lock()
+	defer s.access.Unlock()
 	if d.returnPath.closed.Load() {
 		return false
 	}
 	now := d.now()
+	existing, loaded := s.table[key]
+	if loaded {
+		if entryExpired(existing, now) {
+			s.removeEntry(key, existing, FlowCloseTimeout)
+		} else {
+			handled, remove := s.handleHit(existing, packet, raw, now, meta)
+			if remove {
+				s.removeEntry(key, existing, FlowCloseReset)
+			}
+			return handled
+		}
+	}
 	switch verdict.Action {
 	case ActionFlow:
 		if verdict.Port != nil {
-			flow, result := d.createFlow(packet, verdict)
+			flow, result := s.createFlow(packet, verdict)
 			if result == createFlowOK {
 				entry := &flowEntry{action: ActionFlow, flow: flow, idle: d.flowIdle(flow)}
 				entry.deadline = now + int64(entry.idle)
-				d.insertEntry(key, entry, now)
-				d.forwardToPort(flow, packet, raw)
+				s.insertEntry(key, entry, now)
+				s.forwardToPort(flow, packet, raw, meta)
 				return true
 			}
 			if result == createFlowExhausted {
-				if now-d.exhaustedLogAt >= int64(exhaustedLogInterval) {
-					d.exhaustedLogAt = now
+				if now-s.exhaustedLogAt >= int64(exhaustedLogInterval) {
+					s.exhaustedLogAt = now
 					d.logger.Warn("port selector range exhausted, rejecting flow to ", packet.destination)
 				}
-				d.installSimple(key, ActionReject, packet.protocol, now)
-				d.stageReject(packet)
+				s.installSimple(key, ActionReject, packet.protocol, now)
+				s.stageReject(packet, raw, meta)
 				return true
 			}
 		}
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		s.installAccept(key, packet, verdict, now)
 		return false
 	case ActionReject:
-		d.installSimple(key, ActionReject, packet.protocol, now)
-		d.stageReject(packet)
+		s.installSimple(key, ActionReject, packet.protocol, now)
+		s.stageReject(packet, raw, meta)
 		return true
 	case ActionDrop:
-		d.installSimple(key, ActionDrop, packet.protocol, now)
+		s.installSimple(key, ActionDrop, packet.protocol, now)
 		return true
 	case ActionHijackDNS:
 		if packet.protocol == uint8(header.UDPProtocolNumber) {
 			d.hijackDNSPacket(packet)
 			return true
 		}
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		s.installAccept(key, packet, verdict, now)
 		return false
 	default:
-		d.installSimple(key, ActionAccept, packet.protocol, now)
+		s.installAccept(key, packet, verdict, now)
 		return false
 	}
 }
 
-func (d *ForwardDispatcher) installSimple(key flowKey, action FlowAction, protocol uint8, now int64) {
-	entry := &flowEntry{action: action, idle: d.idleTimeout(protocol, false)}
+func (s *ForwardStage) installSimple(key flowKey, action FlowAction, protocol uint8, now int64) *flowEntry {
+	entry := &flowEntry{action: action, idle: s.dispatcher.idleTimeout(protocol, false)}
 	entry.deadline = now + int64(entry.idle)
-	d.insertEntry(key, entry, now)
+	s.insertEntry(key, entry, now)
+	return entry
+}
+
+func (s *ForwardStage) installAccept(key flowKey, packet *forwardPacket, verdict FlowVerdict, now int64) {
+	entry := s.installSimple(key, ActionAccept, packet.protocol, now)
+	if packet.protocol == uint8(header.UDPProtocolNumber) {
+		entry.verdict = verdict
+		packet.verdict = verdict
+	}
 }
 
 func (d *ForwardDispatcher) idleTimeout(protocol uint8, established bool) time.Duration {
@@ -375,7 +483,7 @@ const (
 
 const exhaustedLogInterval = 5 * time.Second
 
-func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdict) (*forwardFlow, createFlowResult) {
+func (s *ForwardStage) createFlow(packet *forwardPacket, verdict FlowVerdict) (*forwardFlow, createFlowResult) {
 	var portAddress netip.Addr
 	inet4Address, inet6Address := verdict.Port.PortAddresses()
 	if packet.ipVersion == 6 {
@@ -401,11 +509,11 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 	if verdict.Destination.Port() != 0 && !isICMP {
 		serverPort = verdict.Destination.Port()
 	}
-	nat := d.natFor(verdict.Port)
+	nat := s.dispatcher.natFor(verdict.Port)
 	if nat == nil {
 		return nil, createFlowUnsupported
 	}
-	selector, reverseKey, allocated := nat.allocateSelector(packet.protocol, portAddress, serverAddress, serverPort, packet.source.Port())
+	selector, reverseKey, allocated := nat.reserveSelector(packet.protocol, portAddress, serverAddress, serverPort, packet.source.Port())
 	if !allocated {
 		return nil, createFlowExhausted
 	}
@@ -415,6 +523,7 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 	}
 	flow := &forwardFlow{
 		nat:                      nat,
+		owner:                    s,
 		reverseKey:               reverseKey,
 		effectiveMTU:             effectiveMTU,
 		protocol:                 packet.protocol,
@@ -462,6 +571,8 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 }
 
 func (d *ForwardDispatcher) natFor(port Port) *portNAT {
+	d.portsAccess.Lock()
+	defer d.portsAccess.Unlock()
 	nat, loaded := d.ports[port]
 	if loaded {
 		return nat
@@ -495,14 +606,25 @@ func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	return nat
 }
 
-func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPacket, raw []byte) {
-	if flow.effectiveMTU != 0 && uint32(len(raw)) > flow.effectiveMTU {
+func (s *ForwardStage) forwardToPort(flow *forwardFlow, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) {
+	effectiveMTU := flow.effectiveMTU
+	if meta != nil {
+		meta.completeChecksum(raw)
+		if meta.gsoSize != 0 && packet.protocol == uint8(header.TCPProtocolNumber) {
+			headerLength := len(raw) - len(packet.transport) + int(header.TCP(packet.transport).DataOffset())
+			offloadMTU := uint32(headerLength) + uint32(meta.gsoSize)
+			if effectiveMTU == 0 || offloadMTU < effectiveMTU {
+				effectiveMTU = offloadMTU
+			}
+		}
+	}
+	if effectiveMTU != 0 && uint32(len(raw)) > effectiveMTU {
 		if packet.protocol == uint8(header.TCPProtocolNumber) {
 			if flow.tracker != nil {
 				flow.tracker.CountForward(len(raw))
 			}
-			d.rewriteForward(flow, packet)
-			d.resegmentTCP(flow, packet, raw)
+			rewriteForward(flow, packet)
+			s.resegmentTCP(flow, packet, raw, effectiveMTU)
 			return
 		}
 		if packet.ipVersion == 4 {
@@ -511,35 +633,44 @@ func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPack
 				if flow.tracker != nil {
 					flow.tracker.CountForward(len(raw))
 				}
-				d.rewriteForward(flow, packet)
+				rewriteForward(flow, packet)
 				fragments, ok := fragmentIPv4Packet(ipHdr, flow.effectiveMTU)
 				if ok {
 					for _, fragment := range fragments {
-						d.stagePort(flow.nat, fragment)
+						s.stagePort(flow.nat, fragment)
 					}
 				}
 				return
 			}
-			reply, ok := buildFragmentationNeeded(ipHdr, flow.effectiveMTU, d.writeback.ReturnHeadroom())
+			reply, ok := buildFragmentationNeeded(ipHdr, flow.effectiveMTU, s.writeback.ReturnHeadroom())
 			if ok {
-				d.writebackBatch = append(d.writebackBatch, reply)
+				s.writebackBatch = append(s.writebackBatch, reply)
 			}
 			return
 		}
-		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, d.writeback.ReturnHeadroom())
+		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, s.writeback.ReturnHeadroom())
 		if ok {
-			d.writebackBatch = append(d.writebackBatch, reply)
+			s.writebackBatch = append(s.writebackBatch, reply)
 		}
 		return
 	}
 	if flow.tracker != nil {
 		flow.tracker.CountForward(len(raw))
 	}
-	d.rewriteForward(flow, packet)
-	d.stagePort(flow.nat, raw)
+	rewriteForward(flow, packet)
+	if meta != nil {
+		raw = s.copyForStage(raw)
+	}
+	s.stagePort(flow.nat, raw)
 }
 
-func (d *ForwardDispatcher) rewriteForward(flow *forwardFlow, packet *forwardPacket) {
+func (s *ForwardStage) copyForStage(raw []byte) []byte {
+	staged, _ := s.reserveSegments(1, len(raw))
+	copy(staged[0], raw)
+	return staged[0]
+}
+
+func rewriteForward(flow *forwardFlow, packet *forwardPacket) {
 	if packet.isTCPSyn() {
 		applyRewriteRaw(packet, &flow.forwardRule)
 		clampTCPMSS(packet, flow.effectiveMTU)
@@ -549,28 +680,23 @@ func (d *ForwardDispatcher) rewriteForward(flow *forwardFlow, packet *forwardPac
 	}
 }
 
-func (d *ForwardDispatcher) stagePort(nat *portNAT, packet []byte) {
-	if len(nat.pending) == 0 {
-		d.activeNATs = append(d.activeNATs, nat)
+func (s *ForwardStage) stagePort(nat *portNAT, packet []byte) {
+	for index := range s.ports {
+		if s.ports[index].nat == nat {
+			s.ports[index].packets = append(s.ports[index].packets, packet)
+			return
+		}
 	}
-	nat.pending = append(nat.pending, packet)
+	s.ports = append(s.ports, stagedPort{nat: nat, packets: [][]byte{packet}})
 }
 
-func (d *ForwardDispatcher) flushPort(nat *portNAT) {
-	if len(nat.pending) == 0 {
-		return
+func (s *ForwardStage) stageReject(packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) {
+	if meta != nil {
+		meta.completeChecksum(raw)
 	}
-	err := nat.port.WritePackets(nat.pending)
-	if err != nil {
-		d.logger.Trace(E.Cause(err, "forward packets"))
-	}
-	nat.pending = nat.pending[:0]
-}
-
-func (d *ForwardDispatcher) stageReject(packet *forwardPacket) {
-	reply, ok := buildReject(packet, d.writeback.ReturnHeadroom())
+	reply, ok := buildReject(packet, s.writeback.ReturnHeadroom())
 	if ok {
-		d.writebackBatch = append(d.writebackBatch, reply)
+		s.writebackBatch = append(s.writebackBatch, reply)
 	}
 }
 
@@ -578,44 +704,62 @@ func (d *ForwardDispatcher) ResetNetwork() {
 	if d == nil {
 		return
 	}
-	d.resetPending.Store(true)
+	d.resetGeneration.Add(1)
 }
 
-func (d *ForwardDispatcher) Flush() {
-	if d == nil || d.returnPath.closed.Load() {
+func (s *ForwardStage) Flush() {
+	if s == nil {
 		return
 	}
-	d.access.RLock()
-	defer d.access.RUnlock()
+	d := s.dispatcher
 	if d.returnPath.closed.Load() {
 		return
 	}
-	if d.resetPending.Swap(false) {
-		for key, entry := range d.table {
-			d.removeEntry(key, entry, FlowCloseReset)
+	now := d.now()
+	generation := d.resetGeneration.Load()
+	if s.resetSeen != generation {
+		s.resetSeen = generation
+		s.access.Lock()
+		for key, entry := range s.table {
+			s.removeEntry(key, entry, FlowCloseReset)
 		}
+		s.access.Unlock()
 	}
-	for _, nat := range d.activeNATs {
-		d.flushPort(nat)
+	for index := range s.ports {
+		staged := &s.ports[index]
+		if len(staged.packets) == 0 {
+			continue
+		}
+		err := staged.nat.port.WritePackets(staged.packets)
+		if err != nil {
+			d.logger.Trace(E.Cause(err, "forward packets"))
+		}
+		clear(staged.packets)
+		staged.packets = staged.packets[:0]
 	}
-	d.activeNATs = d.activeNATs[:0]
-	if retain := max(d.segmentUsed, segmentRetainCount); len(d.segmentBuffers) > retain {
-		clear(d.segmentBuffers[retain:])
-		d.segmentBuffers = d.segmentBuffers[:retain]
-		d.segmentSizes = d.segmentSizes[:retain]
+	if retain := max(s.segmentUsed, segmentRetainCount); len(s.segmentBuffers) > retain {
+		clear(s.segmentBuffers[retain:])
+		s.segmentBuffers = s.segmentBuffers[:retain]
+		s.segmentSizes = s.segmentSizes[:retain]
 	}
-	d.segmentUsed = 0
-	if len(d.writebackBatch) > 0 {
-		err := d.writeback.WriteReturnPackets(d.writebackBatch)
+	s.segmentUsed = 0
+	if len(s.writebackBatch) > 0 {
+		err := s.writeback.WriteReturnPackets(s.writebackBatch)
 		if err != nil {
 			d.logger.Trace(E.Cause(err, "write back packets"))
 		}
-		d.writebackBatch = d.writebackBatch[:0]
+		clear(s.writebackBatch)
+		s.writebackBatch = s.writebackBatch[:0]
 	}
-	d.maybeSweep(d.now())
+	if now-s.lastSweep >= int64(flowSweepInterval) {
+		s.lastSweep = now
+		s.access.Lock()
+		s.sweep(now)
+		s.access.Unlock()
+	}
 }
 
-func (d *ForwardDispatcher) entryExpired(entry *flowEntry, now int64) bool {
+func entryExpired(entry *flowEntry, now int64) bool {
 	if now <= entry.deadline {
 		return false
 	}
@@ -630,14 +774,14 @@ func (d *ForwardDispatcher) entryExpired(entry *flowEntry, now int64) bool {
 	return true
 }
 
-func (d *ForwardDispatcher) tombstoneEntry(entry *flowEntry, now int64) {
+func tombstoneEntry(entry *flowEntry, now int64) {
 	entry.action = ActionDrop
 	entry.idle = flowTombstoneTimeout
 	entry.deadline = now + int64(entry.idle)
 }
 
-func (d *ForwardDispatcher) removeEntry(key flowKey, entry *flowEntry, reason FlowCloseReason) {
-	delete(d.table, key)
+func (s *ForwardStage) removeEntry(key flowKey, entry *flowEntry, reason FlowCloseReason) {
+	delete(s.table, key)
 	if entry.flow != nil {
 		if reason == FlowCloseTimeout && entry.flow.finForward.Load() && entry.flow.finReverse.Load() {
 			reason = FlowCloseFinished
@@ -647,23 +791,23 @@ func (d *ForwardDispatcher) removeEntry(key flowKey, entry *flowEntry, reason Fl
 	}
 }
 
-func (d *ForwardDispatcher) insertEntry(key flowKey, entry *flowEntry, now int64) {
-	if len(d.table) >= flowTableCapacity {
-		d.evictEntries(now)
+func (s *ForwardStage) insertEntry(key flowKey, entry *flowEntry, now int64) {
+	if len(s.table) >= max(flowTableCapacity/int(s.dispatcher.stageCount.Load()), flowStageCapacity) {
+		s.evictEntries(now)
 	}
-	d.table[key] = entry
+	s.table[key] = entry
 }
 
-func (d *ForwardDispatcher) evictEntries(now int64) {
+func (s *ForwardStage) evictEntries(now int64) {
 	var (
 		freed     int
 		visited   int
 		oldestKey flowKey
 		oldest    *flowEntry
 	)
-	for key, entry := range d.table {
-		if d.entryExpired(entry, now) {
-			d.removeEntry(key, entry, FlowCloseTimeout)
+	for key, entry := range s.table {
+		if entryExpired(entry, now) {
+			s.removeEntry(key, entry, FlowCloseTimeout)
 			freed++
 		} else if oldest == nil || entry.deadline < oldest.deadline {
 			oldestKey = key
@@ -675,21 +819,17 @@ func (d *ForwardDispatcher) evictEntries(now int64) {
 		}
 	}
 	if freed == 0 && oldest != nil {
-		d.removeEntry(oldestKey, oldest, FlowCloseReset)
+		s.removeEntry(oldestKey, oldest, FlowCloseReset)
 	}
 }
 
-func (d *ForwardDispatcher) maybeSweep(now int64) {
-	if now-d.lastSweep < int64(flowSweepInterval) {
-		return
-	}
-	d.lastSweep = now
+func (s *ForwardStage) sweep(now int64) {
 	visited := 0
-	for key, entry := range d.table {
+	for key, entry := range s.table {
 		if entry.action == ActionFlow && entry.flow.closed.Load() {
-			d.tombstoneEntry(entry, now)
-		} else if d.entryExpired(entry, now) {
-			d.removeEntry(key, entry, FlowCloseTimeout)
+			tombstoneEntry(entry, now)
+		} else if entryExpired(entry, now) {
+			s.removeEntry(key, entry, FlowCloseTimeout)
 		}
 		visited++
 		if visited >= flowSweepLimit {
@@ -721,6 +861,11 @@ const (
 	returnDrop
 )
 
+type returnBatch struct {
+	writeback ForwardWriteback
+	packets   [][]byte
+}
+
 func (r *forwardReturn) ReturnPackets(packets [][]byte) [][]byte {
 	if r.closed.Load() {
 		return packets
@@ -736,60 +881,55 @@ func (r *forwardReturn) ReturnPackets(packets [][]byte) [][]byte {
 	}
 	headroom := r.dispatcher.writeback.ReturnHeadroom()
 	now := r.dispatcher.now()
-
-	if len(packets) == 1 {
-		switch r.classifyReturn(packets[0], natList, revMap, headroom, now) {
-		case returnWrite:
-			if err := r.dispatcher.writeback.WriteReturnPackets(packets[:1]); err != nil {
-				r.dispatcher.logger.Trace(E.Cause(err, "write return packets"))
-			}
-			return packets[:0]
-		case returnDrop:
-			return packets[:0]
-		default:
-			return packets
-		}
-	}
-
 	unconsumed := packets[:0]
-	var writeBatch [][]byte
+	var batches []returnBatch
 	for _, raw := range packets {
-		switch r.classifyReturn(raw, natList, revMap, headroom, now) {
+		decision, writeback := r.classifyReturn(raw, natList, revMap, headroom, now)
+		switch decision {
 		case returnWrite:
-			writeBatch = append(writeBatch, raw)
+			index := slices.IndexFunc(batches, func(batch returnBatch) bool { return batch.writeback == writeback })
+			if index < 0 {
+				batches = append(batches, returnBatch{writeback: writeback})
+				index = len(batches) - 1
+			}
+			batches[index].packets = append(batches[index].packets, raw)
 		case returnDrop:
 		default:
 			unconsumed = append(unconsumed, raw)
 		}
 	}
-	if len(writeBatch) > 0 {
-		if err := r.dispatcher.writeback.WriteReturnPackets(writeBatch); err != nil {
+	for _, batch := range batches {
+		err := batch.writeback.WriteReturnPackets(batch.packets)
+		if err != nil {
 			r.dispatcher.logger.Trace(E.Cause(err, "write return packets"))
 		}
 	}
 	return unconsumed
 }
 
-func (r *forwardReturn) classifyReturn(raw []byte, natList []*portNAT, revMap map[netip.Addr]*portNAT, headroom int, now int64) returnDecision {
+func (r *forwardReturn) classifyReturn(raw []byte, natList []*portNAT, revMap map[netip.Addr]*portNAT, headroom int, now int64) (returnDecision, ForwardWriteback) {
 	if len(raw) < headroom+header.IPv4MinimumSize {
-		return returnPass
+		return returnPass, nil
 	}
 	parsed, ok := parseForwardPacket(raw[headroom:])
 	if !ok || parsed.fragment {
-		return returnPass
+		return returnPass, nil
 	}
 	if !parsed.hasFlow {
-		if parsed.isICMPError() && returnICMPError(natList, revMap, &parsed) {
-			return returnWrite
+		if parsed.isICMPError() {
+			flow := returnICMPError(natList, revMap, &parsed)
+			if flow != nil {
+				return returnWrite, flow.owner.writeback
+			}
 		}
-		return returnPass
+		return returnPass, nil
 	}
 	flow := findReverseFlow(natList, revMap, parsed.flowKey())
 	if flow == nil {
-		return returnPass
+		return returnPass, nil
 	}
 	if flow.closed.Load() {
-		return returnDrop
+		return returnDrop, nil
 	}
 	if flow.tracker != nil {
 		flow.tracker.CountReverse(len(raw) - headroom)
@@ -802,7 +942,7 @@ func (r *forwardReturn) classifyReturn(raw []byte, natList []*portNAT, revMap ma
 	} else {
 		applyRewrite(&parsed, &flow.reverseRule)
 	}
-	return returnWrite
+	return returnWrite, flow.owner.writeback
 }
 
 func findReverseFlow(natList []*portNAT, revMap map[netip.Addr]*portNAT, key flowKey) *forwardFlow {
@@ -819,18 +959,18 @@ func findReverseFlow(natList []*portNAT, revMap map[netip.Addr]*portNAT, key flo
 	return nil
 }
 
-func returnICMPError(natList []*portNAT, revMap map[netip.Addr]*portNAT, parsed *forwardPacket) bool {
+func returnICMPError(natList []*portNAT, revMap map[netip.Addr]*portNAT, parsed *forwardPacket) *forwardFlow {
 	inner, ok := parsed.icmpErrorInner()
 	if !ok {
-		return false
+		return nil
 	}
 	embedded, parsedInner := parseEmbedded(inner)
 	if !parsedInner {
-		return false
+		return nil
 	}
 	flow := findReverseFlow(natList, revMap, embedded.flowKey().reversed())
 	if flow == nil || flow.closed.Load() {
-		return false
+		return nil
 	}
 	rewriteEmbeddedSource(&embedded, addrToTCPIP(flow.clientAddress), flow.clientSelector, true)
 	if flow.dnatAddress || flow.dnatPort {
@@ -842,5 +982,5 @@ func returnICMPError(natList []*portNAT, revMap map[netip.Addr]*portNAT, parsed 
 		networkHeader.SetSourceAddr(flow.clientDestinationAddress)
 	}
 	recomputeChecksums(parsed)
-	return true
+	return flow
 }

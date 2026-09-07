@@ -18,6 +18,14 @@ type Stack interface {
 	Close() error
 }
 
+type MemoryPressure uint8
+
+const (
+	MemoryPressureNone MemoryPressure = iota
+	MemoryPressureWarning
+	MemoryPressureCritical
+)
+
 type StackOptions struct {
 	Context                context.Context
 	Tun                    Tun
@@ -32,6 +40,7 @@ type StackOptions struct {
 	ForwarderBindInterface bool
 	IncludeAllNetworks     bool
 	InterfaceFinder        control.InterfaceFinder
+	MemoryPressure         func() MemoryPressure
 }
 
 func NewStack(
@@ -39,14 +48,8 @@ func NewStack(
 	options StackOptions,
 ) (Stack, error) {
 	switch stack {
-	case "":
-		if options.IncludeAllNetworks {
-			return NewGVisor(options)
-		} else if WithGVisor && !options.TunOptions.GSO {
-			return NewMixed(options)
-		} else {
-			return NewSystem(options)
-		}
+	case "", "go":
+		return NewGo(options), nil
 	case "gvisor":
 		return NewGVisor(options)
 	case "mixed":
