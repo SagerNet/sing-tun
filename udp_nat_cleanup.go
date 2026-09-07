@@ -34,7 +34,7 @@ func (s *UDPNat) Start() error {
 }
 
 type udpNatCleanupEntry struct {
-	conn     *udpNatConn
+	conn     *UDPNatConn
 	deadline time.Time
 	index    int
 }

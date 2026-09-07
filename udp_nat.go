@@ -92,15 +92,15 @@ type UDPNat struct {
 	timeout             time.Duration
 	mapping             NATMapping
 	filtering           NATFiltering
-	cache               *freelru.Cache[udpNatSessionKey, *udpNatConn]
-	filterCache         *freelru.Cache[udpNatFilterKey, *udpNatConn]
+	cache               *freelru.Cache[udpNatSessionKey, *UDPNatConn]
+	filterCache         *freelru.Cache[udpNatFilterKey, *UDPNatConn]
 	nextFilterSessionID atomic.Uint64
 	interfaceFinder     control.InterfaceFinder
 	excludeInterface    []string
 	interfaceElement    *list.Element[control.InterfaceUpdateCallback]
 	egress              atomic.Pointer[udpNatEgressTable]
 	classAccess         sync.Mutex
-	classConns          map[uint32]map[*udpNatConn]struct{}
+	classConns          map[uint32]map[*UDPNatConn]struct{}
 	cleanup             *udpNatCleanupQueue
 	state               atomic.Uint32
 	lifecycleAccess     sync.Mutex
@@ -124,11 +124,11 @@ func NewUDPNat(options UDPNatOptions) *UDPNat {
 		}
 	}
 	hasher := maphash.NewHasher[udpNatSessionKey]()
-	cache := common.Must1(freelru.New[udpNatSessionKey, *udpNatConn](maxSize, hasher.Hash32, options.Shared))
-	var filterCache *freelru.Cache[udpNatFilterKey, *udpNatConn]
+	cache := common.Must1(freelru.New[udpNatSessionKey, *UDPNatConn](maxSize, hasher.Hash32, options.Shared))
+	var filterCache *freelru.Cache[udpNatFilterKey, *UDPNatConn]
 	if NATMapping(options.Filtering) > options.Mapping {
 		filterHasher := maphash.NewHasher[udpNatFilterKey]()
-		filterCache = common.Must1(freelru.New[udpNatFilterKey, *udpNatConn](maxSize, filterHasher.Hash32, options.Shared))
+		filterCache = common.Must1(freelru.New[udpNatFilterKey, *UDPNatConn](maxSize, filterHasher.Hash32, options.Shared))
 	}
 	service := &UDPNat{
 		handler:          options.Handler,
@@ -140,12 +140,12 @@ func NewUDPNat(options UDPNatOptions) *UDPNat {
 		filterCache:      filterCache,
 		interfaceFinder:  options.InterfaceFinder,
 		excludeInterface: options.ExcludeInterface,
-		classConns:       make(map[uint32]map[*udpNatConn]struct{}),
+		classConns:       make(map[uint32]map[*UDPNatConn]struct{}),
 		cleanupDone:      make(chan struct{}),
 	}
 	service.cleanup = newUDPNatCleanupQueue(service)
 	cache.SetLifetime(options.Timeout)
-	cache.SetHealthCheck(func(_ udpNatSessionKey, conn *udpNatConn) bool {
+	cache.SetHealthCheck(func(_ udpNatSessionKey, conn *UDPNatConn) bool {
 		select {
 		case <-conn.doneChan:
 			return false
@@ -153,11 +153,11 @@ func NewUDPNat(options UDPNatOptions) *UDPNat {
 			return true
 		}
 	})
-	cache.SetOnEvict(func(_ udpNatSessionKey, conn *udpNatConn) {
+	cache.SetOnEvict(func(_ udpNatSessionKey, conn *UDPNatConn) {
 		conn.closeFromCache()
 	})
 	if filterCache != nil {
-		filterCache.SetOnEvict(func(key udpNatFilterKey, conn *udpNatConn) {
+		filterCache.SetOnEvict(func(key udpNatFilterKey, conn *UDPNatConn) {
 			conn.removeFilterPeer(key.peer)
 		})
 	}
@@ -212,7 +212,7 @@ func (s *UDPNat) updateInterfaces(interfaces []control.Interface) {
 		}
 	}
 	s.egress.Store(newUDPNatEgressTable(entries))
-	var closeConns []*udpNatConn
+	var closeConns []*UDPNatConn
 	s.classAccess.Lock()
 	for interfaceIndex, conns := range s.classConns {
 		if !slices.ContainsFunc(entries, func(entry udpNatEgressEntry) bool {
@@ -295,18 +295,18 @@ func (t *udpNatEgressTable) lookup(address netip.Addr) uint32 {
 	return 0
 }
 
-func (s *UDPNat) registerClass(conn *udpNatConn) {
+func (s *UDPNat) registerClass(conn *UDPNatConn) {
 	s.classAccess.Lock()
 	conns := s.classConns[conn.interfaceIndex]
 	if conns == nil {
-		conns = make(map[*udpNatConn]struct{})
+		conns = make(map[*UDPNatConn]struct{})
 		s.classConns[conn.interfaceIndex] = conns
 	}
 	conns[conn] = struct{}{}
 	s.classAccess.Unlock()
 }
 
-func (s *UDPNat) unregisterClass(conn *udpNatConn) {
+func (s *UDPNat) unregisterClass(conn *UDPNatConn) {
 	s.classAccess.Lock()
 	conns := s.classConns[conn.interfaceIndex]
 	if conns != nil {
@@ -336,7 +336,7 @@ func (s *UDPNat) NewPacket(bufferSlices [][]byte, source M.Socksaddr, destinatio
 	conn.enqueue(buffer, destination)
 }
 
-func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, userData any) (*udpNatConn, bool) {
+func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, userData any) (*UDPNatConn, bool) {
 	if s.state.Load() != udpNatStateStarted {
 		return nil, false
 	}
@@ -357,12 +357,12 @@ func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, us
 		newContext context.Context
 		newOnClose N.CloseHandlerFunc
 	)
-	conn, loaded, ok := s.cache.GetAndRefreshOrAdd(key, func() (*udpNatConn, bool) {
+	conn, loaded, ok := s.cache.GetAndRefreshOrAdd(key, func() (*UDPNatConn, bool) {
 		ok, ctx, writer, onClose := s.prepare(source, destination, userData)
 		if !ok {
 			return nil, false
 		}
-		newConn := &udpNatConn{
+		newConn := &UDPNatConn{
 			service:      s,
 			key:          key,
 			writer:       writer,
@@ -419,7 +419,7 @@ func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, us
 	return conn, true
 }
 
-func (c *udpNatConn) enqueue(buffer *buf.Buffer, destination M.Socksaddr) {
+func (c *UDPNatConn) enqueue(buffer *buf.Buffer, destination M.Socksaddr) {
 	c.packetAccess.RLock()
 	select {
 	case <-c.doneChan:
@@ -477,13 +477,13 @@ func (s *UDPNat) PurgeExpired() {
 }
 
 var (
-	_ N.PacketConn                 = (*udpNatConn)(nil)
-	_ canceler.PacketConn          = (*udpNatConn)(nil)
-	_ N.PacketBatchReadWaitCreator = (*udpNatConn)(nil)
-	_ N.PacketBatchWriteCreator    = (*udpNatConn)(nil)
+	_ N.PacketConn                 = (*UDPNatConn)(nil)
+	_ canceler.PacketConn          = (*UDPNatConn)(nil)
+	_ N.PacketBatchReadWaitCreator = (*UDPNatConn)(nil)
+	_ N.PacketBatchWriteCreator    = (*UDPNatConn)(nil)
 )
 
-type udpNatConn struct {
+type UDPNatConn struct {
 	service         *UDPNat
 	key             udpNatSessionKey
 	interfaceIndex  uint32
@@ -509,7 +509,7 @@ type udpNatReadBatch struct {
 	destinations []M.Socksaddr
 }
 
-func (c *udpNatConn) loadReadWaitOptions() N.ReadWaitOptions {
+func (c *UDPNatConn) loadReadWaitOptions() N.ReadWaitOptions {
 	options := c.readWaitOptions.Load()
 	if options == nil {
 		return N.ReadWaitOptions{}
@@ -517,7 +517,7 @@ func (c *udpNatConn) loadReadWaitOptions() N.ReadWaitOptions {
 	return *options
 }
 
-func (c *udpNatConn) addFilterPeer(destination M.Socksaddr) {
+func (c *UDPNatConn) addFilterPeer(destination M.Socksaddr) {
 	if c.filterSessionID == 0 || !destination.IsIP() {
 		return
 	}
@@ -553,13 +553,13 @@ func (c *udpNatConn) addFilterPeer(destination M.Socksaddr) {
 	}
 }
 
-func (c *udpNatConn) removeFilterPeer(peer netip.AddrPort) {
+func (c *UDPNatConn) removeFilterPeer(peer netip.AddrPort) {
 	c.filterAccess.Lock()
 	delete(c.filterPeers, peer)
 	c.filterAccess.Unlock()
 }
 
-func (c *udpNatConn) clearFilterPeers() {
+func (c *UDPNatConn) clearFilterPeers() {
 	if c.filterSessionID == 0 {
 		return
 	}
@@ -575,7 +575,7 @@ func (c *udpNatConn) clearFilterPeers() {
 	}
 }
 
-func (c *udpNatConn) allowPeer(destination M.Socksaddr) bool {
+func (c *UDPNatConn) allowPeer(destination M.Socksaddr) bool {
 	if c.service.filtering == NATFilteringEndpointIndependent || !destination.IsIP() {
 		return true
 	}
@@ -593,7 +593,7 @@ func (c *udpNatConn) allowPeer(destination M.Socksaddr) bool {
 	return loaded && filterConn == c
 }
 
-func (c *udpNatConn) ReadPacket(buffer *buf.Buffer) (addr M.Socksaddr, err error) {
+func (c *UDPNatConn) ReadPacket(buffer *buf.Buffer) (addr M.Socksaddr, err error) {
 	select {
 	case p := <-c.packetChan:
 		_, err = buffer.ReadOnceFrom(p.Buffer)
@@ -608,7 +608,7 @@ func (c *udpNatConn) ReadPacket(buffer *buf.Buffer) (addr M.Socksaddr, err error
 	}
 }
 
-func (c *udpNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+func (c *UDPNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	if !c.allowPeer(destination) {
 		buffer.Release()
 		return nil
@@ -616,7 +616,7 @@ func (c *udpNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 	return c.writer.WritePacket(buffer, destination)
 }
 
-func (c *udpNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
+func (c *UDPNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	if c.service.filtering != NATFilteringEndpointIndependent {
 		return nil, false
 	}
@@ -629,16 +629,16 @@ func (c *udpNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	return nil, false
 }
 
-func (c *udpNatConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
+func (c *UDPNatConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
 	c.readWaitOptions.Store(&options)
 	return false
 }
 
-func (c *udpNatConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
+func (c *UDPNatConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
 	return c.waitReadPacket(c.loadReadWaitOptions())
 }
 
-func (c *udpNatConn) waitReadPacket(options N.ReadWaitOptions) (buffer *buf.Buffer, destination M.Socksaddr, err error) {
+func (c *UDPNatConn) waitReadPacket(options N.ReadWaitOptions) (buffer *buf.Buffer, destination M.Socksaddr, err error) {
 	select {
 	case packet := <-c.packetChan:
 		buffer = options.Copy(packet.Buffer)
@@ -652,11 +652,11 @@ func (c *udpNatConn) waitReadPacket(options N.ReadWaitOptions) (buffer *buf.Buff
 	}
 }
 
-func (c *udpNatConn) CreatePacketBatchReadWaiter() (N.PacketBatchReadWaiter, bool) {
+func (c *UDPNatConn) CreatePacketBatchReadWaiter() (N.PacketBatchReadWaiter, bool) {
 	return c, true
 }
 
-func (c *udpNatConn) WaitReadPackets() (buffers []*buf.Buffer, destinations []M.Socksaddr, err error) {
+func (c *UDPNatConn) WaitReadPackets() (buffers []*buf.Buffer, destinations []M.Socksaddr, err error) {
 	options := c.loadReadWaitOptions()
 	buffer, destination, err := c.waitReadPacket(options)
 	if err != nil {
@@ -695,7 +695,7 @@ func (c *udpNatConn) WaitReadPackets() (buffers []*buf.Buffer, destinations []M.
 	return
 }
 
-func (c *udpNatConn) Timeout() time.Duration {
+func (c *UDPNatConn) Timeout() time.Duration {
 	rawConn, lifetime, loaded := c.service.cache.PeekWithLifetime(c.key)
 	if !loaded || rawConn != c {
 		return 0
@@ -706,7 +706,7 @@ func (c *udpNatConn) Timeout() time.Duration {
 	return time.Until(lifetime)
 }
 
-func (c *udpNatConn) SetTimeout(timeout time.Duration) bool {
+func (c *UDPNatConn) SetTimeout(timeout time.Duration) bool {
 	updated := c.service.cache.UpdateLifetime(c.key, c, timeout)
 	if !updated {
 		return false
@@ -719,7 +719,7 @@ func (c *udpNatConn) SetTimeout(timeout time.Duration) bool {
 	return true
 }
 
-func (c *udpNatConn) Close() error {
+func (c *UDPNatConn) Close() error {
 	c.close()
 	if c.service.state.Load() == udpNatStateStarted {
 		c.service.cleanup.addOrUpdate(c.cleanupEntry, time.Now())
@@ -727,7 +727,7 @@ func (c *udpNatConn) Close() error {
 	return nil
 }
 
-func (c *udpNatConn) close() {
+func (c *UDPNatConn) close() {
 	c.closeOnce.Do(func() {
 		c.packetAccess.Lock()
 		close(c.doneChan)
@@ -746,15 +746,16 @@ func (c *udpNatConn) close() {
 		if c.interfaceIndex != 0 {
 			c.service.unregisterClass(c)
 		}
+		common.Close(c.writer)
 	})
 }
 
-func (c *udpNatConn) closeFromCache() {
+func (c *UDPNatConn) closeFromCache() {
 	c.close()
 	c.service.cleanup.remove(c.cleanupEntry)
 }
 
-func (c *udpNatConn) isClosed() bool {
+func (c *UDPNatConn) isClosed() bool {
 	select {
 	case <-c.doneChan:
 		return true
@@ -763,27 +764,27 @@ func (c *udpNatConn) isClosed() bool {
 	}
 }
 
-func (c *udpNatConn) LocalAddr() net.Addr {
+func (c *UDPNatConn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
-func (c *udpNatConn) RemoteAddr() net.Addr {
+func (c *UDPNatConn) RemoteAddr() net.Addr {
 	return M.Socksaddr{}
 }
 
-func (c *udpNatConn) SetDeadline(t time.Time) error {
+func (c *UDPNatConn) SetDeadline(t time.Time) error {
 	return os.ErrInvalid
 }
 
-func (c *udpNatConn) SetReadDeadline(t time.Time) error {
+func (c *UDPNatConn) SetReadDeadline(t time.Time) error {
 	c.readDeadline.Set(t)
 	return nil
 }
 
-func (c *udpNatConn) SetWriteDeadline(t time.Time) error {
+func (c *UDPNatConn) SetWriteDeadline(t time.Time) error {
 	return os.ErrInvalid
 }
 
-func (c *udpNatConn) Upstream() any {
+func (c *UDPNatConn) Upstream() any {
 	return c.writer
 }

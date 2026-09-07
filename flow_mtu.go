@@ -1,6 +1,8 @@
 package tun
 
 import (
+	"encoding/binary"
+
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 )
@@ -104,6 +106,41 @@ func fragmentIPv4Packet(packet header.IPv4, effectiveMTU uint32) ([][]byte, bool
 		fragments = append(fragments, fragment)
 	}
 	return fragments, true
+}
+
+func fragmentIPv6Packet(packet header.IPv6, effectiveMTU uint32, ident uint32) ([][]byte, bool) {
+	if len(packet) < header.IPv6MinimumSize {
+		return nil, false
+	}
+	payload := packet.Payload()
+	maxFragmentPayload := (int(effectiveMTU) - header.IPv6MinimumSize - header.IPv6FragmentHeaderSize) &^ 7
+	if maxFragmentPayload <= 0 {
+		return nil, false
+	}
+	transportProtocol := packet.NextHeader()
+	fragments := make([][]byte, 0, (len(payload)+maxFragmentPayload-1)/maxFragmentPayload)
+	for start := 0; start < len(payload); start += maxFragmentPayload {
+		end := min(start+maxFragmentPayload, len(payload))
+		fragment := header.IPv6(make([]byte, header.IPv6MinimumSize+header.IPv6FragmentHeaderSize+end-start))
+		copy(fragment, packet[:header.IPv6MinimumSize])
+		fragment.SetNextHeader(header.IPv6FragmentHeader)
+		fragment.SetPayloadLength(uint16(header.IPv6FragmentHeaderSize + end - start))
+		encodeIPv6FragmentHeader(fragment[header.IPv6MinimumSize:], transportProtocol, start, end < len(payload), ident)
+		copy(fragment[header.IPv6MinimumSize+header.IPv6FragmentHeaderSize:], payload[start:end])
+		fragments = append(fragments, fragment)
+	}
+	return fragments, true
+}
+
+func encodeIPv6FragmentHeader(target []byte, nextHeader uint8, offset int, more bool, ident uint32) {
+	target[0] = nextHeader
+	target[1] = 0
+	value := uint16(offset)
+	if more {
+		value |= 1
+	}
+	binary.BigEndian.PutUint16(target[2:], value)
+	binary.BigEndian.PutUint32(target[4:], ident)
 }
 
 func buildFragmentationNeeded(packet header.IPv4, effectiveMTU uint32, headroom int) ([]byte, bool) {
