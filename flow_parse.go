@@ -70,19 +70,22 @@ func parseForwardPacket(packet []byte) (forwardPacket, bool) {
 		if !ipHdr.IsValid(len(packet)) {
 			return forwardPacket{}, false
 		}
-		protocol, payload, fragment, transportPresent := skipIPv6ExtensionHeaders(uint8(ipHdr.TransportProtocol()), ipHdr.Payload())
+		protocol := uint8(ipHdr.TransportProtocol())
 		parsed := forwardPacket{
 			ipVersion:   6,
 			protocol:    protocol,
 			network:     packet,
 			source:      netip.AddrPortFrom(ipHdr.SourceAddr(), 0),
 			destination: netip.AddrPortFrom(ipHdr.DestinationAddr(), 0),
-			fragment:    fragment,
 		}
-		if fragment || !transportPresent {
+		switch header.IPv6ExtensionHeaderIdentifier(protocol) {
+		case header.IPv6HopByHopOptionsExtHdrIdentifier, header.IPv6RoutingExtHdrIdentifier, header.IPv6DestinationOptionsExtHdrIdentifier:
+			return forwardPacket{}, false
+		case header.IPv6FragmentExtHdrIdentifier:
+			parsed.fragment = true
 			return parsed, true
 		}
-		parsed.parseTransport(payload)
+		parsed.parseTransport(ipHdr.Payload())
 		return parsed, true
 	default:
 		return forwardPacket{}, false
