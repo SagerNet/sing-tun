@@ -1,7 +1,7 @@
 // This file contains IP checksum algorithms that are not specific to any
 // architecture and don't use hardware acceleration.
 
-//go:build !amd64
+//go:build !amd64 && !arm64
 
 package tschecksum
 
