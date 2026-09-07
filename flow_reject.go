@@ -14,32 +14,24 @@ func buildReject(packet *forwardPacket, headroom int) ([]byte, bool) {
 			return nil, false
 		}
 		tcpHdr := header.TCP(packet.transport)
-		switch ipHdr := packet.network.(type) {
-		case header.IPv4:
-			return buildResetIPv4(ipHdr, tcpHdr, headroom), true
-		case header.IPv6:
-			return buildResetIPv6(ipHdr, tcpHdr, headroom), true
-		default:
-			return nil, false
+		if packet.ipVersion == 4 {
+			return buildResetIPv4(header.IPv4(packet.network), tcpHdr, headroom), true
 		}
+		return buildResetIPv6(header.IPv6(packet.network), tcpHdr, headroom), true
 	case uint8(header.UDPProtocolNumber):
-		switch ipHdr := packet.network.(type) {
-		case header.IPv4:
+		if packet.ipVersion == 4 {
+			ipHdr := header.IPv4(packet.network)
 			return buildRejectICMPv4(ipHdr, header.ICMPv4PortUnreachable, ipHdr.DestinationAddr(), headroom)
-		case header.IPv6:
-			return buildRejectICMPv6(ipHdr, header.ICMPv6PortUnreachable, ipHdr.DestinationAddr(), headroom)
-		default:
-			return nil, false
 		}
+		ipHdr := header.IPv6(packet.network)
+		return buildRejectICMPv6(ipHdr, header.ICMPv6PortUnreachable, ipHdr.DestinationAddr(), headroom)
 	default:
-		switch ipHdr := packet.network.(type) {
-		case header.IPv4:
+		if packet.ipVersion == 4 {
+			ipHdr := header.IPv4(packet.network)
 			return buildRejectICMPv4(ipHdr, header.ICMPv4HostUnreachable, ipHdr.DestinationAddr(), headroom)
-		case header.IPv6:
-			return buildRejectICMPv6(ipHdr, header.ICMPv6AddressUnreachable, ipHdr.DestinationAddr(), headroom)
-		default:
-			return nil, false
 		}
+		ipHdr := header.IPv6(packet.network)
+		return buildRejectICMPv6(ipHdr, header.ICMPv6AddressUnreachable, ipHdr.DestinationAddr(), headroom)
 	}
 }
 
