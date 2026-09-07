@@ -52,6 +52,7 @@ type System struct {
 	udpNat               *UDPNat
 	udpNATOptions        UDPNatOptions
 	dispatcher           *ForwardDispatcher
+	dispatchStage        *ForwardStage
 	bindInterface        bool
 	interfaceFinder      control.InterfaceFinder
 	frontHeadroom        int
@@ -201,6 +202,7 @@ func (s *System) start() error {
 	}
 	if s.handler != nil {
 		s.dispatcher = NewForwardDispatcher(s.handler, newSystemWriteback(s.tun, s.frontHeadroom), s.logger, s.udpTimeout, s.icmpTimeout)
+		s.dispatchStage = s.dispatcher.NewStage(nil)
 	}
 	return nil
 }
@@ -248,7 +250,7 @@ func (s *System) tunLoop() {
 				s.logger.Trace(E.Cause(err, "write packet"))
 			}
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 	}
 }
 
@@ -268,7 +270,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 				s.logger.Trace(E.Cause(err, "write packet"))
 			}
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 		release()
 	}
 }
@@ -316,7 +318,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 			}
 			writeBuffers = writeBuffers[:0]
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 	}
 }
 
@@ -362,7 +364,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 			}
 			buf.ReleaseMulti(writeBuffers)
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 		buf.ReleaseMulti(releaseBuffers)
 	}
 }
@@ -420,7 +422,7 @@ func (s *System) dispatchIPv4(ipHdr header.IPv4, destination netip.Addr) bool {
 			return false
 		}
 	}
-	return s.dispatcher.Dispatch(ipHdr)
+	return s.dispatchStage.Dispatch(ipHdr)
 }
 
 func (s *System) dispatchIPv6(ipHdr header.IPv6, destination netip.Addr) bool {
@@ -439,7 +441,7 @@ func (s *System) dispatchIPv6(ipHdr header.IPv6, destination netip.Addr) bool {
 			return false
 		}
 	}
-	return s.dispatcher.Dispatch(ipHdr)
+	return s.dispatchStage.Dispatch(ipHdr)
 }
 
 func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
@@ -703,8 +705,16 @@ func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socks
 }
 
 func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool, error) {
+	return rewriteEchoReplyIPv4(ipHdr, icmpHdr), nil
+}
+
+func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool, error) {
+	return rewriteEchoReplyIPv6(ipHdr, icmpHdr), nil
+}
+
+func rewriteEchoReplyIPv4(ipHdr header.IPv4, icmpHdr header.ICMPv4) bool {
 	if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != 0 {
-		return false, nil
+		return false
 	}
 	icmpHdr.SetType(header.ICMPv4EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
@@ -712,12 +722,12 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 	ipHdr.SetDestinationAddr(sourceAddress)
 	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
-	return true, nil
+	return true
 }
 
-func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool, error) {
+func rewriteEchoReplyIPv6(ipHdr header.IPv6, icmpHdr header.ICMPv6) bool {
 	if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
-		return false, nil
+		return false
 	}
 	icmpHdr.SetType(header.ICMPv6EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
@@ -728,7 +738,7 @@ func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool
 		Src:    ipHdr.SourceAddressSlice(),
 		Dst:    ipHdr.DestinationAddressSlice(),
 	}))
-	return true, nil
+	return true
 }
 
 type systemUDPPacketWriter4 struct {
@@ -743,9 +753,8 @@ func (w *systemUDPPacketWriter4) FrontHeadroom() int {
 	return w.frontHeadroom + len(w.header)
 }
 
-func (w *systemUDPPacketWriter4) preparePacket(buffer *buf.Buffer, destination M.Socksaddr) *buf.Buffer {
+func (w *systemUDPPacketWriter4) preparePacket(buffer *buf.Buffer, destination M.Socksaddr) {
 	payloadLen := buffer.Len()
-	buffer = (N.ReadWaitOptions{FrontHeadroom: w.FrontHeadroom()}).Copy(buffer)
 	copy(buffer.ExtendHeader(len(w.header)), w.header)
 	ipHdr := header.IPv4(buffer.Bytes())
 	ipHdr.SetTotalLength(uint16(buffer.Len()))
@@ -763,22 +772,20 @@ func (w *systemUDPPacketWriter4) preparePacket(buffer *buf.Buffer, destination M
 		udpHdr.SetChecksum(0)
 	}
 	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
-	return buffer
 }
 
-func (w *systemUDPPacketWriter4) prepareWritePacket(buffer *buf.Buffer, destination M.Socksaddr) *buf.Buffer {
-	buffer = w.preparePacket(buffer, destination)
+func (w *systemUDPPacketWriter4) prepareWritePacket(buffer *buf.Buffer, destination M.Socksaddr) {
+	w.preparePacket(buffer, destination)
 	if PacketOffset > 0 {
 		PacketFillHeader(buffer.ExtendHeader(PacketOffset), header.IPv4Version)
 	}
 	if remainingHeadroom := w.frontHeadroom - PacketOffset; remainingHeadroom > 0 {
 		buffer.Advance(-remainingHeadroom)
 	}
-	return buffer
 }
 
 func (w *systemUDPPacketWriter4) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	buffer = w.prepareWritePacket(buffer, destination)
+	w.prepareWritePacket(buffer, destination)
 	defer buffer.Release()
 	return common.Error(w.tun.Write(buffer.Bytes()))
 }
@@ -804,15 +811,14 @@ func (w *systemUDPPacketWriter4) WritePacketBatch(buffers []*buf.Buffer, destina
 	case LinuxTUN:
 		packets := make([][]byte, len(buffers))
 		for index, buffer := range buffers {
-			buffer = w.preparePacket(buffer, destinations[index])
+			w.preparePacket(buffer, destinations[index])
 			buffer.Advance(-w.frontHeadroom)
-			buffers[index] = buffer
 			packets[index] = buffer.Bytes()
 		}
 		return common.Error(tunInterface.BatchWrite(packets, w.frontHeadroom))
 	case DarwinTUN:
 		for index, buffer := range buffers {
-			buffers[index] = w.preparePacket(buffer, destinations[index])
+			w.preparePacket(buffer, destinations[index])
 		}
 		return tunInterface.BatchWrite(buffers)
 	default:
@@ -832,9 +838,8 @@ func (w *systemUDPPacketWriter6) FrontHeadroom() int {
 	return w.frontHeadroom + len(w.header)
 }
 
-func (w *systemUDPPacketWriter6) preparePacket(buffer *buf.Buffer, destination M.Socksaddr) *buf.Buffer {
+func (w *systemUDPPacketWriter6) preparePacket(buffer *buf.Buffer, destination M.Socksaddr) {
 	payloadLen := buffer.Len()
-	buffer = (N.ReadWaitOptions{FrontHeadroom: w.FrontHeadroom()}).Copy(buffer)
 	copy(buffer.ExtendHeader(len(w.header)), w.header)
 	ipHdr := header.IPv6(buffer.Bytes())
 	udpLen := uint16(header.UDPMinimumSize + payloadLen)
@@ -852,22 +857,20 @@ func (w *systemUDPPacketWriter6) preparePacket(buffer *buf.Buffer, destination M
 	} else {
 		udpHdr.SetChecksum(0)
 	}
-	return buffer
 }
 
-func (w *systemUDPPacketWriter6) prepareWritePacket(buffer *buf.Buffer, destination M.Socksaddr) *buf.Buffer {
-	buffer = w.preparePacket(buffer, destination)
+func (w *systemUDPPacketWriter6) prepareWritePacket(buffer *buf.Buffer, destination M.Socksaddr) {
+	w.preparePacket(buffer, destination)
 	if PacketOffset > 0 {
 		PacketFillHeader(buffer.ExtendHeader(PacketOffset), header.IPv6Version)
 	}
 	if remainingHeadroom := w.frontHeadroom - PacketOffset; remainingHeadroom > 0 {
 		buffer.Advance(-remainingHeadroom)
 	}
-	return buffer
 }
 
 func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	buffer = w.prepareWritePacket(buffer, destination)
+	w.prepareWritePacket(buffer, destination)
 	defer buffer.Release()
 	return common.Error(w.tun.Write(buffer.Bytes()))
 }
@@ -893,15 +896,14 @@ func (w *systemUDPPacketWriter6) WritePacketBatch(buffers []*buf.Buffer, destina
 	case LinuxTUN:
 		packets := make([][]byte, len(buffers))
 		for index, buffer := range buffers {
-			buffer = w.preparePacket(buffer, destinations[index])
+			w.preparePacket(buffer, destinations[index])
 			buffer.Advance(-w.frontHeadroom)
-			buffers[index] = buffer
 			packets[index] = buffer.Bytes()
 		}
 		return common.Error(tunInterface.BatchWrite(packets, w.frontHeadroom))
 	case DarwinTUN:
 		for index, buffer := range buffers {
-			buffers[index] = w.preparePacket(buffer, destinations[index])
+			w.preparePacket(buffer, destinations[index])
 		}
 		return tunInterface.BatchWrite(buffers)
 	default:
