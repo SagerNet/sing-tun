@@ -117,11 +117,15 @@ type Options struct {
 	EXP_DisableDNSHijack      bool
 	EXP_ExternalConfiguration bool
 
-	// For gvisor stack, it should be enabled when MTU is less than 32768; otherwise it should be less than or equal to 8192.
-	// The above condition is just an estimate and not exact, calculated on M4 pro.
+	// Safe at every MTU: the darwin pending packet limit is derived from the utun control socket
+	// receive buffer.
 	EXP_MultiPendingPackets bool
 
-	// Will cause the darwin network to die, do not use.
+	// Do not enable. In netif mode (every utun handed out by Network Extension) utun_pkt_input
+	// returns ENOSPC without freeing the mbuf once 512 packets are queued
+	// (net.utun.max_pending_input), leaking one mbuf per rejected write until reboot; sendmsg_x
+	// pushes the write rate past the netif drain rate (about 500k to 700k packets per second on an
+	// M4 Pro) and reproduces the device-wide network loss, writev stays below it by its own cost.
 	EXP_SendMsgX bool
 }
 
