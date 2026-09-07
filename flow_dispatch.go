@@ -503,7 +503,7 @@ func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPack
 			return
 		}
 		if packet.ipVersion == 4 {
-			ipHdr := packet.network.(header.IPv4)
+			ipHdr := header.IPv4(packet.network)
 			if ipHdr.Flags()&header.IPv4FlagDontFragment == 0 {
 				if flow.tracker != nil {
 					flow.tracker.CountForward(len(raw))
@@ -523,7 +523,7 @@ func (d *ForwardDispatcher) forwardToPort(flow *forwardFlow, packet *forwardPack
 			}
 			return
 		}
-		reply, ok := buildPacketTooBig(packet.network.(header.IPv6), flow.effectiveMTU, d.writeback.ReturnHeadroom())
+		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, d.writeback.ReturnHeadroom())
 		if ok {
 			d.writebackBatch = append(d.writebackBatch, reply)
 		}
@@ -833,9 +833,10 @@ func returnICMPError(natList []*portNAT, revMap map[netip.Addr]*portNAT, parsed 
 	if flow.dnatAddress || flow.dnatPort {
 		rewriteEmbeddedDestination(&embedded, addrToTCPIP(flow.clientDestinationAddress), flow.clientDestinationPort, flow.dnatPort)
 	}
-	parsed.network.SetDestinationAddr(flow.clientAddress)
-	if parsed.network.SourceAddr() == flow.serverAddress {
-		parsed.network.SetSourceAddr(flow.clientDestinationAddress)
+	networkHeader := parsed.networkHeader()
+	networkHeader.SetDestinationAddr(flow.clientAddress)
+	if networkHeader.SourceAddr() == flow.serverAddress {
+		networkHeader.SetSourceAddr(flow.clientDestinationAddress)
 	}
 	recomputeChecksums(parsed)
 	return true
