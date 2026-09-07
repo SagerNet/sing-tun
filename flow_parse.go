@@ -20,7 +20,7 @@ func (k flowKey) reversed() flowKey {
 type forwardPacket struct {
 	ipVersion   uint8
 	protocol    uint8
-	network     header.Network
+	network     []byte
 	transport   []byte
 	source      netip.AddrPort
 	destination netip.AddrPort
@@ -32,6 +32,13 @@ type forwardPacket struct {
 
 func (p *forwardPacket) flowKey() flowKey {
 	return flowKey{protocol: p.protocol, source: p.source, destination: p.destination}
+}
+
+func (p *forwardPacket) networkHeader() header.Network {
+	if p.ipVersion == 4 {
+		return header.IPv4(p.network)
+	}
+	return header.IPv6(p.network)
 }
 
 func (p *forwardPacket) isTCPSyn() bool {
@@ -48,7 +55,7 @@ func parseForwardPacket(packet []byte) (forwardPacket, bool) {
 		parsed := forwardPacket{
 			ipVersion:   4,
 			protocol:    uint8(ipHdr.TransportProtocol()),
-			network:     ipHdr,
+			network:     packet,
 			source:      netip.AddrPortFrom(ipHdr.SourceAddr(), 0),
 			destination: netip.AddrPortFrom(ipHdr.DestinationAddr(), 0),
 		}
@@ -67,7 +74,7 @@ func parseForwardPacket(packet []byte) (forwardPacket, bool) {
 		parsed := forwardPacket{
 			ipVersion:   6,
 			protocol:    protocol,
-			network:     ipHdr,
+			network:     packet,
 			source:      netip.AddrPortFrom(ipHdr.SourceAddr(), 0),
 			destination: netip.AddrPortFrom(ipHdr.DestinationAddr(), 0),
 			fragment:    fragment,
