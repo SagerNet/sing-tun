@@ -550,13 +550,86 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 	return 0, fmt.Errorf("write failed: %w", err)
 }
 
+func (t *NativeTun) readWaitHandle() windows.Handle {
+	return t.readWait
+}
+
+func (t *NativeTun) resizeSessionRing(capacity uint32) error {
+	t.session.End()
+	t.session = wintun.Session{}
+	t.readWait = 0
+	session, err := t.adapter.StartSession(capacity)
+	if err != nil {
+		return E.Cause(err, "restart wintun session")
+	}
+	t.session = session
+	t.readWait = session.ReadWaitEvent()
+	return nil
+}
+
+func (t *NativeTun) receiveInto(buffer []byte) (int, error) {
+	t.running.Add(1)
+	defer t.running.Done()
+	for {
+		if t.close.Load() == 1 {
+			return 0, os.ErrClosed
+		}
+		packet, err := t.session.ReceivePacket()
+		if err != nil {
+			switch err {
+			case windows.ERROR_NO_MORE_ITEMS:
+				return 0, nil
+			case windows.ERROR_HANDLE_EOF:
+				return 0, os.ErrClosed
+			case windows.ERROR_INVALID_DATA:
+				return 0, E.New("wintun: receive ring corrupt")
+			}
+			return 0, E.Cause(err, "wintun: receive packet")
+		}
+		if len(packet) > len(buffer) {
+			t.session.ReleaseReceivePacket(packet)
+			continue
+		}
+		n := copy(buffer, packet)
+		t.session.ReleaseReceivePacket(packet)
+		return n, nil
+	}
+}
+
+func (t *NativeTun) transmitGather(segments [][]byte) error {
+	t.running.Add(1)
+	defer t.running.Done()
+	if t.close.Load() == 1 {
+		return os.ErrClosed
+	}
+	var packetSize int
+	for _, segment := range segments {
+		packetSize += len(segment)
+	}
+	packet, err := t.session.AllocateSendPacket(packetSize)
+	if err != nil {
+		if err == windows.ERROR_HANDLE_EOF {
+			return os.ErrClosed
+		}
+		return err
+	}
+	var index int
+	for _, segment := range segments {
+		index += copy(packet[index:], segment)
+	}
+	t.session.SendPacket(packet)
+	return nil
+}
+
 func (t *NativeTun) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.close.Store(1)
 		windows.SetEvent(t.readWait)
 		t.running.Wait()
-		t.session.End()
+		if t.session != (wintun.Session{}) {
+			t.session.End()
+		}
 		t.adapter.Close()
 		if t.fwpmSession != 0 {
 			winsys.FwpmEngineClose0(t.fwpmSession)
