@@ -38,6 +38,7 @@ type NativeTun struct {
 	readAccess          sync.Mutex
 	writeAccess         sync.Mutex
 	vnetHdr             bool
+	multiQueue          bool
 	readBuffer          []byte
 	readRawConn         syscall.RawConn
 	pendingPayload      []byte
@@ -54,7 +55,7 @@ type NativeTun struct {
 func New(options Options) (Tun, error) {
 	if options.FileDescriptor == 0 {
 		return execInNetworkNamespace(options.NetNs, func() (Tun, error) {
-			tunFd, err := open(options.Name, options.GSO)
+			tunFd, multiQueue, err := open(options.Name, options.GSO, options.MultiQueue)
 			if err != nil {
 				return nil, E.Cause(err, "open tun")
 			}
@@ -63,9 +64,10 @@ func New(options Options) (Tun, error) {
 				return nil, E.Errors(err, unix.Close(tunFd))
 			}
 			nativeTun := &NativeTun{
-				tunFd:   tunFd,
-				tunFile: os.NewFile(uintptr(tunFd), "tun"),
-				options: options,
+				tunFd:      tunFd,
+				tunFile:    os.NewFile(uintptr(tunFd), "tun"),
+				options:    options,
+				multiQueue: multiQueue,
 			}
 			err = nativeTun.configure(tunLink)
 			if err != nil {
@@ -102,7 +104,30 @@ func init() {
 	}
 }
 
-func open(name string, vnetHdr bool) (int, error) {
+// A persistent device created without IFF_MULTI_QUEUE refuses the flag with EINVAL
+// (tun_set_iff), so the plain flags are retried and such a device stays single-queue.
+func open(name string, vnetHdr bool, multiQueue bool) (int, bool, error) {
+	flags := unix.IFF_TUN | unix.IFF_NO_PI
+	if vnetHdr {
+		flags |= unix.IFF_VNET_HDR
+	}
+	if multiQueue {
+		fd, err := openTun(name, flags|unix.IFF_MULTI_QUEUE)
+		if err == nil {
+			return fd, true, nil
+		}
+		if !errors.Is(err, unix.EINVAL) {
+			return -1, false, err
+		}
+	}
+	fd, err := openTun(name, flags)
+	if err != nil {
+		return -1, false, err
+	}
+	return fd, false, nil
+}
+
+func openTun(name string, flags int) (int, error) {
 	fd, err := unix.Open(controlPath, unix.O_RDWR, 0)
 	if err != nil {
 		return -1, E.Cause(err, "open ", controlPath)
@@ -110,22 +135,38 @@ func open(name string, vnetHdr bool) (int, error) {
 	ifr, err := unix.NewIfreq(name)
 	if err != nil {
 		unix.Close(fd)
-		return 0, E.Cause(err, "create ifreq")
-	}
-	flags := unix.IFF_TUN | unix.IFF_NO_PI
-	if vnetHdr {
-		flags |= unix.IFF_VNET_HDR
+		return -1, E.Cause(err, "create ifreq")
 	}
 	ifr.SetUint16(uint16(flags))
 	err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
 	if err != nil {
 		unix.Close(fd)
-		return 0, E.Cause(err, "TUNSETIFF")
+		return -1, E.Cause(err, "TUNSETIFF")
 	}
 	err = unix.SetNonblock(fd, true)
 	if err != nil {
 		unix.Close(fd)
-		return 0, E.Cause(err, "set nonblock")
+		return -1, E.Cause(err, "set nonblock")
+	}
+	return fd, nil
+}
+
+func (t *NativeTun) openQueue() (int, error) {
+	if !t.multiQueue {
+		return -1, E.New("tun device is not multi-queue")
+	}
+	flags := unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_MULTI_QUEUE
+	if t.options.GSO {
+		flags |= unix.IFF_VNET_HDR
+	}
+	var fd int
+	err := runInNetworkNamespace(t.options.NetNs, func() error {
+		var openErr error
+		fd, openErr = openTun(t.options.Name, flags)
+		return openErr
+	})
+	if err != nil {
+		return -1, err
 	}
 	return fd, nil
 }
@@ -200,7 +241,6 @@ func (t *NativeTun) enableGSO() error {
 		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
 	}
 	t.vnetHdr = true
-	t.readBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
 	t.tcpGROTable = newTCPGROTable()
 	t.udpGROTable = newUDPGROTable()
 	err = setTCPOffload(t.tunFd)
@@ -480,6 +520,9 @@ func (t *NativeTun) BatchSize() int {
 func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (int, error) {
 	t.readAccess.Lock()
 	defer t.readAccess.Unlock()
+	if t.readBuffer == nil {
+		t.readBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
+	}
 	var used int
 	for used < len(buffers) {
 		if t.pendingPayload == nil {
@@ -577,6 +620,28 @@ func (t *NativeTun) BatchWrite(buffers [][]byte, offset int) (int, error) {
 
 func (t *NativeTun) TXChecksumOffload() bool {
 	return t.txChecksumOffload
+}
+
+func (t *NativeTun) rawFileDescriptor() int {
+	return t.tunFd
+}
+
+// os.NewFile registers a non-blocking descriptor with the runtime poller, which then wakes an
+// idle thread for every packet the engine loop is already waiting for on its own epoll.
+func (t *NativeTun) detachRuntimePoller() error {
+	duplicated, err := unix.FcntlInt(uintptr(t.tunFd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	previous := t.tunFile
+	t.tunFd = duplicated
+	t.tunFile = newUnpolledFile(duplicated, "tun")
+	t.readRawConn, err = t.tunFile.SyscallConn()
+	return E.Errors(err, previous.Close())
+}
+
+func (t *NativeTun) vnetHeaderEnabled() (bool, error) {
+	return checkVNETHDREnabled(t.tunFd, t.options.Name)
 }
 
 func prefixToIPNet(prefix netip.Prefix) *net.IPNet {
