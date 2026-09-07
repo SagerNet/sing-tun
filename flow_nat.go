@@ -22,8 +22,8 @@ type portNAT struct {
 	selectorStart uint16
 	selectorCount uint16
 
-	counter uint32
-	pending [][]byte
+	allocateAccess sync.Mutex
+	counter        uint32
 }
 
 type natShard struct {
@@ -70,6 +70,18 @@ func (n *portNAT) insert(key flowKey, flow *forwardFlow) {
 	shard.access.Unlock()
 }
 
+func (n *portNAT) reserve(key flowKey) bool {
+	shard := n.shard(key)
+	shard.access.Lock()
+	defer shard.access.Unlock()
+	_, occupied := shard.flows[key]
+	if occupied {
+		return false
+	}
+	shard.flows[key] = nil
+	return true
+}
+
 func (n *portNAT) delete(key flowKey) {
 	shard := n.shard(key)
 	shard.access.Lock()
@@ -100,20 +112,22 @@ func (n *portNAT) selectorRange(protocol uint8) (uint16, uint32) {
 	return n.selectorStart, uint32(n.selectorCount)
 }
 
-func (n *portNAT) allocateSelector(protocol uint8, portAddress, serverAddress netip.Addr, serverPort, clientSelector uint16) (uint16, flowKey, bool) {
+func (n *portNAT) reserveSelector(protocol uint8, portAddress, serverAddress netip.Addr, serverPort, clientSelector uint16) (uint16, flowKey, bool) {
 	rangeStart, rangeCount := n.selectorRange(protocol)
 	if clientSelector != 0 &&
 		clientSelector >= rangeStart && uint32(clientSelector-rangeStart) < rangeCount {
 		key := n.reverseKeyFor(protocol, portAddress, serverAddress, serverPort, clientSelector)
-		if n.lookup(key) == nil {
+		if n.reserve(key) {
 			return clientSelector, key, true
 		}
 	}
+	n.allocateAccess.Lock()
+	defer n.allocateAccess.Unlock()
 	for range rangeCount {
 		n.counter++
 		candidate := rangeStart + uint16(n.counter%rangeCount)
 		key := n.reverseKeyFor(protocol, portAddress, serverAddress, serverPort, candidate)
-		if n.lookup(key) == nil {
+		if n.reserve(key) {
 			return candidate, key, true
 		}
 	}
