@@ -282,6 +282,9 @@ func (d *ForwardDispatcher) judgeAndInstall(key flowKey, packet *forwardPacket, 
 		firstPacket = header.UDP(packet.transport).Payload()
 	}
 	verdict := d.handler.JudgeFlow(packet.protocol, packet.source, packet.destination, firstPacket)
+	if verdict.Action == ActionBypass && verdict.Port != nil {
+		verdict.Action = ActionFlow
+	}
 	d.access.RLock()
 	defer d.access.RUnlock()
 	if d.returnPath.closed.Load() {

@@ -121,7 +121,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
-		case ActionFlow:
+		case ActionFlow, ActionBypass:
 			if f.installFlow(key, verdict, pkt) {
 				return true
 			}
@@ -183,7 +183,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
-		case ActionFlow:
+		case ActionFlow, ActionBypass:
 			if f.installFlow(key, verdict, pkt) {
 				return true
 			}
