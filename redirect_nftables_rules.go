@@ -26,6 +26,48 @@ func init() {
 	allocSetID = 6
 }
 
+func (r *autoRedirect) nftablesCreateAddressSets(
+	nft *nftables.Conn, table *nftables.Table,
+	update bool,
+) error {
+	routeAddressSet := *r.routeAddressSet
+	routeExcludeAddressSet := *r.routeExcludeAddressSet
+	if len(routeAddressSet) == 0 && len(routeExcludeAddressSet) == 0 {
+		return nil
+	}
+
+	if len(routeAddressSet) > 0 {
+		if r.enableIPv4 {
+			_, err := nftablesCreateIPSet(nft, table, 1, "inet4_route_address_set", nftables.TableFamilyIPv4, routeAddressSet, nil, true, update)
+			if err != nil {
+				return E.Cause(err, "create ipv4 route address set")
+			}
+		}
+		if r.enableIPv6 {
+			_, err := nftablesCreateIPSet(nft, table, 2, "inet6_route_address_set", nftables.TableFamilyIPv6, routeAddressSet, nil, true, update)
+			if err != nil {
+				return E.Cause(err, "create ipv6 route address set")
+			}
+		}
+	}
+
+	if len(routeExcludeAddressSet) > 0 {
+		if r.enableIPv4 {
+			_, err := nftablesCreateIPSet(nft, table, 3, "inet4_route_exclude_address_set", nftables.TableFamilyIPv4, routeExcludeAddressSet, nil, false, update)
+			if err != nil {
+				return E.Cause(err, "create ipv4 route exclude address set")
+			}
+		}
+		if r.enableIPv6 {
+			_, err := nftablesCreateIPSet(nft, table, 4, "inet6_route_exclude_address_set", nftables.TableFamilyIPv6, routeExcludeAddressSet, nil, false, update)
+			if err != nil {
+				return E.Cause(err, "create ipv6 route exclude address set")
+			}
+		}
+	}
+	return nil
+}
+
 func (r *autoRedirect) nftablesCreateLocalAddressSets(
 	nft *nftables.Conn, table *nftables.Table,
 	localAddresses []netip.Prefix, lastAddresses []netip.Prefix,
@@ -167,7 +209,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 			})
 		}
 	}
-	if chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeNAT {
+	if r.nfqueueEnabled && chain.Hooknum == nftables.ChainHookPrerouting && chain.Type == nftables.ChainTypeNAT {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -179,7 +221,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 				&expr.Cmp{
 					Op:       expr.CmpOpEq,
 					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
+					Data:     binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark()),
 				},
 				&expr.Counter{},
 				&expr.Verdict{
@@ -188,7 +230,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 			},
 		})
 	}
-	if chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeNAT {
+	if r.nfqueueEnabled && chain.Hooknum == nftables.ChainHookOutput && chain.Type == nftables.ChainTypeNAT {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -200,7 +242,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 				&expr.Cmp{
 					Op:       expr.CmpOpEq,
 					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
+					Data:     binaryutil.NativeEndian.PutUint32(r.effectiveOutputMark()),
 				},
 				&expr.Counter{},
 				&expr.Verdict{
@@ -658,6 +700,25 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, false)
 	}
 
+	routeAddressSet := *r.routeAddressSet
+	routeExcludeAddressSet := *r.routeExcludeAddressSet
+
+	if r.enableIPv4 && len(routeAddressSet) > 0 {
+		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 1, "inet4_route_address_set", nftables.TableFamilyIPv4, true)
+	}
+
+	if r.enableIPv6 && len(routeAddressSet) > 0 {
+		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 2, "inet6_route_address_set", nftables.TableFamilyIPv6, true)
+	}
+
+	if r.enableIPv4 && len(routeExcludeAddressSet) > 0 {
+		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 3, "inet4_route_exclude_address_set", nftables.TableFamilyIPv4, false)
+	}
+
+	if r.enableIPv6 && len(routeExcludeAddressSet) > 0 {
+		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 4, "inet6_route_exclude_address_set", nftables.TableFamilyIPv6, false)
+	}
+
 	if chain.Type == nftables.ChainTypeNAT || (chain.Type == nftables.ChainTypeFilter && r.tunOptions.ExcludeMPTCP) {
 		mptcpVerdict := expr.VerdictDrop
 		if r.tunOptions.ExcludeMPTCP {
@@ -678,7 +739,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 				},
 				&expr.Exthdr{
 					DestRegister: 1,
-					Type:         tcpOptionMultipathTCP,
+					Type:         30,
 					Offset:       0,
 					Len:          1,
 					Flags:        unix.NFT_EXTHDR_F_PRESENT,
@@ -1018,9 +1079,9 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 		},
 	}
 	if chain.Hooknum == nftables.ChainHookOutput {
-		// The DNAT target still runs for loopback-destined packets, but the
-		// reroute that follows it refuses a loopback source on a non-loopback
-		// device and drops the packet.
+		// It looks like we can't hijack DNS requests sent to loopback.
+		// https://serverfault.com/questions/363899/iptables-dnat-from-loopback
+		// and tproxy is not available in output
 		exprs = append(exprs,
 			&expr.Meta{
 				Key:      expr.MetaKeyOIFNAME,
