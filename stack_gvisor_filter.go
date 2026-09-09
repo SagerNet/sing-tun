@@ -24,6 +24,13 @@ type LinkEndpointFilter struct {
 }
 
 func (w *LinkEndpointFilter) Attach(dispatcher stack.NetworkDispatcher) {
+	if dispatcher == nil {
+		// Detaching has to reach the wrapped endpoint as a literal nil.
+		// Wrapping it hides the detach, so the endpoint never stops its
+		// inbound dispatchers and Close leaks them along with the fds.
+		w.LinkEndpoint.Attach(nil)
+		return
+	}
 	w.LinkEndpoint.Attach(&networkDispatcherFilter{
 		NetworkDispatcher:    dispatcher,
 		broadcastAddress:     w.BroadcastAddress,
