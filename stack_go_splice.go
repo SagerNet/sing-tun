@@ -633,7 +633,7 @@ func (e *goEngine) packetSpliceClose(w *GoPacketConn, err error) {
 	e.packetSpliceRelease(splice, err)
 }
 
-func (e *goEngine) releasePendingSplice(message *goMessage) {
+func (e *goEngine) releasePending(message *goMessage) {
 	switch message.kind {
 	case goMessageConnSplice:
 		pending := message.conn.splicePending.Swap(nil)
@@ -645,6 +645,8 @@ func (e *goEngine) releasePendingSplice(message *goMessage) {
 		if pending != nil {
 			e.packetSpliceRelease(pending, net.ErrClosed)
 		}
+	case goMessageInject:
+		e.releaseInjected()
 	}
 }
 

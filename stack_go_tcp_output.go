@@ -95,7 +95,7 @@ func (c *GoConn) WriteBuffer(buffer *buf.Buffer) error {
 		buffer.Release()
 		return nil
 	}
-	if length > goTransmitCapacity {
+	if length > goTransmitCapacityMax {
 		defer buffer.Release()
 		_, err = c.writeLocked(buffer.Bytes())
 		return err
@@ -245,7 +245,7 @@ func (c *GoConn) writeBudget(pending int) int {
 	released := c.sendReleased.Load()
 	buffered := c.bufferedTail.Load()
 	stored := buffered - released
-	if stored >= goTransmitCapacity {
+	if stored >= goTransmitCapacityMax {
 		return 0
 	}
 	if stored >= goTransmitReadAhead {
@@ -256,7 +256,7 @@ func (c *GoConn) writeBudget(pending int) int {
 	}
 	unacked := c.sendUnacked.Load()
 	permit := max(c.sendPermit.Load(), unacked)
-	limit := min(permit+max(permit-unacked, goTransmitReadAhead), released+goTransmitCapacity)
+	limit := min(permit+max(permit-unacked, goTransmitReadAhead), released+goTransmitCapacityMax)
 	budget := int64(limit) - int64(buffered)
 	if pending > 0 {
 		budget = min(budget, int64(pending))
@@ -553,7 +553,7 @@ func (c *GoConn) encodeHeaders(packet []byte, layout *goFrameLayout, segment *go
 	if len(layout.sackBlocks) > 0 {
 		goEncodeSackOption(options[layout.timestampLength:], layout.sackBlocks, c.clientISN)
 	}
-	return goEncodeNetworkHeader(packet, c.ipVersion, c.destination.Addr, c.source.Addr, layout.tcpHeaderLength+segment.length)
+	return goEncodeNetworkHeader(packet, c.ipVersion, c.destination.Addr, c.source.Addr, layout.tcpHeaderLength+segment.length, uint16(c.ident.Add(1)))
 }
 
 func goNetworkHeaderLength(ipVersion uint8) int {
@@ -563,13 +563,13 @@ func goNetworkHeaderLength(ipVersion uint8) int {
 	return header.IPv6MinimumSize
 }
 
-func goEncodeNetworkHeader(packet []byte, ipVersion uint8, source netip.Addr, destination netip.Addr, tcpLength int) uint16 {
+func goEncodeNetworkHeader(packet []byte, ipVersion uint8, source netip.Addr, destination netip.Addr, tcpLength int, ident uint16) uint16 {
 	var network header.Network
 	if ipVersion == 4 {
 		ipHdr := header.IPv4(packet)
 		ipHdr.Encode(&header.IPv4Fields{
 			TotalLength: uint16(header.IPv4MinimumSize + tcpLength),
-			ID:          uint16(goFragmentIdent.Add(1)),
+			ID:          ident,
 			TTL:         synthesizedTTL,
 			Protocol:    uint8(header.TCPProtocolNumber),
 			SrcAddr:     source,
@@ -707,7 +707,7 @@ func (c *GoConn) buildSynAck(synOptions header.TCPSynOptions, localMSS uint16) {
 		Flags:      header.TCPFlagSyn | header.TCPFlagAck,
 		WindowSize: uint16(min(c.receiveCapacity, 0xffff)),
 	})
-	pseudoSum := goEncodeNetworkHeader(packet, c.ipVersion, c.destination.Addr, c.source.Addr, tcpHeaderLength)
+	pseudoSum := goEncodeNetworkHeader(packet, c.ipVersion, c.destination.Addr, c.source.Addr, tcpHeaderLength, uint16(c.ident.Add(1)))
 	tcpHdr.SetChecksum(0)
 	tcpHdr.SetChecksum(^checksum.Checksum(tcpHdr, pseudoSum))
 }

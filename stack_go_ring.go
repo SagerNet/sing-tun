@@ -9,10 +9,8 @@ import (
 )
 
 const (
-	goSlabSize          = 32 << 10
-	goReceiveSlotCount  = goReceiveCapacityMax/goSlabSize + 1
-	goTransmitSlotCount = goTransmitCapacity/goSlabSize + 1
-	goSlabShareMin      = 4 * goSlabSize
+	goSlabSize     = 32 << 10
+	goSlabShareMin = 4 * goSlabSize
 )
 
 type goSlab [goSlabSize]byte
@@ -23,14 +21,16 @@ type goSlabPool struct {
 	inUse    atomic.Int32
 	holders  atomic.Int32
 	pressure func() MemoryPressure
+	lowWater int
 }
 
-func newGoSlabPool(pressure func() MemoryPressure) *goSlabPool {
+func newGoSlabPool(pressure func() MemoryPressure, lowWater int) *goSlabPool {
 	pool := &goSlabPool{
-		free:     make([]*goSlab, 0, goSlabPoolLowWater),
+		free:     make([]*goSlab, 0, lowWater),
 		pressure: pressure,
+		lowWater: lowWater,
 	}
-	for range goSlabPoolLowWater {
+	for range lowWater {
 		pool.free = append(pool.free, goAllocateSlab())
 	}
 	return pool
@@ -67,12 +67,12 @@ func (p *goSlabPool) release(slab *goSlab) {
 func (p *goSlabPool) trim() {
 	p.access.Lock()
 	defer p.access.Unlock()
-	if len(p.free) <= goSlabPoolLowWater {
+	if len(p.free) <= p.lowWater {
 		return
 	}
-	target := goSlabPoolLowWater
+	target := p.lowWater
 	if p.pressureLevel() == MemoryPressureNone {
-		target = max(goSlabPoolLowWater, len(p.free)/2)
+		target = max(p.lowWater, len(p.free)/2)
 	}
 	for _, slab := range p.free[target:] {
 		goFreeSlab(slab)
@@ -408,8 +408,9 @@ type goDescriptorRing struct {
 }
 
 type goDescriptorPool struct {
-	access sync.Mutex
-	free   [][]goSentDescriptor
+	access   sync.Mutex
+	free     [][]goSentDescriptor
+	lowWater int
 }
 
 func (p *goDescriptorPool) acquire() []goSentDescriptor {
@@ -435,10 +436,10 @@ func (p *goDescriptorPool) release(entries []goSentDescriptor) {
 func (p *goDescriptorPool) trim() {
 	p.access.Lock()
 	defer p.access.Unlock()
-	if len(p.free) <= goDescriptorPoolLowWater {
+	if len(p.free) <= p.lowWater {
 		return
 	}
-	target := max(goDescriptorPoolLowWater, len(p.free)/2)
+	target := max(p.lowWater, len(p.free)/2)
 	clear(p.free[target:])
 	p.free = p.free[:target]
 }

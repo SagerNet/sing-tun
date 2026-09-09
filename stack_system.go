@@ -52,6 +52,7 @@ type System struct {
 	udpNat               *UDPNat
 	udpNATOptions        UDPNatOptions
 	dispatcher           *ForwardDispatcher
+	dispatchStage        *ForwardStage
 	bindInterface        bool
 	interfaceFinder      control.InterfaceFinder
 	frontHeadroom        int
@@ -207,6 +208,7 @@ func (s *System) start() error {
 	}
 	if s.handler != nil {
 		s.dispatcher = NewForwardDispatcher(s.handler, newSystemWriteback(s.tun, s.frontHeadroom), s.logger, s.udpTimeout, s.icmpTimeout)
+		s.dispatchStage = s.dispatcher.NewStage(nil)
 	}
 	return nil
 }
@@ -247,7 +249,7 @@ func (s *System) tunLoop() {
 				s.logger.Trace(E.Cause(err, "write packet"))
 			}
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 	}
 }
 
@@ -267,7 +269,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 				s.logger.Trace(E.Cause(err, "write packet"))
 			}
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 		release()
 	}
 }
@@ -308,7 +310,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 			}
 			writeBuffers = writeBuffers[:0]
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 	}
 }
 
@@ -347,7 +349,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 			}
 			buf.ReleaseMulti(writeBuffers)
 		}
-		s.dispatcher.Flush()
+		s.dispatchStage.Flush()
 		buf.ReleaseMulti(releaseBuffers)
 	}
 }
@@ -405,7 +407,7 @@ func (s *System) dispatchIPv4(ipHdr header.IPv4, destination netip.Addr) bool {
 			return false
 		}
 	}
-	return s.dispatcher.Dispatch(ipHdr)
+	return s.dispatchStage.Dispatch(ipHdr)
 }
 
 func (s *System) dispatchIPv6(ipHdr header.IPv6, destination netip.Addr) bool {
@@ -424,7 +426,7 @@ func (s *System) dispatchIPv6(ipHdr header.IPv6, destination netip.Addr) bool {
 			return false
 		}
 	}
-	return s.dispatcher.Dispatch(ipHdr)
+	return s.dispatchStage.Dispatch(ipHdr)
 }
 
 func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {

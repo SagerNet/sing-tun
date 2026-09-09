@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
 	"github.com/sagernet/sing-tun/gtcpip/header"
@@ -18,10 +19,65 @@ import (
 )
 
 type goUDPUserData struct {
+	engine    *goEngine
 	packet    []byte
 	meta      ForwardFrameMeta
 	ipVersion uint8
 	created   *GoPacketConn
+}
+
+const goUDPSessionRefresh = int64(time.Second)
+
+type goUDPSession struct {
+	conn        *UDPNatConn
+	writer      *GoPacketConn
+	destination M.Socksaddr
+	refreshedAt int64
+}
+
+func (e *goEngine) lookupUDPSession(key udpNatSessionKey, destination M.Socksaddr) *goUDPSession {
+	session := e.udpSessions[key]
+	if session == nil {
+		return nil
+	}
+	if session.conn.isClosed() {
+		delete(e.udpSessions, key)
+		return nil
+	}
+	now := e.now()
+	if now-session.refreshedAt >= goUDPSessionRefresh {
+		if !e.stack.udpNat.refresh(key, session.conn) {
+			delete(e.udpSessions, key)
+			return nil
+		}
+		session.refreshedAt = now
+		session.conn.addFilterPeer(destination)
+	} else if destination != session.destination {
+		session.conn.addFilterPeer(destination)
+	}
+	session.destination = destination
+	return session
+}
+
+func (e *goEngine) cacheUDPSession(key udpNatSessionKey, session *goUDPSession) {
+	if len(e.udpSessions) >= e.flowCapacity {
+		e.reclaimUDPSessions()
+		for evicted := range e.udpSessions {
+			if len(e.udpSessions) < e.flowCapacity {
+				break
+			}
+			delete(e.udpSessions, evicted)
+		}
+	}
+	e.udpSessions[key] = session
+}
+
+func (e *goEngine) reclaimUDPSessions() {
+	for key, session := range e.udpSessions {
+		if session.conn.isClosed() {
+			delete(e.udpSessions, key)
+		}
+	}
 }
 
 func (e *goEngine) demuxUDP(packet []byte, meta ForwardFrameMeta, parsed *forwardPacket) {
@@ -48,21 +104,34 @@ func (e *goEngine) demuxUDP(packet []byte, meta ForwardFrameMeta, parsed *forwar
 	payload := header.UDP(parsed.transport).Payload()
 	source := M.SocksaddrFromNetIP(parsed.source)
 	destination := M.SocksaddrFromNetIP(parsed.destination)
-	userData := &e.udpUserData
-	*userData = goUDPUserData{
-		packet:    packet,
-		meta:      meta,
-		ipVersion: parsed.ipVersion,
+	key := e.stack.udpNat.sessionKey(source, destination)
+	session := e.lookupUDPSession(key, destination)
+	if session == nil {
+		userData := &e.udpUserData
+		*userData = goUDPUserData{
+			engine:    e,
+			packet:    packet,
+			meta:      meta,
+			ipVersion: parsed.ipVersion,
+		}
+		conn, ok := e.stack.udpNat.getOrCreate(key, source, destination, userData)
+		if !ok {
+			return
+		}
+		if userData.created != nil {
+			e.attachUDPSession(conn, userData.created, &parsed.verdict)
+			userData.created = nil
+		}
+		session = &goUDPSession{conn: conn, destination: destination, refreshedAt: e.now()}
+		session.writer, _ = conn.writer.(*GoPacketConn)
+		e.cacheUDPSession(key, session)
 	}
-	conn, ok := e.stack.udpNat.getOrCreateConn(source, destination, userData)
-	if !ok {
-		return
-	}
-	if userData.created != nil {
-		e.attachUDPSession(conn, userData.created, &parsed.verdict)
-		userData.created = nil
-	}
-	if writer, isNative := conn.writer.(*GoPacketConn); isNative {
+	conn := session.conn
+	if writer := session.writer; writer != nil {
+		if writer.engine != e {
+			writer.engine.inject(packet, meta)
+			return
+		}
 		trackerPointer := writer.tracker.Load()
 		if trackerPointer != nil {
 			(*trackerPointer).CountForward(len(packet))
@@ -97,10 +166,10 @@ func (e *goEngine) attachUDPSession(conn *UDPNatConn, writer *GoPacketConn, verd
 func (s *Go) prepareUDPConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	data := userData.(*goUDPUserData)
 	writer := &GoPacketConn{
-		engine:          s.engine,
-		platformIO:      s.engine.platformIO,
+		engine:          data.engine,
+		platformIO:      data.engine.platformIO,
 		mtu:             s.mtu,
-		checksumOffload: s.engine.platformIO.transmitChecksumOffload(),
+		checksumOffload: data.engine.platformIO.transmitChecksumOffload(),
 		snapshot:        slices.Clone(data.packet),
 		snapshotMeta:    data.meta,
 	}
@@ -135,6 +204,7 @@ type GoPacketConn struct {
 	checksumOffload  bool
 	template         [header.IPv6MinimumSize + header.UDPMinimumSize]byte
 	conn             atomic.Pointer[UDPNatConn]
+	ident            atomic.Uint32
 	tracker          atomic.Pointer[FlowTracker]
 	trackerClosed    atomic.Bool
 	snapshotAccess   sync.Mutex
@@ -256,11 +326,11 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	)
 	if w.ipVersion == 4 {
 		ipHdr := network.(header.IPv4)
-		ipHdr.SetID(uint16(goFragmentIdent.Add(1)))
+		ipHdr.SetID(uint16(w.ident.Add(1)))
 		ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 		fragments, ok = fragmentIPv4Packet(ipHdr, uint32(w.mtu))
 	} else {
-		fragments, ok = fragmentIPv6Packet(network.(header.IPv6), uint32(w.mtu), goFragmentIdent.Add(1))
+		fragments, ok = fragmentIPv6Packet(network.(header.IPv6), uint32(w.mtu), w.ident.Add(1))
 	}
 	if !ok {
 		return nil
@@ -271,8 +341,6 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	}
 	return writeErr
 }
-
-var goFragmentIdent atomic.Uint32
 
 const goUDPChecksumOffset = 6
 

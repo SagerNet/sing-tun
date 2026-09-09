@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 )
@@ -36,6 +37,8 @@ const (
 	goInterestRead uint8 = 1 << iota
 	goInterestWrite
 )
+
+var errGoQueueUnavailable = E.New("go: tun queue unavailable")
 
 type goPlatformIO interface {
 	start() error
@@ -70,7 +73,42 @@ const (
 	goMessageConnSplice
 	goMessagePacketSplice
 	goMessagePacketClose
+	goMessageInject
 )
+
+const goInjectQueueLimit = 512
+
+type goInjectedFrame struct {
+	next   *goInjectedFrame
+	buffer *buf.Buffer
+	meta   ForwardFrameMeta
+}
+
+type goInjectStack struct {
+	head atomic.Pointer[goInjectedFrame]
+}
+
+func (s *goInjectStack) push(frame *goInjectedFrame) {
+	for {
+		head := s.head.Load()
+		frame.next = head
+		if s.head.CompareAndSwap(head, frame) {
+			return
+		}
+	}
+}
+
+func (s *goInjectStack) popAll() *goInjectedFrame {
+	head := s.head.Swap(nil)
+	var ordered *goInjectedFrame
+	for head != nil {
+		next := head.next
+		head.next = ordered
+		ordered = head
+		head = next
+	}
+	return ordered
+}
 
 type goMessage struct {
 	next   *goMessage
@@ -112,8 +150,13 @@ type goEngine struct {
 	stack                *Go
 	platformIO           goPlatformIO
 	dispatcher           *ForwardDispatcher
+	dispatchStage        *ForwardStage
 	wheel                goWheel
 	controlStack         goControlStack
+	injectStack          goInjectStack
+	injectCount          atomic.Int32
+	injectMessage        goMessage
+	droppedInjectFrames  goDropCounter
 	engineState          atomic.Uint32
 	coarseTime           atomic.Int64
 	epoch                time.Time
@@ -126,6 +169,7 @@ type goEngine struct {
 	reclaimTickNode      goWheelNode
 	reassemblyEntries    []goReassemblyEntry
 	udpUserData          goUDPUserData
+	udpSessions          map[udpNatSessionKey]*goUDPSession
 	transmitFrame        [1][]byte
 	exitSignal           chan struct{}
 	wokeHandlerThisBurst bool
@@ -152,6 +196,7 @@ type goEngine struct {
 	dyingList       *GoConn
 	reclaimPending  bool
 	resetBurst      int
+	controlIdent    uint32
 	controlScratch  [goHeaderScratchSize]byte
 	controlSegments [][]byte
 	sackScratch     [goMaxSackBlocks]goSackBlock
@@ -163,18 +208,21 @@ func (e *goEngine) singleFrame(packet []byte) [][]byte {
 	return e.transmitFrame[:]
 }
 
-func newGoEngine(stack *Go, platformIO goPlatformIO) *goEngine {
+func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine {
 	engine := &goEngine{
 		stack:             stack,
 		platformIO:        platformIO,
 		dispatcher:        stack.dispatcher,
+		dispatchStage:     stack.dispatcher.NewStage(&goWriteback{platformIO: platformIO}),
 		epoch:             time.Now(),
 		frames:            make([]goFrame, goReadBatch),
 		reassemblyEntries: make([]goReassemblyEntry, goReassemblyEntries),
 		exitSignal:        make(chan struct{}),
 		flows:             make(map[flowKey]*GoConn),
-		flowCapacity:      goFlowCapacity(),
-		slabPool:          newGoSlabPool(stack.memoryPressure),
+		udpSessions:       make(map[udpNatSessionKey]*goUDPSession),
+		flowCapacity:      max(goFlowCapacity/engineCount, 1024),
+		slabPool:          newGoSlabPool(stack.memoryPressure, max(goSlabPoolLowWater/engineCount, 8)),
+		descriptorPool:    goDescriptorPool{lowWater: max(goDescriptorPoolLowWater/engineCount, 4)},
 		sequenceSeed:      maphash.MakeSeed(),
 		controlSegments:   make([][]byte, 0, 8),
 		socketEvents:      make([]goSocketEvent, goSocketEventBatch),
@@ -183,6 +231,7 @@ func newGoEngine(stack *Go, platformIO goPlatformIO) *goEngine {
 	}
 	engine.closeMessage.kind = goMessageStackClose
 	engine.resetMessage.kind = goMessageStackReset
+	engine.injectMessage.kind = goMessageInject
 	engine.delayedAckTickNode.expire = engine.expireDelayedAckTick
 	engine.reassemblyTickNode.expire = engine.expireReassemblyTick
 	engine.sweepTickNode.expire = engine.expireSweepTick
@@ -232,7 +281,7 @@ func (e *goEngine) run() {
 		e.flushSpliceDirty()
 		e.wheel.advance(e.now())
 		e.flushAcks()
-		e.dispatcher.Flush()
+		e.dispatchStage.Flush()
 		e.platformIO.flush()
 		e.reapDying()
 		if e.reclaimPending {
@@ -254,9 +303,10 @@ func (e *goEngine) exit() {
 		next := message.next
 		message.next = nil
 		message.queued.Store(false)
-		e.releasePendingSplice(message)
+		e.releasePending(message)
 		message = next
 	}
+	e.releaseInjected()
 }
 
 func (e *goEngine) updateLoad(now int64) {
@@ -301,7 +351,7 @@ func (e *goEngine) postMessage(message *goMessage) {
 	case goEngineParked:
 		e.platformIO.wake()
 	case goEngineExited:
-		e.releasePendingSplice(message)
+		e.releasePending(message)
 	}
 }
 
@@ -341,6 +391,39 @@ func (e *goEngine) handleMessage(message *goMessage) {
 		e.handlePacketSpliceEngage(message.packet)
 	case goMessagePacketClose:
 		e.handlePacketSpliceClose(message.packet)
+	case goMessageInject:
+		e.processInjected()
+	}
+}
+
+func (e *goEngine) inject(packet []byte, meta ForwardFrameMeta) {
+	if e.injectCount.Add(1) > goInjectQueueLimit {
+		e.injectCount.Add(-1)
+		e.droppedInjectFrames.record(e.stack.logger, "frames handed over between queues")
+		return
+	}
+	frame := &goInjectedFrame{buffer: buf.NewSize(len(packet)), meta: meta}
+	common.Must1(frame.buffer.Write(packet))
+	e.injectStack.push(frame)
+	e.postMessage(&e.injectMessage)
+}
+
+func (e *goEngine) processInjected() {
+	for frame := e.injectStack.popAll(); frame != nil; {
+		next := frame.next
+		e.injectCount.Add(-1)
+		e.processFrame(&goFrame{data: frame.buffer.Bytes(), meta: frame.meta})
+		frame.buffer.Release()
+		frame = next
+	}
+}
+
+func (e *goEngine) releaseInjected() {
+	for frame := e.injectStack.popAll(); frame != nil; {
+		next := frame.next
+		e.injectCount.Add(-1)
+		frame.buffer.Release()
+		frame = next
 	}
 }
 
@@ -391,13 +474,15 @@ func (e *goEngine) shutdown() {
 
 func (e *goEngine) processBurst() error {
 	remaining := goReadBatch
+	budget := goEngineBurstBytes
 	e.tunPending = false
-	for remaining > 0 {
+	for remaining > 0 && budget > 0 {
 		count, drained, err := e.platformIO.readBurst(e.frames[:remaining])
 		if err != nil {
 			return err
 		}
 		for index := range count {
+			budget -= len(e.frames[index].data)
 			e.processFrame(&e.frames[index])
 		}
 		if drained || count == 0 {
@@ -428,15 +513,23 @@ func (e *goEngine) processParsed(packet []byte, meta ForwardFrameMeta, parsed *f
 	if e.handleLoopbackHairpin(packet, meta, parsed) {
 		return
 	}
-	if parsed.protocol == uint8(header.TCPProtocolNumber) && parsed.hasFlow && !parsed.isPureTCPSyn() {
+	establishedTCP := parsed.protocol == uint8(header.TCPProtocolNumber) && parsed.hasFlow && !parsed.isPureTCPSyn()
+	if establishedTCP {
 		conn := e.flows[parsed.flowKey()]
 		if conn != nil {
 			e.inputTCP(conn, parsed)
 			return
 		}
 	}
-	if e.dispatcher.DispatchParsed(packet, meta, parsed) {
+	if e.dispatchStage.DispatchParsed(packet, meta, parsed) {
 		return
+	}
+	if establishedTCP {
+		owner := e.stack.directory.lookup(parsed.flowKey())
+		if owner != nil && owner.engine != e {
+			owner.engine.inject(packet, meta)
+			return
+		}
 	}
 	e.demuxL4(packet, meta, parsed)
 }

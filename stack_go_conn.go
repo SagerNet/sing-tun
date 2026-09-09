@@ -171,6 +171,7 @@ type GoConn struct {
 	receiveCapacityPublished atomic.Uint64
 	windowUpdateThreshold    atomic.Uint64
 	tsRecent                 atomic.Uint32
+	ident                    atomic.Uint32
 	connState                atomic.Uint32
 	receiveShutdown          atomic.Bool
 	everEstablished          atomic.Bool
@@ -211,8 +212,6 @@ type GoConn struct {
 	readDeadline    pipe.Deadline
 	writeDeadline   pipe.Deadline
 
-	receiveSlots      [goReceiveSlotCount]*goSlab
-	transmitSlots     [goTransmitSlotCount]*goSlab
 	writeAccess       sync.Mutex
 	readAccess        sync.Mutex
 	readSignal        chan struct{}
@@ -259,8 +258,8 @@ func (c *GoConn) initialize(engine *goEngine, key flowKey, source M.Socksaddr, d
 	c.source = source
 	c.destination = destination
 	c.epoch = engine.now()
-	c.receiveChain.init(c.receiveSlots[:], engine.slabPool, &c.slabHolder)
-	c.transmitStore.init(c.transmitSlots[:], engine.slabPool, &c.slabHolder)
+	c.receiveChain.init(make([]*goSlab, goReceiveCapacityMax/goSlabSize+1), engine.slabPool, &c.slabHolder)
+	c.transmitStore.init(make([]*goSlab, goTransmitCapacityMax/goSlabSize+1), engine.slabPool, &c.slabHolder)
 	c.transmitSegments = make([][]byte, 0, 8)
 	c.readSignal = make(chan struct{}, 1)
 	c.writeSignal = make(chan struct{}, 1)

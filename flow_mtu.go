@@ -13,15 +13,15 @@ const segmentRetainCount = 128
 
 // Linux delivers TSO aggregates to the TUN even with IFF_VNET_HDR off
 // (observed on 6.x: the pre-segmentation skb is handed to the fd as-is).
-func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacket, raw []byte) {
+func (s *ForwardStage) resegmentTCP(flow *forwardFlow, packet *forwardPacket, raw []byte) {
 	if len(packet.transport) < header.TCPMinimumSize {
 		return
 	}
 	headerLength := len(raw) - len(packet.transport)
 	if packet.ipVersion == 6 && headerLength != header.IPv6MinimumSize {
-		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, d.writeback.ReturnHeadroom())
+		reply, ok := buildPacketTooBig(header.IPv6(packet.network), flow.effectiveMTU, s.writeback.ReturnHeadroom())
 		if ok {
-			d.writebackBatch = append(d.writebackBatch, reply)
+			s.writebackBatch = append(s.writebackBatch, reply)
 		}
 		return
 	}
@@ -39,7 +39,7 @@ func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacke
 		gsoType = GSOTCPv6
 	}
 	neededSegments := max((len(raw)-totalHeaderLength+segmentSize-1)/segmentSize, 1)
-	bufs, sizes := d.reserveSegments(neededSegments, int(flow.effectiveMTU))
+	bufs, sizes := s.reserveSegments(neededSegments, int(flow.effectiveMTU))
 	n, err := GSOSplit(raw, GSOOptions{
 		GSOType:    gsoType,
 		HdrLen:     uint16(totalHeaderLength),
@@ -48,30 +48,30 @@ func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacke
 		GSOSize:    uint16(segmentSize),
 	}, bufs, sizes, 0)
 	if err != nil {
-		d.logger.Trace(E.Cause(err, "resegment packet"))
+		s.dispatcher.logger.Trace(E.Cause(err, "resegment packet"))
 		return
 	}
 	for i := range n {
-		d.stagePort(flow.nat, bufs[i][:sizes[i]])
+		s.stagePort(flow.nat, bufs[i][:sizes[i]])
 	}
 }
 
-func (d *ForwardDispatcher) reserveSegments(count, size int) ([][]byte, []int) {
-	start := d.segmentUsed
+func (s *ForwardStage) reserveSegments(count, size int) ([][]byte, []int) {
+	start := s.segmentUsed
 	end := start + count
-	for len(d.segmentBuffers) < end {
-		d.segmentBuffers = append(d.segmentBuffers, make([]byte, size))
-		d.segmentSizes = append(d.segmentSizes, 0)
+	for len(s.segmentBuffers) < end {
+		s.segmentBuffers = append(s.segmentBuffers, make([]byte, size))
+		s.segmentSizes = append(s.segmentSizes, 0)
 	}
 	for i := start; i < end; i++ {
-		if cap(d.segmentBuffers[i]) < size {
-			d.segmentBuffers[i] = make([]byte, size)
+		if cap(s.segmentBuffers[i]) < size {
+			s.segmentBuffers[i] = make([]byte, size)
 		} else {
-			d.segmentBuffers[i] = d.segmentBuffers[i][:size]
+			s.segmentBuffers[i] = s.segmentBuffers[i][:size]
 		}
 	}
-	d.segmentUsed = end
-	return d.segmentBuffers[start:end], d.segmentSizes[start:end]
+	s.segmentUsed = end
+	return s.segmentBuffers[start:end], s.segmentSizes[start:end]
 }
 
 const synthesizedTTL = 64

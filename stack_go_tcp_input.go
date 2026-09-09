@@ -81,7 +81,8 @@ func (e *goEngine) answerNoFlow(parsed *forwardPacket) {
 		return
 	}
 	e.resetBurst++
-	reply, ok := goBuildNoFlowReset(e.controlScratch[:], parsed)
+	e.controlIdent++
+	reply, ok := goBuildNoFlowReset(e.controlScratch[:], parsed, uint16(e.controlIdent))
 	if !ok {
 		return
 	}
@@ -91,7 +92,7 @@ func (e *goEngine) answerNoFlow(parsed *forwardPacket) {
 	}
 }
 
-func goBuildNoFlowReset(scratch []byte, parsed *forwardPacket) ([]byte, bool) {
+func goBuildNoFlowReset(scratch []byte, parsed *forwardPacket, ident uint16) ([]byte, bool) {
 	tcpHdr := header.TCP(parsed.transport)
 	dataOffset := int(tcpHdr.DataOffset())
 	if dataOffset < header.TCPMinimumSize || dataOffset > len(tcpHdr) {
@@ -101,7 +102,7 @@ func goBuildNoFlowReset(scratch []byte, parsed *forwardPacket) ([]byte, bool) {
 	packet := scratch[:ipHeaderLength+header.TCPMinimumSize]
 	replyTCP := header.TCP(packet[ipHeaderLength:])
 	encodeResetTCP(replyTCP, tcpHdr)
-	pseudoSum := goEncodeNetworkHeader(packet, parsed.ipVersion, parsed.destination.Addr(), parsed.source.Addr(), header.TCPMinimumSize)
+	pseudoSum := goEncodeNetworkHeader(packet, parsed.ipVersion, parsed.destination.Addr(), parsed.source.Addr(), header.TCPMinimumSize, ident)
 	replyTCP.SetChecksum(^replyTCP.CalculateChecksum(pseudoSum))
 	return packet, true
 }
@@ -184,6 +185,7 @@ func (e *goEngine) handleTCPSyn(parsed *forwardPacket) {
 	conn.buildSynAck(synOptions, localMSS)
 	conn.keyed = true
 	e.flows[key] = conn
+	e.stack.directory.insert(key, conn)
 	go e.stack.handler.NewConnectionEx(e.stack.ctx, conn, source, destination, nil)
 }
 
@@ -1175,7 +1177,7 @@ func (e *goEngine) moderateReceiveCapacity(conn *GoConn) {
 	conn.receiveSpaceConsumed = consumed
 	conn.receiveSpaceCopied = copied
 	conn.receiveSpaceStamp = now
-	capacity := min(max(2*max(copied, previous), goReceiveCapacityBase), e.receiveCapacityLimit(conn))
+	capacity := min(max(2*max(copied, previous), conn.receiveCapacity), e.receiveCapacityLimit(conn))
 	if capacity == conn.receiveCapacity {
 		return
 	}
@@ -1803,11 +1805,12 @@ func (e *goEngine) removeFlowKey(conn *GoConn) {
 	}
 	conn.keyed = false
 	delete(e.flows, conn.key)
+	e.stack.directory.remove(conn.key, conn)
 	reason := FlowCloseReset
 	if conn.finReceived && conn.finSent {
 		reason = FlowCloseFinished
 	}
-	e.dispatcher.teardownFlow(conn.key, reason)
+	e.dispatchStage.teardownFlow(conn.key, reason)
 }
 
 func (e *goEngine) reapDying() {
@@ -1867,13 +1870,12 @@ func (c *GoConn) releaseResources(engine *goEngine) {
 
 func (e *goEngine) closeAllFlows() []*GoConn {
 	var unreset []*GoConn
-	for key, conn := range e.flows {
+	for _, conn := range e.flows {
 		if conn.connState.Load() < goConnStateDead && !e.sendReset(conn) {
 			unreset = append(unreset, conn)
 		}
 		e.detachConn(conn, net.ErrClosed, goDeathImmediate)
-		delete(e.flows, key)
-		conn.keyed = false
+		e.removeFlowKey(conn)
 	}
 	return unreset
 }
@@ -1940,6 +1942,7 @@ func (e *goEngine) reclaim() {
 	e.slabPool.trim()
 	e.descriptorPool.trim()
 	e.reclaimPacketReceive()
+	e.reclaimUDPSessions()
 	for index := range e.reassemblyEntries {
 		entry := &e.reassemblyEntries[index]
 		if !entry.active {

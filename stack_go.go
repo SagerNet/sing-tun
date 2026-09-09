@@ -2,7 +2,9 @@ package tun
 
 import (
 	"context"
+	"errors"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,7 +27,8 @@ type Go struct {
 	memoryPressure       func() MemoryPressure
 	udpNat               *UDPNat
 	dispatcher           *ForwardDispatcher
-	engine               *goEngine
+	directory            goFlowDirectory
+	engines              []*goEngine
 	closed               atomic.Bool
 }
 
@@ -54,13 +57,20 @@ func NewGo(options StackOptions) *Go {
 }
 
 func (s *Go) Start() error {
-	platformIO, err := newGoPlatformIO(s)
+	queues, err := newGoPlatformQueues(s)
 	if err != nil {
 		return err
 	}
-	err = platformIO.start()
-	if err != nil {
-		return err
+	for index, queue := range queues {
+		err = queue.start()
+		if err == nil {
+			continue
+		}
+		if index > 0 && errors.Is(err, errGoQueueUnavailable) {
+			queues = queues[:index]
+			break
+		}
+		return E.Errors(err, goCloseQueues(queues[:index]))
 	}
 	udpNATOptions := s.udpNATOptions
 	udpNATOptions.Handler = s.handler
@@ -68,13 +78,29 @@ func (s *Go) Start() error {
 	udpNat := NewUDPNat(udpNATOptions)
 	err = udpNat.Start()
 	if err != nil {
-		return E.Errors(err, platformIO.close())
+		return E.Errors(err, goCloseQueues(queues))
 	}
 	s.udpNat = udpNat
-	s.dispatcher = NewForwardDispatcher(s.handler, &goWriteback{platformIO: platformIO}, s.logger, s.udpTimeout, s.icmpTimeout)
-	s.engine = newGoEngine(s, platformIO)
-	go s.engine.run()
+	s.dispatcher = NewForwardDispatcher(s.handler, &goWriteback{platformIO: queues[0]}, s.logger, s.udpTimeout, s.icmpTimeout)
+	if len(queues) > 1 {
+		s.directory.flows = make(map[flowKey]*GoConn)
+	}
+	s.engines = make([]*goEngine, len(queues))
+	for index, queue := range queues {
+		s.engines[index] = newGoEngine(s, queue, len(queues))
+	}
+	for _, engine := range s.engines {
+		go engine.run()
+	}
 	return nil
+}
+
+func goCloseQueues(queues []goPlatformIO) error {
+	var err error
+	for _, queue := range queues {
+		err = E.Errors(err, queue.close())
+	}
+	return err
 }
 
 type goWriteback struct {
@@ -94,12 +120,47 @@ func (w *goWriteback) WriteReturnPackets(packets [][]byte) error {
 	return writeErr
 }
 
+type goFlowDirectory struct {
+	access sync.RWMutex
+	flows  map[flowKey]*GoConn
+}
+
+func (d *goFlowDirectory) insert(key flowKey, conn *GoConn) {
+	if d.flows == nil {
+		return
+	}
+	d.access.Lock()
+	d.flows[key] = conn
+	d.access.Unlock()
+}
+
+func (d *goFlowDirectory) remove(key flowKey, conn *GoConn) {
+	if d.flows == nil {
+		return
+	}
+	d.access.Lock()
+	if d.flows[key] == conn {
+		delete(d.flows, key)
+	}
+	d.access.Unlock()
+}
+
+func (d *goFlowDirectory) lookup(key flowKey) *GoConn {
+	if d.flows == nil {
+		return nil
+	}
+	d.access.RLock()
+	conn := d.flows[key]
+	d.access.RUnlock()
+	return conn
+}
+
 func (s *Go) ResetNetwork() {
 	if s.udpNat != nil {
 		s.udpNat.Purge()
 	}
-	if s.engine != nil {
-		s.engine.postMessage(&s.engine.resetMessage)
+	for _, engine := range s.engines {
+		engine.postMessage(&engine.resetMessage)
 	}
 }
 
@@ -107,16 +168,19 @@ func (s *Go) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	if s.engine != nil {
-		s.engine.postMessage(&s.engine.closeMessage)
-		<-s.engine.exitSignal
+	for _, engine := range s.engines {
+		engine.postMessage(&engine.closeMessage)
+	}
+	for _, engine := range s.engines {
+		<-engine.exitSignal
 	}
 	s.dispatcher.Close()
 	if s.udpNat != nil {
 		s.udpNat.Close()
 	}
-	if s.engine != nil {
-		return s.engine.platformIO.close()
+	var err error
+	for _, engine := range s.engines {
+		err = E.Errors(err, engine.platformIO.close())
 	}
-	return nil
+	return err
 }

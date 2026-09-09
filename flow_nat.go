@@ -22,8 +22,8 @@ type portNAT struct {
 	selectorStart uint16
 	selectorCount uint16
 
-	counter uint32
-	pending [][]byte
+	allocateAccess sync.Mutex
+	counter        uint32
 }
 
 type natShard struct {
@@ -109,6 +109,8 @@ func (n *portNAT) allocateSelector(protocol uint8, portAddress, serverAddress ne
 			return clientSelector, key, true
 		}
 	}
+	n.allocateAccess.Lock()
+	defer n.allocateAccess.Unlock()
 	for range rangeCount {
 		n.counter++
 		candidate := rangeStart + uint16(n.counter%rangeCount)

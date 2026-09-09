@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -19,52 +20,86 @@ const goEngineInlineTransmit = false
 
 var goEmptyVirtioHeader [virtioNetHdrLen]byte
 
-type goLinuxIO struct {
+type goLinuxDevice struct {
 	stack               *Go
-	tunFd               int
-	epollFd             int
-	eventFd             int
 	vnetHeader          bool
-	offloadProbePending bool
+	offloadProbePending atomic.Bool
 	transmitOffload     atomic.Bool
-	scratch             []byte
-	events              [goSocketEventBatch + 2]unix.EpollEvent
 	droppedEngineFrames goDropCounter
-	closing             atomic.Bool
 	droppedDataFrames   goDropCounter
+	closing             atomic.Bool
 }
 
-func newGoPlatformIO(stack *Go) (goPlatformIO, error) {
-	return &goLinuxIO{stack: stack}, nil
+type goLinuxIO struct {
+	device  *goLinuxDevice
+	tun     *NativeTun
+	tunFd   int
+	ownsFd  bool
+	epollFd int
+	eventFd int
+	scratch []byte
+	events  [goSocketEventBatch + 2]unix.EpollEvent
 }
 
-func (o *goLinuxIO) start() error {
-	nativeTun, isNative := o.stack.tun.(*NativeTun)
+func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
+	nativeTun, isNative := stack.tun.(*NativeTun)
 	if !isNative {
-		return E.New("go: unsupported TUN implementation")
+		return nil, E.New("go: unsupported TUN implementation")
 	}
 	err := nativeTun.detachRuntimePoller()
 	if err != nil {
-		return E.Cause(err, "go: detach tun from runtime poller")
+		return nil, E.Cause(err, "go: detach tun from runtime poller")
 	}
-	o.tunFd = nativeTun.rawFileDescriptor()
+	device := &goLinuxDevice{stack: stack}
 	vnetHeader, err := nativeTun.vnetHeaderEnabled()
 	if err != nil {
-		o.stack.logger.Warn(E.Cause(err, "go: check IFF_VNET_HDR"))
+		stack.logger.Warn(E.Cause(err, "go: check IFF_VNET_HDR"))
 		vnetHeader = false
 	}
-	o.vnetHeader = vnetHeader
+	device.vnetHeader = vnetHeader
 	if vnetHeader {
-		offloadErr := setTCPOffload(o.tunFd)
+		offloadErr := setTCPOffload(nativeTun.rawFileDescriptor())
 		if offloadErr != nil {
-			o.stack.logger.Warn(E.Cause(offloadErr, "go: set TSO offload"))
+			stack.logger.Warn(E.Cause(offloadErr, "go: set TSO offload"))
 		} else {
-			o.offloadProbePending = true
+			device.offloadProbePending.Store(true)
 		}
+	}
+	queueCount := 1
+	if nativeTun.multiQueue {
+		queueCount = runtime.GOMAXPROCS(0)
+	} else if nativeTun.options.MultiQueue {
+		stack.logger.Warn("go: multi-queue requested but the tun device is single-queue")
+	}
+	queues := make([]goPlatformIO, queueCount)
+	queues[0] = &goLinuxIO{device: device, tun: nativeTun, tunFd: nativeTun.rawFileDescriptor()}
+	for index := 1; index < len(queues); index++ {
+		queues[index] = &goLinuxIO{device: device, tun: nativeTun, tunFd: -1}
+	}
+	return queues, nil
+}
+
+func (o *goLinuxIO) start() error {
+	if o.tunFd < 0 {
+		queueFd, err := o.tun.openQueue()
+		if err != nil {
+			o.device.stack.logger.Warn(E.Cause(err, "go: attach tun queue"))
+			return errGoQueueUnavailable
+		}
+		o.tunFd = queueFd
+		o.ownsFd = true
 	}
 	// Linux hands pre-segmentation TSO aggregates to the TUN fd even with IFF_VNET_HDR off
 	// (observed on 6.x kernels).
 	o.scratch = make([]byte, virtioNetHdrLen+gsoMaxSize)
+	err := o.startPoller()
+	if err != nil && o.ownsFd {
+		err = E.Errors(err, unix.Close(o.tunFd))
+	}
+	return err
+}
+
+func (o *goLinuxIO) startPoller() error {
 	epollFd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
 	if err != nil {
 		return E.Cause(err, "go: create epoll")
@@ -153,6 +188,8 @@ func (o *goLinuxIO) wait(timeout time.Duration, events []goSocketEvent) (bool, i
 		event := &o.events[index]
 		switch event.Fd {
 		case goEpollDataWake:
+			var value [8]byte
+			_, _ = unix.Read(o.eventFd, value[:])
 		case goEpollDataTun:
 			if event.Events&(unix.EPOLLERR|unix.EPOLLHUP) != 0 {
 				return false, 0, unix.ECONNRESET
@@ -222,17 +259,16 @@ func (o *goLinuxIO) readBurst(frames []goFrame) (int, bool, error) {
 			return 0, false, os.ErrClosed
 		}
 		// The kernel rejects writes with EIO while the device is not up (tun_get_user).
-		if o.offloadProbePending {
-			o.offloadProbePending = false
+		if o.device.offloadProbePending.CompareAndSwap(true, false) {
 			probeErr := o.probeTransmitOffload()
 			if probeErr != nil {
-				o.stack.logger.Warn(E.Cause(probeErr, "go: TSO write probe"))
+				o.device.stack.logger.Warn(E.Cause(probeErr, "go: TSO write probe"))
 			} else {
-				o.transmitOffload.Store(true)
+				o.device.transmitOffload.Store(true)
 			}
 		}
 		packet := o.scratch[:n]
-		if !o.vnetHeader {
+		if !o.device.vnetHeader {
 			frames[0] = goFrame{data: packet}
 			return 1, false, nil
 		}
@@ -267,11 +303,11 @@ func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 		case 0:
 			return nil
 		case unix.EINTR:
-			if o.closing.Load() {
+			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
 		case unix.EAGAIN:
-			o.droppedEngineFrames.record(o.stack.logger, "engine frames")
+			o.device.droppedEngineFrames.record(o.device.stack.logger, "engine frames")
 			return errGoFrameDropped
 		default:
 			return E.Cause(errno, "go: write tun")
@@ -288,21 +324,21 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
 		case 0:
 			return nil
 		case unix.EINTR:
-			if o.closing.Load() {
+			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
 		case unix.EAGAIN:
 			// tun chardev writes complete into netif_rx, which drops on backlog overflow
 			// instead of reporting EAGAIN, and tun_chr_poll reports the fd always writable.
-			if o.closing.Load() {
+			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
 			if waited >= goTransmitBackoffBudget {
-				o.droppedDataFrames.record(o.stack.logger, "data frames")
+				o.device.droppedDataFrames.record(o.device.stack.logger, "data frames")
 				return errGoFrameDropped
 			}
 			time.Sleep(delay)
-			if o.closing.Load() {
+			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
 			waited += delay
@@ -317,7 +353,7 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 	var headerStorage [virtioNetHdrLen]byte
 	var iovecStorage [8]unix.Iovec
 	iovecs := iovecStorage[:0]
-	if o.vnetHeader {
+	if o.device.vnetHeader {
 		prefix := goEmptyVirtioHeader[:]
 		if meta != (ForwardFrameMeta{}) {
 			virtioHeader := virtioNetHdr{gsoType: meta.gsoType, gsoSize: meta.gsoSize}
@@ -350,18 +386,18 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 }
 
 func (o *goLinuxIO) transmitPrefix() int {
-	if o.vnetHeader {
+	if o.device.vnetHeader {
 		return virtioNetHdrLen
 	}
 	return 0
 }
 
 func (o *goLinuxIO) transmitChecksumOffload() bool {
-	return o.vnetHeader
+	return o.device.vnetHeader
 }
 
 func (o *goLinuxIO) transmitSegmentOffload() bool {
-	return o.transmitOffload.Load()
+	return o.device.transmitOffload.Load()
 }
 
 func (o *goLinuxIO) armTransmitWritable() (bool, error) {
@@ -379,13 +415,15 @@ func (o *goLinuxIO) wake() {
 }
 
 func (o *goLinuxIO) drainWake() {
-	var value [8]byte
-	_, _ = unix.Read(o.eventFd, value[:])
 }
 
 func (o *goLinuxIO) close() error {
-	o.closing.Store(true)
-	return E.Errors(unix.Close(o.epollFd), unix.Close(o.eventFd))
+	o.device.closing.Store(true)
+	err := E.Errors(unix.Close(o.epollFd), unix.Close(o.eventFd))
+	if o.ownsFd {
+		err = E.Errors(err, unix.Close(o.tunFd))
+	}
+	return err
 }
 
 func (o *goLinuxIO) flush() {

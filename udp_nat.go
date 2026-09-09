@@ -16,7 +16,6 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/canceler"
 	"github.com/sagernet/sing/common/control"
-	"github.com/sagernet/sing/common/memory"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/pipe"
@@ -117,10 +116,8 @@ func NewUDPNat(options UDPNatOptions) *UDPNat {
 	if maxSize == 0 {
 		if runtime.GOOS == "ios" {
 			maxSize = 4096
-		} else if totalMemory := memory.Total(); totalMemory == 0 {
-			maxSize = 16384
 		} else {
-			maxSize = uint32(min(max(totalMemory/16384, 4096), 16384))
+			maxSize = 16384
 		}
 	}
 	hasher := maphash.NewHasher[udpNatSessionKey]()
@@ -336,10 +333,7 @@ func (s *UDPNat) NewPacket(bufferSlices [][]byte, source M.Socksaddr, destinatio
 	conn.enqueue(buffer, destination)
 }
 
-func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, userData any) (*UDPNatConn, bool) {
-	if s.state.Load() != udpNatStateStarted {
-		return nil, false
-	}
+func (s *UDPNat) sessionKey(source M.Socksaddr, destination M.Socksaddr) udpNatSessionKey {
 	key := udpNatSessionKey{
 		sourceAddr: source.Addr.Unmap(),
 		sourcePort: source.Port,
@@ -352,6 +346,25 @@ func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, us
 	case NATMappingAddressAndPortDependent:
 		key.destinationAddr = destination.Addr.Unmap()
 		key.destinationPort = destination.Port
+	}
+	return key
+}
+
+func (s *UDPNat) refresh(key udpNatSessionKey, conn *UDPNatConn) bool {
+	if s.state.Load() != udpNatStateStarted {
+		return false
+	}
+	current, loaded := s.cache.GetAndRefresh(key)
+	return loaded && current == conn
+}
+
+func (s *UDPNat) getOrCreateConn(source M.Socksaddr, destination M.Socksaddr, userData any) (*UDPNatConn, bool) {
+	return s.getOrCreate(s.sessionKey(source, destination), source, destination, userData)
+}
+
+func (s *UDPNat) getOrCreate(key udpNatSessionKey, source M.Socksaddr, destination M.Socksaddr, userData any) (*UDPNatConn, bool) {
+	if s.state.Load() != udpNatStateStarted {
+		return nil, false
 	}
 	var (
 		newContext context.Context
