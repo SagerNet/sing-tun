@@ -14,7 +14,7 @@ import (
 
 const goEngineInlineTransmit = false
 
-const goSessionRingCapacity = 0x1000000
+const goSessionRingCapacity = 0x800000
 
 const (
 	goCompletionKeyTun uintptr = iota + 1
