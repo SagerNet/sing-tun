@@ -773,6 +773,9 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Invert = true
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
@@ -780,6 +783,9 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		if p6 {
 			it = netlink.NewRule()
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
+			it.Mark = t.options.AutoRedirectOutputMark
+			it.MarkSet = true
+			it.Invert = true
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)

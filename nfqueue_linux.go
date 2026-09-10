@@ -23,6 +23,7 @@ type nfqueueHandler struct {
 	logger     logger.Logger
 	nfq        *nfqueue.Nfqueue
 	queue      uint16
+	inputMark  uint32
 	outputMark uint32
 	resetMark  uint32
 	closed     atomic.Bool
@@ -33,6 +34,7 @@ type nfqueueOptions struct {
 	Handler    Handler
 	Logger     logger.Logger
 	Queue      uint16
+	InputMark  uint32
 	OutputMark uint32
 	ResetMark  uint32
 }
@@ -45,6 +47,7 @@ func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
 		handler:    options.Handler,
 		logger:     options.Logger,
 		queue:      options.Queue,
+		inputMark:  options.InputMark,
 		outputMark: options.OutputMark,
 		resetMark:  options.ResetMark,
 	}, nil
@@ -282,12 +285,18 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
 			h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
 		} else {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+			h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
 		}
 	case ActionDrop:
 		h.setVerdict(packetID, nfqueue.NfDrop, 0)
+	case ActionFlow, ActionHijackDNS:
+		h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
 	default:
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		if packet.protocol == uint8(unix.IPPROTO_TCP) {
+			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		} else {
+			h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
+		}
 	}
 
 	return 0

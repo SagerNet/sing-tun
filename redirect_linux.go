@@ -54,6 +54,9 @@ type autoRedirect struct {
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
+	if options.TunOptions.AutoRedirectInputMark == 0 {
+		options.TunOptions.AutoRedirectInputMark = DefaultAutoRedirectInputMark
+	}
 	r := &autoRedirect{
 		tunOptions:             options.TunOptions,
 		ctx:                    options.Context,
@@ -168,6 +171,7 @@ func (r *autoRedirect) Start() error {
 				Handler:    r.handler,
 				Logger:     r.logger,
 				Queue:      r.effectiveNFQueue(),
+				InputMark:  r.tunOptions.AutoRedirectInputMark,
 				OutputMark: r.effectiveOutputMark(),
 				ResetMark:  r.effectiveResetMark(),
 			})
