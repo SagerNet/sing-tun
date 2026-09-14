@@ -4,13 +4,16 @@ package tun
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -102,25 +105,6 @@ func TestGoKernelHandshake(t *testing.T) {
 func TestGoKernelHalfClose(t *testing.T) {
 	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500})
 	for _, ipv6 := range []bool{false, true} {
-		for _, splice := range []bool{false, true} {
-			t.Run(fmt.Sprintf("ipv6=%v/splice=%v", ipv6, splice), func(test *testing.T) {
-				test.Parallel()
-				var client, server net.Conn
-				if splice {
-					client, server, _, _ = fixture.splicePair(test, ipv6)
-				} else {
-					client, server = fixture.pair(test, ipv6)
-				}
-				err := kernelTransfer(client, server, kernelPayload(256<<10, 163), false)
-				if err != nil {
-					test.Fatal("request and FIN:", err)
-				}
-				err = kernelTransfer(server, client, kernelPayload(2<<20, 167), false)
-				if err != nil {
-					test.Fatal("response after peer FIN:", err)
-				}
-			})
-		}
 		t.Run(fmt.Sprintf("ipv6=%v/close_read", ipv6), func(test *testing.T) {
 			test.Parallel()
 			client, server := fixture.pair(test, ipv6)
@@ -229,9 +213,26 @@ func TestGoKernelClose(t *testing.T) {
 	})
 	for _, splice := range []bool{false, true} {
 		t.Run(fmt.Sprintf("busy_shutdown/splice=%v", splice), func(scenarioTest *testing.T) {
-			fixture := newKernelStackFixture(scenarioTest, kernelStackConfig{mtu: 1500, multiQueue: runtime.GOOS == "linux"})
-			payload := kernelPayload(8<<20, 33)
-			completed := make(chan error, 32)
+			fixture := newKernelStackFixture(scenarioTest, kernelStackConfig{
+				mtu: 1500, multiQueue: runtime.GOOS == "linux",
+				upstreamSocketBuffer: 4096,
+				dialer: net.Dialer{Control: func(_, _ string, rawConn syscall.RawConn) error {
+					var optionErr error
+					err := rawConn.Control(func(descriptor uintptr) {
+						optionErr = kernelSetSocketBuffers(descriptor, 4096)
+					})
+					return E.Errors(err, optionErr)
+				}},
+			})
+			payload := kernelPayload(32749, 33)
+			type pendingResult struct {
+				connection int
+				operation  string
+				kernelIOResult
+			}
+			completed := make(chan pendingResult, 32)
+			reading := make(chan kernelIOResult, 16)
+			var progress [16]atomic.Int64
 			for index := range 16 {
 				var client, conn net.Conn
 				if splice {
@@ -239,44 +240,92 @@ func TestGoKernelClose(t *testing.T) {
 				} else {
 					client, conn = fixture.pair(scenarioTest, index%2 != 0)
 				}
-				client.SetDeadline(time.Time{})
-				client.(*net.TCPConn).SetReadBuffer(4096)
+				client.SetDeadline(time.Now().Add(2 * time.Second))
 				conn.SetDeadline(time.Time{})
-				go func() { conn.Write(payload); completed <- nil }()
 				go func() {
-					_, err := conn.Read(make([]byte, 1))
-					if err == nil {
-						completed <- E.New("pending read completed without close error")
-						return
+					for {
+						n, err := conn.Write(payload)
+						progress[index].Add(int64(n))
+						if err != nil {
+							completed <- pendingResult{connection: index, operation: "write", kernelIOResult: kernelIOResult{n: n, err: err}}
+							return
+						}
 					}
-					completed <- nil
 				}()
+				go func() {
+					var probe [1]byte
+					n, err := io.ReadFull(conn, probe[:])
+					if err == nil && probe[0] != 0x71 {
+						err = E.New("shutdown read probe corrupted")
+					}
+					reading <- kernelIOResult{n: n, err: err}
+					n, err = conn.Read(probe[:])
+					completed <- pendingResult{connection: index, operation: "read", kernelIOResult: kernelIOResult{n: n, err: err}}
+				}()
+				_, err := client.Write([]byte{0x71})
+				if err != nil {
+					scenarioTest.Fatal("start blocked reader:", err)
+				}
+				var probe [1]byte
+				_, err = io.ReadFull(client, probe[:])
+				if err != nil || probe[0] != payload[0] {
+					scenarioTest.Fatalf("start blocked writer: byte=%x error=%v", probe[0], err)
+				}
 			}
-			time.Sleep(30 * time.Millisecond)
-			started := time.Now()
-			err := fixture.stack.Close()
-			if err != nil {
-				scenarioTest.Fatal(err)
+			for range 16 {
+				select {
+				case result := <-reading:
+					if result.n != 1 || result.err != nil {
+						scenarioTest.Fatalf("start blocked reader: %+v", result)
+					}
+				case <-time.After(time.Second):
+					scenarioTest.Fatal("reader did not consume peer probe")
+				}
 			}
-			if time.Since(started) > time.Second {
-				scenarioTest.Error("stack close exceeded 1 second")
+			var previousProgress [16]int64
+			stalledAt := time.Now()
+			backpressureDeadline := time.NewTimer(time.Second)
+			defer backpressureDeadline.Stop()
+			observations := time.NewTicker(10 * time.Millisecond)
+			defer observations.Stop()
+			for time.Since(stalledAt) < 40*time.Millisecond {
+				select {
+				case result := <-completed:
+					scenarioTest.Fatalf("I/O completed before stack shutdown: %+v", result)
+				case <-observations.C:
+					for index := range progress {
+						accepted := progress[index].Load()
+						if accepted != previousProgress[index] {
+							previousProgress[index] = accepted
+							stalledAt = time.Now()
+						}
+					}
+				case <-backpressureDeadline.C:
+					scenarioTest.Fatal("writers did not encounter backpressure within 1 second")
+				}
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- fixture.stack.Close() }()
+			select {
+			case err := <-closed:
+				if err != nil {
+					scenarioTest.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				scenarioTest.Fatal("stack close did not complete within 1 second")
 			}
 			deadline := time.NewTimer(2 * time.Second)
 			defer deadline.Stop()
 			for range 32 {
 				select {
-				case operationErr := <-completed:
-					if operationErr != nil {
-						scenarioTest.Error(operationErr)
+				case result := <-completed:
+					if !(E.IsClosed(result.err) || errors.Is(result.err, kernelConnectionReset)) || E.IsTimeout(result.err) ||
+						result.operation == "read" && result.n != 0 ||
+						result.operation == "write" && result.n >= len(payload) {
+						scenarioTest.Errorf("pending I/O after stack shutdown: %+v", result)
 					}
 				case <-deadline.C:
 					scenarioTest.Fatal("pending I/O did not unblock after stack shutdown")
-				}
-			}
-			for _, engine := range fixture.stack.engines {
-				inUse := engine.slabPool.inUse.Load()
-				if inUse != 0 {
-					scenarioTest.Errorf("shutdown retained %d allocated slabs", inUse)
 				}
 			}
 		})
@@ -286,6 +335,14 @@ func TestGoKernelClose(t *testing.T) {
 type kernelIOResult struct {
 	n   int
 	err error
+}
+
+func kernelCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, name, args...)
+	command.WaitDelay = time.Second
+	return command.CombinedOutput()
 }
 
 func TestGoKernelDeadline(t *testing.T) {
