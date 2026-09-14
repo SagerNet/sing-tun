@@ -386,12 +386,19 @@ func receiveMessageBatch(fd int, headers []rawfile.MsgHdrX) (int, unix.Errno) {
 }
 
 func (o *goDarwinIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
-	err := o.writePacket(frame)
+	o.transmitAccess.Lock()
+	err := o.writePacketLocked(frame)
+	o.transmitAccess.Unlock()
 	if err == errGoTransmitBlocked {
 		o.droppedEngineFrames.record(o.stack.logger, "engine frames")
 		return errGoFrameDropped
 	}
 	return err
+}
+
+func (o *goDarwinIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
+	frame := [1][]byte{packet}
+	return o.writeFrame(frame[:], meta)
 }
 
 func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
@@ -511,6 +518,7 @@ func (o *goDarwinIO) flushLocked() {
 		return
 	}
 	room := o.gateRoom(pending)
+	sentFrom := o.batchStart
 	for room > 0 {
 		messages := o.batchMessages[o.batchStart : o.batchStart+room]
 		n, errno := rawfile.NonBlockingSendMMsg(o.tunFd, messages)
@@ -530,6 +538,7 @@ func (o *goDarwinIO) flushLocked() {
 		o.gateSubmitted += int64(n)
 		room -= n
 	}
+	clear(o.batchIovecs[sentFrom*goDarwinBatchIovecs : o.batchStart*goDarwinBatchIovecs])
 	if o.batchStart == o.batchCount {
 		o.batchStart = 0
 		o.batchCount = 0
@@ -622,6 +631,7 @@ func (o *goDarwinIO) spillHeld() {
 			length += copy(spill[length:], bytesFromIovec(iovec))
 		}
 		iovecs[1] = rawfile.IovecFromBytes(spill[:length])
+		clear(iovecs[2:])
 		message.Msg.Iovlen = 2
 		o.batchSpilled[slot] = true
 	}
@@ -660,14 +670,9 @@ func (o *goDarwinIO) compactBatch() {
 		o.batchMessages[target].Msg.Iovlen = int32(len(targetIovecs))
 		o.batchSpilled[target] = o.batchSpilled[slot]
 	}
+	clear(o.batchIovecs[(o.batchCount-o.batchStart)*goDarwinBatchIovecs : o.batchCount*goDarwinBatchIovecs])
 	o.batchCount -= o.batchStart
 	o.batchStart = 0
-}
-
-func (o *goDarwinIO) writePacket(frame [][]byte) error {
-	o.transmitAccess.Lock()
-	defer o.transmitAccess.Unlock()
-	return o.writePacketLocked(frame)
 }
 
 func (o *goDarwinIO) writePacketLocked(frame [][]byte) error {
