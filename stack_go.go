@@ -30,13 +30,21 @@ type Go struct {
 	udpIdentification    atomic.Uint32
 	dispatcher           *ForwardDispatcher
 	directory            goFlowDirectory
+	congestion           *goCongestionOps
+	queueFactory         func(stack *Go) ([]goPlatformIO, error)
 	access               sync.Mutex
 	engines              []*goEngine
 	closed               atomic.Bool
 }
 
-func NewGo(options StackOptions) *Go {
+func NewGo(options StackOptions) (*Go, error) {
+	congestion, err := goLookupCongestionControl(options.TCPCongestionControl)
+	if err != nil {
+		return nil, err
+	}
 	return &Go{
+		congestion:           congestion,
+		queueFactory:         newGoPlatformQueues,
 		ctx:                  options.Context,
 		tun:                  options.Tun,
 		mtu:                  int(options.TunOptions.MTU),
@@ -56,7 +64,7 @@ func NewGo(options StackOptions) *Go {
 			ExcludeInterface: []string{options.TunOptions.Name},
 		},
 		memoryPressure: options.MemoryPressure,
-	}
+	}, nil
 }
 
 func (s *Go) Start() error {
@@ -65,7 +73,7 @@ func (s *Go) Start() error {
 	if s.closed.Load() {
 		return E.New("stack is closed")
 	}
-	queues, err := newGoPlatformQueues(s)
+	queues, err := s.queueFactory(s)
 	if err != nil {
 		return err
 	}

@@ -22,21 +22,22 @@ import (
 
 	"github.com/sagernet/sing-tun/gtcpip"
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
+	"github.com/sagernet/sing-tun/internal/tschecksum"
 )
 
 // PseudoHeaderChecksum calculates the pseudo-header checksum for the given
 // destination protocol and network address. Pseudo-headers are needed by
 // transport layers when calculating their own checksum.
 func PseudoHeaderChecksum(protocol tcpip.TransportProtocolNumber, srcAddr []byte, dstAddr []byte, totalLen uint16) uint16 {
+	if (len(srcAddr) == 4 || len(srcAddr) == 16) && (len(dstAddr) == 4 || len(dstAddr) == 16) {
+		return tschecksum.PseudoHeaderChecksum(uint8(protocol), srcAddr, dstAddr, totalLen)
+	}
 	xsum := checksum.Checksum(srcAddr, 0)
 	xsum = checksum.Checksum(dstAddr, xsum)
-
-	// Add the length portion of the checksum to the pseudo-checksum.
-	var tmp [2]byte
-	binary.BigEndian.PutUint16(tmp[:], totalLen)
-	xsum = checksum.Checksum(tmp[:], xsum)
-
-	return checksum.Checksum([]byte{0, uint8(protocol)}, xsum)
+	var trailer [4]byte
+	binary.BigEndian.PutUint16(trailer[:2], totalLen)
+	trailer[3] = uint8(protocol)
+	return checksum.Checksum(trailer[:], xsum)
 }
 
 // checksumUpdate2ByteAlignedUint16 updates a uint16 value in a calculated

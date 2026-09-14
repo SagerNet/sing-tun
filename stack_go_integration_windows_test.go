@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sagernet/sing-tun/internal/winipcfg"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/windows"
 )
@@ -12,6 +13,13 @@ const (
 	kernelConnectionRefused = windows.WSAECONNREFUSED
 	kernelConnectionReset   = windows.WSAECONNRESET
 )
+
+func kernelSetSocketBuffers(descriptor uintptr, size int) error {
+	return E.Errors(
+		windows.SetsockoptInt(windows.Handle(descriptor), windows.SOL_SOCKET, windows.SO_RCVBUF, size),
+		windows.SetsockoptInt(windows.Handle(descriptor), windows.SOL_SOCKET, windows.SO_SNDBUF, size),
+	)
+}
 
 func configureKernelInterface(t *testing.T, device Tun, options Options) {
 	t.Helper()

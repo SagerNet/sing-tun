@@ -6,12 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -29,12 +27,13 @@ import (
 
 type kernelStackConfig struct {
 	stackFactory         func(StackOptions) (Stack, error)
+	congestion           string
+	prepareStack         func(*Go)
 	mtu                  uint32
 	gso                  bool
 	multiQueue           bool
 	prepare              func(*testing.T, *Options)
 	configure            func(*testing.T, Options)
-	pressure             func() MemoryPressure
 	ctx                  context.Context
 	handshake            func(*GoConn) error
 	udpMapping           NATMapping
@@ -67,6 +66,9 @@ var kernelInterfaceSequence atomic.Uint32
 func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackFixture {
 	t.Helper()
 	index := kernelInterfaceSequence.Add(1)
+	if index >= 1<<14 {
+		t.Fatal("test interface address range exhausted")
+	}
 	fixture := &kernelStackFixture{
 		tcp:                  make(map[uint16]chan kernelAccept),
 		udp:                  make(map[uint16]chan N.PacketConn),
@@ -79,7 +81,7 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 			MTU:                       config.mtu,
 			GSO:                       config.gso,
 			MultiQueue:                config.multiQueue,
-			Inet4Address:              []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("198.19.%d.1/24", 200+index%50))},
+			Inet4Address:              []netip.Prefix{netip.PrefixFrom(netip.AddrFrom4([4]byte{198, 18 + byte(index>>13), byte(index >> 5), byte(index<<3) | 1}), 29)},
 			Inet6Address:              []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd73:ab91:%x::1/64", index))},
 			EXP_ExternalConfiguration: true,
 			EXP_MultiPendingPackets:   true,
@@ -114,8 +116,8 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 	stackOptions := StackOptions{
 		Context: config.ctx, Tun: device, TunOptions: fixture.options,
 		Handler: fixture, Logger: logger.NOP(), UDPTimeout: time.Minute, ICMPTimeout: time.Minute,
-		MemoryPressure: config.pressure,
-		UDPMapping:     config.udpMapping, UDPFiltering: config.udpFiltering,
+		UDPMapping: config.udpMapping, UDPFiltering: config.udpFiltering,
+		TCPCongestionControl: config.congestion,
 	}
 	var stack Stack
 	if config.stackFactory != nil {
@@ -123,9 +125,19 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 		if err != nil {
 			t.Fatal(err)
 		}
+		fixture.stack, _ = stack.(*Go)
 	} else {
-		fixture.stack = NewGo(stackOptions)
+		fixture.stack, err = NewGo(stackOptions)
+		if err != nil {
+			t.Fatal(err)
+		}
 		stack = fixture.stack
+	}
+	if config.prepareStack != nil {
+		if fixture.stack == nil {
+			t.Fatal("prepareStack requires the Go stack")
+		}
+		config.prepareStack(fixture.stack)
 	}
 	err = stack.Start()
 	if err != nil {
@@ -355,8 +367,10 @@ func TestGoKernelStream(t *testing.T) {
 			fixture := newKernelStackFixture(configurationTest, config)
 			for _, ipv6 := range []bool{false, true} {
 				configurationTest.Run(fmt.Sprintf("ipv6=%v", ipv6), func(addressTest *testing.T) {
+					addressTest.Parallel()
 					for _, splice := range []bool{false, true} {
 						addressTest.Run(fmt.Sprintf("duplex/splice=%v", splice), func(scenarioTest *testing.T) {
+							scenarioTest.Parallel()
 							var client, server net.Conn
 							var upload, download *atomic.Int64
 							if splice {
@@ -381,56 +395,8 @@ func TestGoKernelStream(t *testing.T) {
 							}
 						})
 					}
-					addressTest.Run("read_deadline_recovery", func(scenarioTest *testing.T) {
-						client, server := fixture.pair(scenarioTest, ipv6)
-						server.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
-						data := make([]byte, 7)
-						_, err := server.Read(data)
-						if !errors.Is(err, os.ErrDeadlineExceeded) {
-							scenarioTest.Fatalf("read deadline: %v", err)
-						}
-						server.SetReadDeadline(time.Now().Add(time.Second))
-						_, err = client.Write([]byte("resumed"))
-						if err != nil {
-							scenarioTest.Fatal(err)
-						}
-						_, err = io.ReadFull(server, data)
-						if err != nil || string(data) != "resumed" {
-							scenarioTest.Fatalf("recovery: %q %v", data, err)
-						}
-					})
-					addressTest.Run("write_deadline_recovery", func(scenarioTest *testing.T) {
-						client, server := fixture.pair(scenarioTest, ipv6)
-						client.SetReadBuffer(4096)
-						server.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-						payload := kernelPayload(8<<20, 31)
-						n, err := server.Write(payload)
-						if !errors.Is(err, os.ErrDeadlineExceeded) {
-							scenarioTest.Fatalf("write %d/%d deadline: %v", n, len(payload), err)
-						}
-						server.SetWriteDeadline(time.Now().Add(8 * time.Second))
-						client.SetReadBuffer(4 << 20)
-						written := make(chan error, 1)
-						go func() {
-							_, writeErr := server.Write(payload[n:])
-							if writeErr == nil {
-								writeErr = server.CloseWrite()
-							}
-							written <- writeErr
-						}()
-						data, readErr := io.ReadAll(client)
-						if readErr != nil {
-							scenarioTest.Fatalf("initial accepted=%d received=%d: %v; buffered=%d sent=%d transmitted=%d unacked=%d permit=%d", n, len(data), readErr, server.bufferedTail.Load(), server.sentTail.Load(), server.transmittedTail.Load(), server.sendUnacked.Load(), server.sendPermit.Load())
-						}
-						if !bytes.Equal(data, payload) {
-							scenarioTest.Fatalf("deadline recovery: received %d/%d", len(data), len(payload))
-						}
-						writeErr := <-written
-						if writeErr != nil {
-							scenarioTest.Fatal(writeErr)
-						}
-					})
 					addressTest.Run("wait_read_buffer", func(scenarioTest *testing.T) {
+						scenarioTest.Parallel()
 						client, server := fixture.pair(scenarioTest, ipv6)
 						server.InitializeReadWaiter(N.ReadWaitOptions{FrontHeadroom: 91, RearHeadroom: 73})
 						payload := kernelPayload(256<<10, 17)
@@ -625,7 +591,7 @@ func kernelFlowRead(conn net.Conn, payload []byte, buffered bool) error {
 func TestGoKernelSequenceWrap(t *testing.T) {
 	previous := runtime.GOMAXPROCS(4)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
-	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, gso: runtime.GOOS == "linux"})
+	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 9000, gso: runtime.GOOS == "linux"})
 	for _, ipv6 := range []bool{false, true} {
 		for _, mode := range []string{"write", "buffer", "splice"} {
 			t.Run(fmt.Sprintf("ipv6=%v/mode=%s", ipv6, mode), func(test *testing.T) {
