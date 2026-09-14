@@ -20,7 +20,7 @@ var (
 	procNtCancelWaitCompletionPacket    = modntdll.NewProc("NtCancelWaitCompletionPacket")
 )
 
-func GetQueuedCompletionStatusEx(cphandle windows.Handle, entries *OverlappedEntry, count uint32, numRemoved *uint32, timeout uint32, alertable bool) error {
+func GetQueuedCompletionStatusEx(cphandle windows.Handle, entries *OverlappedEntry, count uint32, numRemoved *uint32, timeout uint32, alertable bool) syscall.Errno {
 	var alertableValue uint32
 	if alertable {
 		alertableValue = 1
@@ -32,7 +32,7 @@ func GetQueuedCompletionStatusEx(cphandle windows.Handle, entries *OverlappedEnt
 		}
 		return syscall.EINVAL
 	}
-	return nil
+	return 0
 }
 
 func NtCancelIoFileEx(handle windows.Handle, ioRequestToCancel *windows.IO_STATUS_BLOCK, ioStatusBlock *windows.IO_STATUS_BLOCK) error {
@@ -51,12 +51,9 @@ func NtCreateFile(handle *windows.Handle, access uint32, objectAttributes *Objec
 	return nil
 }
 
-func NtDeviceIoControlFile(handle windows.Handle, event windows.Handle, apcRoutine uintptr, apcContext uintptr, ioStatusBlock *windows.IO_STATUS_BLOCK, ioControlCode uint32, inputBuffer unsafe.Pointer, inputBufferLength uint32, outputBuffer unsafe.Pointer, outputBufferLength uint32) error {
+func NtDeviceIoControlFile(handle windows.Handle, event windows.Handle, apcRoutine uintptr, apcContext uintptr, ioStatusBlock *windows.IO_STATUS_BLOCK, ioControlCode uint32, inputBuffer unsafe.Pointer, inputBufferLength uint32, outputBuffer unsafe.Pointer, outputBufferLength uint32) windows.NTStatus {
 	r0, _, _ := syscall.SyscallN(procNtDeviceIoControlFile.Addr(), uintptr(handle), uintptr(event), uintptr(apcRoutine), uintptr(apcContext), uintptr(unsafe.Pointer(ioStatusBlock)), uintptr(ioControlCode), uintptr(inputBuffer), uintptr(inputBufferLength), uintptr(outputBuffer), uintptr(outputBufferLength))
-	if r0 != 0 {
-		return windows.NTStatus(r0)
-	}
-	return nil
+	return windows.NTStatus(r0)
 }
 
 func NtCreateWaitCompletionPacket(handle *windows.Handle, access uint32, objectAttributes *ObjectAttributes) error {
