@@ -22,6 +22,8 @@ const (
 	goPacketBatchSize   = 32
 	goUDPGSOType        = 5
 	goUDPChecksumOffset = 6
+	// UDP_MAX_SEGMENTS in include/linux/udp.h bounds the segments of one USO packet.
+	goGSOMaxSegments = 128
 )
 
 type goUDPFrame struct {
@@ -29,6 +31,12 @@ type goUDPFrame struct {
 	length  int
 	payload []byte
 	meta    ForwardFrameMeta
+}
+
+var goUDPFramePool = sync.Pool{
+	New: func() any {
+		return new([goPacketBatchSize]goUDPFrame)
+	},
 }
 
 type goUDPUserData struct {
@@ -50,30 +58,40 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		return
 	}
 	count := (len(packet) - headerLength + int(meta.gsoSize) - 1) / int(meta.gsoSize)
-	if count == 0 {
+	if count == 0 || count > goGSOMaxSegments || headerLength+int(meta.gsoSize) > e.stack.mtu {
 		return
 	}
 	options := *e.packetReadOptions.Load()
-	buffers := newGoReadBuffers(headerLength+int(meta.gsoSize), count, options)
-	defer buf.ReleaseMulti(buffers)
-	segments := make([][]byte, count)
-	sizes := make([]int, count)
-	for index, buffer := range buffers {
-		segments[index] = buffer.FreeBytes()
+	if e.gsoReadOptions != options {
+		buf.ReleaseMulti(e.gsoBuffers[:])
+		clear(e.gsoBuffers[:])
+		e.gsoReadOptions = options
+	}
+	for index := range count {
+		buffer := e.gsoBuffers[index]
+		if buffer == nil {
+			buffer = options.NewBufferSize(e.stack.mtu)
+			e.gsoBuffers[index] = buffer
+		}
+		buffer.Reset()
+		buffer.Resize(options.FrontHeadroom, 0)
+		buffer.Reserve(options.RearHeadroom)
+		e.gsoSegments[index] = buffer.FreeBytes()
 	}
 	count, err := GSOSplit(packet, GSOOptions{
 		GSOType: GSOUDPL4, HdrLen: uint16(headerLength), GSOSize: meta.gsoSize,
 		CsumStart: meta.checksumStart, CsumOffset: meta.checksumOffset, NeedsCsum: meta.needsChecksum,
-	}, segments, sizes, 0)
+	}, e.gsoSegments[:count], e.gsoSizes[:count], 0)
 	if err != nil {
 		e.stack.logger.Trace(E.Cause(err, "go: split UDP segments"))
 		return
 	}
 	for index := range count {
-		buffer := buffers[index]
-		buffer.Truncate(sizes[index])
+		buffer := e.gsoBuffers[index]
+		buffer.Truncate(e.gsoSizes[index])
 		options.PostReturn(buffer)
-		e.processFrame(&goFrame{buffer: buffer})
+		e.gsoFrame = goFrame{buffer: buffer}
+		e.processFrame(&e.gsoFrame)
 	}
 	e.flushPacketUploads()
 }
@@ -345,8 +363,12 @@ func (w *GoPacketConn) WritePacketBatch(buffers []*buf.Buffer, destinations []M.
 	if len(buffers) == 0 || len(buffers) != len(destinations) {
 		return os.ErrInvalid
 	}
-	var frames [goPacketBatchSize]goUDPFrame
+	frames := goUDPFramePool.Get().(*[goPacketBatchSize]goUDPFrame)
 	count := 0
+	defer func() {
+		clear(frames[:count])
+		goUDPFramePool.Put(frames)
+	}()
 	for index, buffer := range buffers {
 		if !destinations[index].IsIP() {
 			return os.ErrInvalid
@@ -404,7 +426,7 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	}
 	packet := buffer.Bytes()
 	if !fragmented {
-		return goIgnoreDropped(w.platformIO.writeFrame([][]byte{packet}, meta))
+		return goIgnoreDropped(w.platformIO.writePacket(packet, meta))
 	}
 	var (
 		fragments      [][]byte
@@ -424,7 +446,10 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	}
 	var writeErr error
 	for _, fragment := range fragments {
-		writeErr = E.Errors(writeErr, goIgnoreDropped(w.platformIO.writeFrame([][]byte{fragment}, ForwardFrameMeta{})))
+		err = goIgnoreDropped(w.platformIO.writePacket(fragment, ForwardFrameMeta{}))
+		if err != nil {
+			writeErr = E.Errors(writeErr, err)
+		}
 	}
 	return writeErr
 }
@@ -450,7 +475,7 @@ func (w *GoPacketConn) HandshakeFailure(err error) error {
 	if !ok {
 		return nil
 	}
-	return goIgnoreDropped(w.platformIO.writeFrame([][]byte{reply}, ForwardFrameMeta{}))
+	return goIgnoreDropped(w.platformIO.writePacket(reply, ForwardFrameMeta{}))
 }
 
 func (w *GoPacketConn) closeSplice(err error) {

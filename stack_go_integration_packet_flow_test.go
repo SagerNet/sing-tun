@@ -16,6 +16,7 @@ import (
 
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
+	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -34,37 +35,44 @@ func TestGoKernelPacketFragments(t *testing.T) {
 					const sessions = 4
 					for phase := range 4 {
 						start := make(chan struct{})
-						var workers sync.WaitGroup
+						release := sync.OnceFunc(func() { close(start) })
+						test.Cleanup(release)
+						completed := make(chan error, sessions)
 						for index := range sessions {
 							client, conn, destination := fixture.packetPair(test, ipv6)
 							payload := kernelPayload(16385, uint32(phase*sessions+index+1))
-							workers.Go(func() {
+							go func() {
 								defer client.Close()
 								defer conn.Close()
-								select {
-								case <-start:
-								case <-conn.doneChan:
-									return
-								}
+								<-start
 								client.SetReadDeadline(time.Now().Add(time.Second))
 								options := N.NewReadWaitOptions(nil, conn)
 								buffer := options.NewBufferSize(len(payload))
-								_, _ = buffer.Write(payload)
+								copy(buffer.Extend(len(payload)), payload)
 								options.PostReturn(buffer)
 								err := conn.WritePacket(buffer, destination)
 								if err != nil {
-									test.Error(err)
+									completed <- E.Cause(err, "write fragments for session ", index)
 									return
 								}
 								storage := make([]byte, 65535)
 								n, err := client.Read(storage)
-								if err != nil || !bytes.Equal(storage[:n], payload) {
-									test.Errorf("phase=%d session=%d: reassembled %d/%d bytes: %v", phase, index, n, len(payload), err)
+								if err == nil && !bytes.Equal(storage[:n], payload) {
+									err = E.New("reassembled ", n, "/", len(payload), " bytes with corrupted payload")
 								}
-							})
+								if err != nil {
+									err = E.Cause(err, "receive fragments for session ", index)
+								}
+								completed <- err
+							}()
 						}
-						close(start)
-						workers.Wait()
+						release()
+						for range sessions {
+							err := kernelTCPResult(test, completed, "fragmented UDP delivery")
+							if err != nil {
+								test.Errorf("phase=%d: %v", phase, err)
+							}
+						}
 						if test.Failed() {
 							return
 						}
