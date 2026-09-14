@@ -59,11 +59,11 @@ func (session Session) ReadWaitEvent() (handle windows.Handle) {
 	return
 }
 
-func (session Session) ReceivePacket() (packet []byte, err error) {
+func (session Session) ReceivePacket() (packet []byte, errno syscall.Errno) {
 	var packetSize uint32
 	r0, _, e1 := syscall.SyscallN(procWintunReceivePacket.Addr(), session.handle, uintptr(unsafe.Pointer(&packetSize)))
 	if r0 == 0 {
-		err = e1
+		errno = e1
 		return
 	}
 	packet = unsafe.Slice((*byte)(unsafe.Pointer(r0)), packetSize)
@@ -74,10 +74,10 @@ func (session Session) ReleaseReceivePacket(packet []byte) {
 	syscall.SyscallN(procWintunReleaseReceivePacket.Addr(), session.handle, uintptr(unsafe.Pointer(&packet[0])))
 }
 
-func (session Session) AllocateSendPacket(packetSize int) (packet []byte, err error) {
+func (session Session) AllocateSendPacket(packetSize int) (packet []byte, errno syscall.Errno) {
 	r0, _, e1 := syscall.SyscallN(procWintunAllocateSendPacket.Addr(), session.handle, uintptr(packetSize))
 	if r0 == 0 {
-		err = e1
+		errno = e1
 		return
 	}
 	packet = unsafe.Slice((*byte)(unsafe.Pointer(r0)), packetSize)

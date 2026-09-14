@@ -426,12 +426,12 @@ func (e *goEngine) spliceTransmit(conn *GoConn) bool {
 	if conn.blockedValid || !conn.transmitOwner.CompareAndSwap(0, 1) {
 		return true
 	}
-	_, blocked := conn.transmitLoop(false, 0)
+	_, result := conn.transmitLoop(false, 0)
 	conn.transmitOwner.Store(0)
 	if conn.connState.Load() >= goConnStateAborted {
 		return false
 	}
-	if blocked {
+	if result == goTransmitBlocked {
 		e.handleTransmitBlocked(conn)
 	}
 	return true
@@ -469,6 +469,9 @@ func (e *goEngine) spliceRetryBlocked(conn *GoConn) {
 	default:
 		e.spliceAbort(conn, E.Cause(err, "go: write tun"))
 		return
+	}
+	if conn.congestion.pacing {
+		conn.advancePacing(e.now(), segment.length)
 	}
 	conn.blockedValid = false
 	conn.blockedFrame = nil

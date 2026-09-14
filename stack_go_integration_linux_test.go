@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sagernet/netlink"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
@@ -15,6 +16,13 @@ const (
 	kernelConnectionRefused = unix.ECONNREFUSED
 	kernelConnectionReset   = unix.ECONNRESET
 )
+
+func kernelSetSocketBuffers(descriptor uintptr, size int) error {
+	return E.Errors(
+		unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_RCVBUF, size),
+		unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_SNDBUF, size),
+	)
+}
 
 func configureKernelInterface(t *testing.T, device Tun, options Options) {
 	t.Helper()
