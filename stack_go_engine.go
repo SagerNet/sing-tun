@@ -35,6 +35,7 @@ const (
 	goMessageConnWindow
 	goMessageConnBlocked
 	goMessageConnDropped
+	goMessageConnPacing
 	goMessageConnSplice
 	goMessagePacketSplice
 	goMessagePacketClose
@@ -134,6 +135,8 @@ type goEngine struct {
 	wokeHandlerThisBurst bool
 	tunPending           bool
 	transmitReady        bool
+	readBuffersHeld      bool
+	idleSince            int64
 	parkedNanos          int64
 	loadWindowStart      int64
 	ackCoalescing        bool
@@ -171,6 +174,14 @@ type goEngine struct {
 	controlSegments [][]byte
 	sackScratch     [goMaxSackBlocks]goSackBlock
 	sackRaw         [goMaxSackBlocks]goRawSackBlock
+	rateSample      goRateSample
+	ackSample       goAckSample
+
+	gsoReadOptions N.ReadWaitOptions
+	gsoBuffers     [goGSOMaxSegments]*buf.Buffer
+	gsoSegments    [goGSOMaxSegments][]byte
+	gsoSizes       [goGSOMaxSegments]int
+	gsoFrame       goFrame
 }
 
 func (e *goEngine) singleFrame(packet []byte) [][]byte {
@@ -209,6 +220,7 @@ func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine 
 	engine.sweepTickNode.expire = engine.expireSweepTick
 	engine.reclaimTickNode.expire = engine.expireReclaimTick
 	engine.refreshCoarseTime()
+	engine.wheel.currentTick = engine.now() / goWheelTick
 	engine.wheel.schedule(&engine.sweepTickNode, engine.now()+int64(goSweepInterval))
 	engine.wheel.schedule(&engine.reclaimTickNode, engine.now()+int64(goReclaimInterval))
 	return engine
@@ -219,7 +231,7 @@ func (e *goEngine) run() {
 	defer e.exit()
 	e.loadWindowStart = e.now()
 	for {
-		parkStart := int64(time.Since(e.epoch))
+		parkStart := e.readClock()
 		tunReadable, eventCount, err := e.park()
 		e.parkedNanos += e.now() - parkStart
 		e.updateLoad(e.now())
@@ -332,15 +344,38 @@ func (e *goEngine) park() (bool, int, error) {
 	tunReadable, eventCount, err := e.platformIO.wait(0, e.socketEvents)
 	e.transmitReady = e.platformIO.takeTransmitWritable()
 	if timeout != 0 && !tunReadable && eventCount == 0 && !e.transmitReady && err == nil && e.controlStack.head.Load() == nil {
-		e.releaseReadBuffers()
-		tunReadable, eventCount, err = e.platformIO.wait(timeout, e.socketEvents)
+		tunReadable, eventCount, err = e.platformIO.wait(e.idleTimeout(timeout), e.socketEvents)
+	}
+	if tunReadable || eventCount > 0 {
+		e.readBuffersHeld = true
+		e.idleSince = -1
 	}
 	e.engineState.Store(goEngineRunning)
 	e.refreshCoarseTime()
 	return tunReadable, eventCount, err
 }
 
+func (e *goEngine) idleTimeout(timeout time.Duration) time.Duration {
+	if !e.readBuffersHeld {
+		return timeout
+	}
+	now := e.now()
+	if e.idleSince < 0 {
+		e.idleSince = now
+	}
+	releaseAt := e.idleSince + int64(goReadBufferIdle)
+	if now >= releaseAt || e.slabPool.pressureLevel() != MemoryPressureNone {
+		e.releaseReadBuffers()
+		return timeout
+	}
+	if timeout == goWaitIndefinite || time.Duration(releaseAt-now) < timeout {
+		return time.Duration(releaseAt - now)
+	}
+	return timeout
+}
+
 func (e *goEngine) releaseReadBuffers() {
+	e.readBuffersHeld = false
 	e.flushPacketUploads()
 	e.flushPacketFrames()
 	clear(e.frames)
@@ -351,6 +386,10 @@ func (e *goEngine) releaseReadBuffers() {
 	clear(e.controlSegments[:cap(e.controlSegments)])
 	buf.ReleaseMulti(e.packetReceiveBuffers[:])
 	clear(e.packetReceiveBuffers[:])
+	buf.ReleaseMulti(e.gsoBuffers[:])
+	clear(e.gsoBuffers[:])
+	clear(e.gsoSegments[:])
+	e.gsoFrame = goFrame{}
 	clear(e.packetMessages[:])
 	clear(e.packetFrames[:])
 	clear(e.packetUploads[:])
@@ -380,6 +419,10 @@ func (e *goEngine) postMessage(message *goMessage) {
 
 func (e *goEngine) drainControlQueue() {
 	message := e.controlStack.head.Swap(nil)
+	if message != nil {
+		e.readBuffersHeld = true
+		e.idleSince = -1
+	}
 	for message != nil {
 		next := message.next
 		message.next = nil
@@ -408,6 +451,8 @@ func (e *goEngine) handleMessage(message *goMessage) {
 		e.handleTransmitBlocked(message.conn)
 	case goMessageConnDropped:
 		e.handleDroppedFrames(message.conn)
+	case goMessageConnPacing:
+		e.handlePacingRequest(message.conn)
 	case goMessageConnSplice:
 		e.handleSpliceEngage(message.conn)
 	case goMessagePacketSplice:
@@ -639,8 +684,12 @@ func (e *goEngine) now() int64 {
 	return e.coarseTime.Load()
 }
 
+func (e *goEngine) readClock() int64 {
+	return int64(time.Since(e.epoch))
+}
+
 func (e *goEngine) refreshCoarseTime() int64 {
-	now := int64(time.Since(e.epoch))
+	now := e.readClock()
 	e.coarseTime.Store(now)
 	return now
 }
@@ -864,6 +913,10 @@ func (e *goEngine) expireReassemblyTick(now int64) {
 		}
 		if entry.deadline <= now {
 			entry.active = false
+			if !e.readBuffersHeld {
+				entry.buffer.Release()
+				entry.buffer = nil
+			}
 		} else {
 			next = min(next, entry.deadline)
 		}
