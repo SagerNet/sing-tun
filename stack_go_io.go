@@ -45,6 +45,7 @@ type goPlatformIO interface {
 	unregisterSocket(socket *goSocket)
 	readBurst(frames []goFrame, options N.ReadWaitOptions) (count int, drained bool, err error)
 	writeFrame(frame [][]byte, meta ForwardFrameMeta) error
+	writePacket(packet []byte, meta ForwardFrameMeta) error
 	writeData(frame [][]byte, meta ForwardFrameMeta) error
 	writePacketBatch(frames []goUDPFrame) error
 	releaseReadBuffers()
@@ -70,21 +71,12 @@ func (w *goWriteback) WriteReturnPackets(packets [][]byte) error {
 	prefix := w.platformIO.transmitPrefix()
 	var writeErr error
 	for _, packet := range packets {
-		writeErr = E.Errors(writeErr, goIgnoreDropped(w.platformIO.writeFrame([][]byte{packet[prefix:]}, ForwardFrameMeta{})))
+		err := goIgnoreDropped(w.platformIO.writePacket(packet[prefix:], ForwardFrameMeta{}))
+		if err != nil {
+			writeErr = E.Errors(writeErr, err)
+		}
 	}
 	return writeErr
-}
-
-func newGoReadBuffers(packetSize int, count int, options N.ReadWaitOptions) []*buf.Buffer {
-	slotSize := options.FrontHeadroom + packetSize + options.RearHeadroom
-	buffers := make([]*buf.Buffer, count)
-	for index := range buffers {
-		buffer := buf.NewSize(slotSize)
-		buffer.Resize(options.FrontHeadroom, 0)
-		buffer.Reserve(options.RearHeadroom)
-		buffers[index] = buffer
-	}
-	return buffers
 }
 
 func goIgnoreDropped(err error) error {
