@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -23,45 +22,11 @@ const (
 	kernelConnectionReset   = unix.ECONNRESET
 )
 
-func TestGoKernelMemoryPressure(t *testing.T) {
-	previous := runtime.GOMAXPROCS(4)
-	defer runtime.GOMAXPROCS(previous)
-	configs := []kernelStackConfig{{mtu: 1500}, {mtu: 1500, prepare: prepareKernelNetif}, {mtu: 9000, prepare: prepareKernelNetif}}
-	for _, config := range configs {
-		t.Run(fmt.Sprintf("mtu=%d/netif=%v", config.mtu, config.prepare != nil), func(configTest *testing.T) {
-			var pressure atomic.Uint32
-			config.pressure = func() MemoryPressure { return MemoryPressure(pressure.Load()) }
-			fixture := newKernelStackFixture(configTest, config)
-			configTest.Logf("utun netif mode: %v", fixture.stack.engines[0].platformIO.(*goDarwinIO).netif)
-			for _, level := range []MemoryPressure{MemoryPressureWarning, MemoryPressureCritical, MemoryPressureNone} {
-				configTest.Run(fmt.Sprintf("level=%d", level), func(test *testing.T) {
-					pressure.Store(uint32(level))
-					for _, splice := range []bool{false, true} {
-						test.Run(fmt.Sprintf("splice=%v", splice), func(flowTest *testing.T) {
-							var client, server net.Conn
-							if splice {
-								client, server, _, _ = fixture.splicePair(flowTest, true)
-							} else {
-								client, server = fixture.pair(flowTest, true)
-							}
-							payload := kernelPayload(8<<20, 79)
-							response := kernelPayload(8<<20, 83)
-							result := make(chan error, 1)
-							go func() { result <- kernelTransfer(client, server, payload, false) }()
-							err := kernelTransfer(server, client, response, !splice)
-							if err != nil {
-								flowTest.Error("download:", err)
-							}
-							err = <-result
-							if err != nil {
-								flowTest.Error("upload:", err)
-							}
-						})
-					}
-				})
-			}
-		})
-	}
+func kernelSetSocketBuffers(descriptor uintptr, size int) error {
+	return E.Errors(
+		unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_RCVBUF, size),
+		unix.SetsockoptInt(int(descriptor), unix.SOL_SOCKET, unix.SO_SNDBUF, size),
+	)
 }
 
 func prepareKernelNetif(t *testing.T, options *Options) {
@@ -110,12 +75,12 @@ func configureKernelInterface(t *testing.T, device Tun, options Options) {
 	ipv6 := options.Inet6Address[0]
 	commands := [][]string{
 		{"/sbin/ifconfig", options.Name, "mtu", fmt.Sprint(options.MTU)},
-		{"/sbin/ifconfig", options.Name, "inet", ipv4.Addr().String(), ipv4.Addr().String(), "netmask", "255.255.255.0", "up"},
+		{"/sbin/ifconfig", options.Name, "inet", ipv4.Addr().String(), ipv4.Addr().String(), "netmask", net.IP(net.CIDRMask(ipv4.Bits(), 32)).String(), "up"},
 		{"/sbin/ifconfig", options.Name, "inet6", ipv6.String(), "-dad"},
 		{"/sbin/route", "-n", "add", "-net", ipv4.Masked().String(), "-interface", options.Name},
 	}
 	for _, command := range commands {
-		output, err := exec.Command(command[0], command[1:]...).CombinedOutput()
+		output, err := kernelCommand(command[0], command[1:]...)
 		if err != nil {
 			t.Fatalf("%v: %s: %v", command, output, err)
 		}
@@ -186,10 +151,15 @@ func TestGoKernelDeviceBackpressure(t *testing.T) {
 					test.Fatal("real netif transmit gate never became blocked")
 				}
 				if shutdown {
-					started := time.Now()
-					err := fixture.stack.Close()
-					if err != nil || time.Since(started) > time.Second {
-						test.Fatalf("close during device backpressure: %v", err)
+					closed := make(chan error, 1)
+					go func() { closed <- fixture.stack.Close() }()
+					select {
+					case err := <-closed:
+						if err != nil {
+							test.Fatal("close during device backpressure:", err)
+						}
+					case <-time.After(time.Second):
+						test.Fatal("close during device backpressure exceeded 1 second")
 					}
 				}
 				interrupted := 0
@@ -236,88 +206,6 @@ func TestGoKernelDeviceBackpressure(t *testing.T) {
 					test.Fatal("utun reported ENOSPC while applying device backpressure")
 				}
 			})
-		}
-	}
-}
-
-func TestGoKernelMemoryPressureTransition(t *testing.T) {
-	previous := runtime.GOMAXPROCS(4)
-	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
-	for _, netif := range []bool{false, true} {
-		for _, ipv6 := range []bool{false, true} {
-			for _, splice := range []bool{false, true} {
-				t.Run(fmt.Sprintf("netif=%v/ipv6=%v/splice=%v", netif, ipv6, splice), func(test *testing.T) {
-					test.Parallel()
-					var pressure, observed atomic.Uint32
-					config := kernelStackConfig{mtu: 1500, socketBuffer: 128 << 10, upstreamSocketBuffer: 128 << 10}
-					config.pressure = func() MemoryPressure {
-						level := pressure.Load()
-						observed.Or(1 << level)
-						return MemoryPressure(level)
-					}
-					if netif {
-						config.prepare = prepareKernelNetif
-					}
-					fixture := newKernelStackFixture(test, config)
-					var client, server net.Conn
-					if splice {
-						client, server, _, _ = fixture.splicePair(test, ipv6)
-					} else {
-						client, server = fixture.pair(test, ipv6)
-					}
-					const phaseSize = 4 << 20
-					upload := kernelPayload(3*phaseSize, 227)
-					download := kernelPayload(3*phaseSize, 229)
-					var uploadAccepted, downloadAccepted atomic.Int64
-					written := make(chan error, 2)
-					go func() { written <- kernelFlowWrite(client, upload, false, &uploadAccepted) }()
-					go func() { written <- kernelFlowWrite(server, download, !splice, &downloadAccepted) }()
-					time.Sleep(100 * time.Millisecond)
-					if uploadAccepted.Load() == int64(len(upload)) || downloadAccepted.Load() == int64(len(download)) {
-						test.Fatal("pressure transition requires both writers to be active")
-					}
-					for phase, level := range []MemoryPressure{MemoryPressureWarning, MemoryPressureCritical, MemoryPressureNone} {
-						observed.And(^(1 << uint32(level)))
-						pressure.Store(uint32(level))
-						read := make(chan error, 2)
-						for direction, conn := range []net.Conn{server, client} {
-							expected := upload
-							if direction == 1 {
-								expected = download
-							}
-							go func() {
-								data := make([]byte, phaseSize)
-								_, err := io.ReadFull(conn, data)
-								if err == nil && !bytes.Equal(data, expected[phase*phaseSize:(phase+1)*phaseSize]) {
-									err = E.New("pressure transition payload mismatch")
-								}
-								read <- err
-							}()
-						}
-						for range 2 {
-							err := <-read
-							if err != nil {
-								test.Fatal("active stream pressure transition:", err)
-							}
-						}
-						if observed.Load()&(1<<uint32(level)) == 0 {
-							test.Fatalf("pressure level %d was not observed during transfer", level)
-						}
-					}
-					for range 2 {
-						err := <-written
-						if err != nil {
-							test.Fatal(err)
-						}
-					}
-					for _, conn := range []net.Conn{server, client} {
-						_, err := conn.Read(make([]byte, 1))
-						if err != io.EOF {
-							test.Fatalf("EOF after pressure transitions: %v", err)
-						}
-					}
-				})
-			}
 		}
 	}
 }

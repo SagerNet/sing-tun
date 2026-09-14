@@ -22,6 +22,26 @@ const (
 
 type goIOVector = windows.WSABuf
 
+var (
+	modws2_32       = windows.NewLazySystemDLL("ws2_32.dll")
+	procWSARecv     = modws2_32.NewProc("WSARecv")
+	procWSARecvFrom = modws2_32.NewProc("WSARecvFrom")
+	procWSASend     = modws2_32.NewProc("WSASend")
+	procWSASendTo   = modws2_32.NewProc("WSASendTo")
+)
+
+const goSocketError = uintptr(^uint32(0))
+
+func goSocketErrno(r1 uintptr, errno syscall.Errno) syscall.Errno {
+	if r1 != goSocketError {
+		return 0
+	}
+	if errno == 0 {
+		return syscall.EINVAL
+	}
+	return errno
+}
+
 type goSocket struct {
 	handle windows.Handle
 	entry  *goAFDEntry
@@ -122,18 +142,20 @@ func (s *goSocket) readVector(iovecs []goIOVector) (int, syscall.Errno) {
 		received uint32
 		flags    uint32
 	)
-	err := windows.WSARecv(s.handle, &iovecs[0], uint32(len(iovecs)), &received, &flags, nil, nil)
-	if err != nil {
-		return 0, err.(syscall.Errno)
+	r1, _, e1 := syscall.SyscallN(procWSARecv.Addr(), uintptr(s.handle), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(len(iovecs)), uintptr(unsafe.Pointer(&received)), uintptr(unsafe.Pointer(&flags)), 0, 0)
+	errno := goSocketErrno(r1, e1)
+	if errno != 0 {
+		return 0, errno
 	}
 	return int(received), 0
 }
 
 func (s *goSocket) writeVector(iovecs []goIOVector) (int, syscall.Errno) {
 	var sent uint32
-	err := windows.WSASend(s.handle, &iovecs[0], uint32(len(iovecs)), &sent, 0, nil, nil)
-	if err != nil {
-		return 0, err.(syscall.Errno)
+	r1, _, e1 := syscall.SyscallN(procWSASend.Addr(), uintptr(s.handle), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(len(iovecs)), uintptr(unsafe.Pointer(&sent)), 0, 0, 0)
+	errno := goSocketErrno(r1, e1)
+	if errno != 0 {
+		return 0, errno
 	}
 	return int(sent), 0
 }
@@ -144,9 +166,10 @@ func (s *goSocket) write(data []byte) (int, syscall.Errno) {
 		vector.Buf = &data[0]
 	}
 	var sent uint32
-	err := windows.WSASend(s.handle, &vector, 1, &sent, 0, nil, nil)
-	if err != nil {
-		return 0, err.(syscall.Errno)
+	r1, _, e1 := syscall.SyscallN(procWSASend.Addr(), uintptr(s.handle), uintptr(unsafe.Pointer(&vector)), 1, uintptr(unsafe.Pointer(&sent)), 0, 0, 0)
+	errno := goSocketErrno(r1, e1)
+	if errno != 0 {
+		return 0, errno
 	}
 	return int(sent), 0
 }
@@ -178,11 +201,8 @@ func (s *goSocket) sendTo(data []byte, destination netip.AddrPort, family uint8)
 		vector.Buf = &data[0]
 	}
 	var sent uint32
-	err := windows.WSASendTo(s.handle, &vector, 1, &sent, 0, &storage, length, nil, nil)
-	if err != nil {
-		return err.(syscall.Errno)
-	}
-	return 0
+	r1, _, e1 := syscall.SyscallN(procWSASendTo.Addr(), uintptr(s.handle), uintptr(unsafe.Pointer(&vector)), 1, uintptr(unsafe.Pointer(&sent)), 0, uintptr(unsafe.Pointer(&storage)), uintptr(length), 0, 0)
+	return goSocketErrno(r1, e1)
 }
 
 func (s *goSocket) receiveFrom(buffer []byte) (int, netip.AddrPort, syscall.Errno) {
@@ -193,9 +213,10 @@ func (s *goSocket) receiveFrom(buffer []byte) (int, netip.AddrPort, syscall.Errn
 		flags    uint32
 	)
 	vector := windows.WSABuf{Len: uint32(len(buffer)), Buf: &buffer[0]}
-	err := windows.WSARecvFrom(s.handle, &vector, 1, &received, &flags, &storage, &length, nil, nil)
-	if err != nil {
-		return 0, netip.AddrPort{}, err.(syscall.Errno)
+	r1, _, e1 := syscall.SyscallN(procWSARecvFrom.Addr(), uintptr(s.handle), uintptr(unsafe.Pointer(&vector)), 1, uintptr(unsafe.Pointer(&received)), uintptr(unsafe.Pointer(&flags)), uintptr(unsafe.Pointer(&storage)), uintptr(unsafe.Pointer(&length)), 0, 0)
+	errno := goSocketErrno(r1, e1)
+	if errno != 0 {
+		return 0, netip.AddrPort{}, errno
 	}
 	return int(received), M.SocksaddrFromNetIP(M.AddrPortFromRawSockaddr(&storage.Addr)).Unwrap().AddrPort(), 0
 }

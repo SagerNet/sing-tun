@@ -381,10 +381,9 @@ retry:
 		if t.close.Load() == 1 {
 			return 0, os.ErrClosed
 		}
-		var packet []byte
-		packet, err = t.session.ReceivePacket()
-		switch err {
-		case nil:
+		packet, errno := t.session.ReceivePacket()
+		switch errno {
+		case 0:
 			n = copy(p, packet)
 			t.session.ReleaseReceivePacket(packet)
 			t.rate.update(uint64(n))
@@ -401,7 +400,7 @@ retry:
 		case windows.ERROR_INVALID_DATA:
 			return 0, errors.New("send ring corrupt")
 		}
-		return 0, fmt.Errorf("read failed: %w", err)
+		return 0, fmt.Errorf("read failed: %w", errno)
 	}
 }
 
@@ -434,9 +433,9 @@ retry:
 			t.running.Done()
 			return nil, nil, os.ErrClosed
 		}
-		packet, err := t.session.ReceivePacket()
-		switch err {
-		case nil:
+		packet, errno := t.session.ReceivePacket()
+		switch errno {
+		case 0:
 			packetSize := len(packet)
 			t.rate.update(uint64(packetSize))
 			return packet, func() {
@@ -458,7 +457,7 @@ retry:
 			return nil, nil, errors.New("send ring corrupt")
 		}
 		t.running.Done()
-		return nil, nil, fmt.Errorf("read failed: %w", err)
+		return nil, nil, fmt.Errorf("read failed: %w", errno)
 	}
 }
 
@@ -475,9 +474,9 @@ retry:
 		if t.close.Load() == 1 {
 			return os.ErrClosed
 		}
-		packet, err := t.session.ReceivePacket()
-		switch err {
-		case nil:
+		packet, errno := t.session.ReceivePacket()
+		switch errno {
+		case 0:
 			packetSize := len(packet)
 			block(packet)
 			t.session.ReleaseReceivePacket(packet)
@@ -495,7 +494,7 @@ retry:
 		case windows.ERROR_INVALID_DATA:
 			return errors.New("send ring corrupt")
 		}
-		return fmt.Errorf("read failed: %w", err)
+		return fmt.Errorf("read failed: %w", errno)
 	}
 }
 
@@ -506,19 +505,19 @@ func (t *NativeTun) Write(p []byte) (n int, err error) {
 		return 0, os.ErrClosed
 	}
 	t.rate.update(uint64(len(p)))
-	packet, err := t.session.AllocateSendPacket(len(p))
+	packet, errno := t.session.AllocateSendPacket(len(p))
 	copy(packet, p)
-	if err == nil {
+	if errno == 0 {
 		t.session.SendPacket(packet)
 		return len(p), nil
 	}
-	switch err {
+	switch errno {
 	case windows.ERROR_HANDLE_EOF:
 		return 0, os.ErrClosed
 	case windows.ERROR_BUFFER_OVERFLOW:
 		return 0, nil // Dropping when ring is full.
 	}
-	return 0, fmt.Errorf("write failed: %w", err)
+	return 0, fmt.Errorf("write failed: %w", errno)
 }
 
 func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
@@ -532,8 +531,8 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 		packetSize += len(packetElement)
 	}
 	t.rate.update(uint64(packetSize))
-	packet, err := t.session.AllocateSendPacket(packetSize)
-	if err == nil {
+	packet, errno := t.session.AllocateSendPacket(packetSize)
+	if errno == 0 {
 		var index int
 		for _, packetElement := range packetElementList {
 			index += copy(packet[index:], packetElement)
@@ -541,30 +540,17 @@ func (t *NativeTun) write(packetElementList [][]byte) (n int, err error) {
 		t.session.SendPacket(packet)
 		return
 	}
-	switch err {
+	switch errno {
 	case windows.ERROR_HANDLE_EOF:
 		return 0, os.ErrClosed
 	case windows.ERROR_BUFFER_OVERFLOW:
 		return 0, nil // Dropping when ring is full.
 	}
-	return 0, fmt.Errorf("write failed: %w", err)
+	return 0, fmt.Errorf("write failed: %w", errno)
 }
 
 func (t *NativeTun) readWaitHandle() windows.Handle {
 	return t.readWait
-}
-
-func (t *NativeTun) resizeSessionRing(capacity uint32) error {
-	t.session.End()
-	t.session = wintun.Session{}
-	t.readWait = 0
-	session, err := t.adapter.StartSession(capacity)
-	if err != nil {
-		return E.Cause(err, "restart wintun session")
-	}
-	t.session = session
-	t.readWait = session.ReadWaitEvent()
-	return nil
 }
 
 func (t *NativeTun) receiveInto(buffer []byte) (int, error) {
@@ -574,9 +560,9 @@ func (t *NativeTun) receiveInto(buffer []byte) (int, error) {
 		if t.close.Load() == 1 {
 			return 0, os.ErrClosed
 		}
-		packet, err := t.session.ReceivePacket()
-		if err != nil {
-			switch err {
+		packet, errno := t.session.ReceivePacket()
+		if errno != 0 {
+			switch errno {
 			case windows.ERROR_NO_MORE_ITEMS:
 				return 0, nil
 			case windows.ERROR_HANDLE_EOF:
@@ -584,7 +570,7 @@ func (t *NativeTun) receiveInto(buffer []byte) (int, error) {
 			case windows.ERROR_INVALID_DATA:
 				return 0, E.New("wintun: receive ring corrupt")
 			}
-			return 0, E.Cause(err, "wintun: receive packet")
+			return 0, E.Cause(errno, "wintun: receive packet")
 		}
 		if len(packet) > len(buffer) {
 			t.session.ReleaseReceivePacket(packet)
@@ -606,12 +592,12 @@ func (t *NativeTun) transmitGather(segments [][]byte) error {
 	for _, segment := range segments {
 		packetSize += len(segment)
 	}
-	packet, err := t.session.AllocateSendPacket(packetSize)
-	if err != nil {
-		if err == windows.ERROR_HANDLE_EOF {
+	packet, errno := t.session.AllocateSendPacket(packetSize)
+	if errno != 0 {
+		if errno == windows.ERROR_HANDLE_EOF {
 			return os.ErrClosed
 		}
-		return err
+		return errno
 	}
 	var index int
 	for _, segment := range segments {

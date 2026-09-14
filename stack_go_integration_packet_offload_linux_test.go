@@ -20,12 +20,12 @@ import (
 )
 
 func TestGoKernelPacketOffload(t *testing.T) {
-	allocator := &kernelPacketAllocator{Allocator: buf.DefaultAllocator}
+	allocator := &kernelPacketAllocator{Allocator: buf.DefaultAllocator, epoch: time.Now()}
 	buf.DefaultAllocator = allocator
 	t.Cleanup(func() { buf.DefaultAllocator = allocator.Allocator })
 	for _, multiQueue := range []bool{false, true} {
 		t.Run(fmt.Sprintf("mq=%v", multiQueue), func(queueTest *testing.T) {
-			fixture := newKernelStackFixture(queueTest, kernelStackConfig{mtu: 1500, gso: true, multiQueue: multiQueue})
+			fixture := newKernelStackFixture(queueTest, kernelStackConfig{mtu: 1500, gso: true, multiQueue: multiQueue, prepareStack: allocator.prepareStack})
 			for _, ipv6 := range []bool{false, true} {
 				for _, mode := range []string{"direct", "socks", "socks-fqdn"} {
 					queueTest.Run(fmt.Sprintf("ipv6=%v/%s", ipv6, mode), func(scenarioTest *testing.T) {
@@ -41,7 +41,6 @@ func TestGoKernelPacketOffload(t *testing.T) {
 							scenarioTest.Fatal(err)
 						}
 						defer peer.Close()
-						peer.SetDeadline(time.Now().Add(3 * time.Second))
 						peer.SetReadBuffer(1 << 20)
 						upstream, err := net.DialUDP(network, nil, peer.LocalAddr().(*net.UDPAddr))
 						if err != nil {
@@ -100,6 +99,10 @@ func TestGoKernelPacketOffload(t *testing.T) {
 							scenarioTest.Fatal("UDP splice refused")
 						}
 						for cycle := range 2 {
+							deadline := time.Now().Add(3 * time.Second)
+							client.SetDeadline(deadline)
+							conn.SetReadDeadline(deadline)
+							peer.SetDeadline(deadline)
 							payloads := make([][]byte, 20)
 							wirePackets := make([][]byte, len(payloads))
 							for index := range payloads {

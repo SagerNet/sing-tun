@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"testing"
@@ -46,13 +45,13 @@ func TestGoKernelHandshakeLoss(t *testing.T) {
 					if direction == "root" {
 						command = append(command, "handle", "1:", "prio")
 					}
-					output, err := exec.Command("tc", command...).CombinedOutput()
+					output, err := kernelCommand("tc", command...)
 					if err != nil {
 						test.Fatalf("handshake qdisc: %s: %v", output, err)
 					}
-					test.Cleanup(func() { exec.Command("tc", "qdisc", "del", "dev", fixture.options.Name, direction).Run() })
-					output, err = exec.Command("tc", "filter", "add", "dev", fixture.options.Name, "parent", parent, "protocol", protocol,
-						"u32", "match", "u8", flags, "0x12", "at", offset, "action", "drop").CombinedOutput()
+					test.Cleanup(func() { kernelCommand("tc", "qdisc", "del", "dev", fixture.options.Name, direction) })
+					output, err = kernelCommand("tc", "filter", "add", "dev", fixture.options.Name, "parent", parent, "protocol", protocol,
+						"u32", "match", "u8", flags, "0x12", "at", offset, "action", "drop")
 					if err != nil {
 						test.Fatalf("handshake filter: %s: %v", output, err)
 					}
@@ -81,14 +80,14 @@ func TestGoKernelHandshakeLoss(t *testing.T) {
 						test.Fatalf("handshake completed while packets were dropped: %v", result.err)
 					case <-time.After(250 * time.Millisecond):
 					}
-					output, err = exec.Command("tc", "-s", "filter", "show", "dev", fixture.options.Name, "parent", parent).CombinedOutput()
+					output, err = kernelCommand("tc", "-s", "filter", "show", "dev", fixture.options.Name, "parent", parent)
 					if err != nil || !regexp.MustCompile(`dropped [1-9][0-9]*`).Match(output) {
 						test.Fatalf("no handshake packet was dropped: %s: %v", output, err)
 					}
 					if cancelHandshake {
 						cancel()
 					} else {
-						output, err = exec.Command("tc", "qdisc", "del", "dev", fixture.options.Name, direction).CombinedOutput()
+						output, err = kernelCommand("tc", "qdisc", "del", "dev", fixture.options.Name, direction)
 						if err != nil {
 							test.Fatalf("restore handshake traffic: %s: %v", output, err)
 						}
@@ -144,7 +143,7 @@ func TestGoKernelLinkInterruption(t *testing.T) {
 				}
 				runTC := func(args ...string) []byte {
 					test.Helper()
-					output, err := exec.Command("tc", args...).CombinedOutput()
+					output, err := kernelCommand("tc", args...)
 					if err != nil {
 						test.Fatalf("tc %v: %s: %v", args, output, err)
 					}
@@ -228,11 +227,11 @@ func TestGoKernelLinkInterruption(t *testing.T) {
 					runTC("qdisc", "del", "dev", fixture.options.Name, "root")
 					runTC("qdisc", "del", "dev", fixture.options.Name, "ingress")
 					for range 2 {
-						err := <-written
+						err := kernelTCPResult(test, written, "write through link outage")
 						if err != nil {
 							test.Fatal("write through link outage:", err)
 						}
-						err = <-read
+						err = kernelTCPResult(test, read, "read after link recovery")
 						if err != nil {
 							test.Fatal("read after link recovery:", err)
 						}
@@ -243,25 +242,41 @@ func TestGoKernelLinkInterruption(t *testing.T) {
 	}
 }
 
-func configureKernelLoss(t *testing.T, options Options) {
+func configureKernelNetem(t *testing.T, options Options, impairment ...string) {
 	t.Helper()
 	ifbName := "ifb-" + options.Name
+	impairment = append(impairment, "limit", "4096")
 	commands := [][]string{
 		{"ip", "link", "add", ifbName, "type", "ifb"},
 		{"ip", "link", "set", ifbName, "up"},
-		{"tc", "qdisc", "add", "dev", options.Name, "root", "netem", "delay", "2ms", "1ms", "loss", "1%", "reorder", "10%", "50%", "limit", "4096"},
+		append([]string{"tc", "qdisc", "add", "dev", options.Name, "root", "netem"}, impairment...),
 		{"tc", "qdisc", "add", "dev", options.Name, "ingress"},
 		{"tc", "filter", "add", "dev", options.Name, "parent", "ffff:", "protocol", "all", "u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", ifbName},
-		{"tc", "qdisc", "add", "dev", ifbName, "root", "netem", "delay", "2ms", "1ms", "loss", "1%", "reorder", "10%", "50%", "limit", "4096"},
+		append([]string{"tc", "qdisc", "add", "dev", ifbName, "root", "netem"}, impairment...),
 	}
 	for index, command := range commands {
-		output, err := exec.Command(command[0], command[1:]...).CombinedOutput()
+		output, err := kernelCommand(command[0], command[1:]...)
 		if err != nil {
 			t.Fatalf("%v: %s: %v", command, output, err)
 		}
 		if index == 0 {
-			t.Cleanup(func() { exec.Command("ip", "link", "delete", ifbName).Run() })
+			t.Cleanup(func() { kernelCommand("ip", "link", "delete", ifbName) })
 		}
+	}
+}
+
+func kernelBidirectionalDataLoss() func(kernelTCPEvent) kernelTCPAction {
+	var dropped [2]bool
+	return func(event kernelTCPEvent) kernelTCPAction {
+		direction := 0
+		if event.outgoing {
+			direction = 1
+		}
+		if event.length > 0 && !dropped[direction] {
+			dropped[direction] = true
+			return kernelTCPAction{drop: true}
+		}
+		return kernelTCPAction{}
 	}
 }
 
@@ -271,17 +286,22 @@ func TestGoKernelBidirectionalLoss(t *testing.T) {
 	for _, gso := range []bool{false, true} {
 		for _, multiQueue := range []bool{false, true} {
 			t.Run(fmt.Sprintf("gso=%v/mq=%v", gso, multiQueue), func(offloadTest *testing.T) {
-				fixture := newKernelStackFixture(offloadTest, kernelStackConfig{mtu: 1500, gso: gso, multiQueue: multiQueue, configure: configureKernelLoss})
+				fixture, traffic := newKernelTCPFixture(offloadTest, kernelStackConfig{
+					mtu: 1500, gso: gso, multiQueue: multiQueue,
+					configure: func(test *testing.T, options Options) {
+						configureKernelNetem(test, options, "delay", "2ms", "1ms", "loss", "1%", "reorder", "10%", "50%")
+					},
+				}, kernelTCPConfig{})
 				for _, ipv6 := range []bool{false, true} {
 					for _, splice := range []bool{false, true} {
 						offloadTest.Run(fmt.Sprintf("ipv6=%v/splice=%v", ipv6, splice), func(flowTest *testing.T) {
 							flowTest.Parallel()
-							var client, server net.Conn
+							writer := "write"
 							if splice {
-								client, server, _, _ = fixture.splicePair(flowTest, ipv6)
-							} else {
-								client, server = fixture.pair(flowTest, ipv6)
+								writer = "splice"
 							}
+							client, server, conn := traffic.pair(flowTest, fixture, ipv6, writer)
+							traffic.setFilter(conn, kernelBidirectionalDataLoss())
 							payload := kernelPayload(1<<20, 43)
 							response := kernelPayload(1<<20, 47)
 							result := make(chan error, 1)
@@ -290,9 +310,13 @@ func TestGoKernelBidirectionalLoss(t *testing.T) {
 							if err != nil {
 								flowTest.Error("download:", err)
 							}
-							err = <-result
+							err = kernelTCPResult(flowTest, result, "upload through bidirectional loss")
 							if err != nil {
 								flowTest.Error("upload:", err)
+							}
+							observed := traffic.snapshot(conn.key)
+							if observed.faults != 2 {
+								flowTest.Fatalf("bidirectional transfer observed %d targeted data drops, expected 2", observed.faults)
 							}
 						})
 					}
