@@ -373,6 +373,11 @@ func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 	}
 }
 
+func (o *goLinuxIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
+	frame := [1][]byte{packet}
+	return o.writeFrame(frame[:], meta)
+}
+
 func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
 	delay := goTransmitBackoffMin
 	waited := time.Duration(0)
@@ -410,7 +415,7 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
 func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Errno {
 	var headerStorage [virtioNetHdrLen]byte
 	var iovecStorage [goPacketBatchSize + 2]unix.Iovec
-	iovecs := iovecStorage[:0]
+	iovecCount := 0
 	if o.device.vnetHeader {
 		prefix := goEmptyVirtioHeader[:]
 		if meta != (ForwardFrameMeta{}) {
@@ -430,7 +435,8 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 		}
 		vector := unix.Iovec{Base: &prefix[0]}
 		vector.SetLen(len(prefix))
-		iovecs = append(iovecs, vector)
+		iovecStorage[iovecCount] = vector
+		iovecCount++
 	}
 	for _, segment := range frame {
 		if len(segment) == 0 {
@@ -438,10 +444,11 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 		}
 		vector := unix.Iovec{Base: &segment[0]}
 		vector.SetLen(len(segment))
-		iovecs = append(iovecs, vector)
+		iovecStorage[iovecCount] = vector
+		iovecCount++
 	}
 	//nolint:staticcheck
-	_, _, errno := unix.RawSyscall(unix.SYS_WRITEV, uintptr(o.tunFd), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(len(iovecs)))
+	_, _, errno := unix.RawSyscall(unix.SYS_WRITEV, uintptr(o.tunFd), uintptr(unsafe.Pointer(&iovecStorage[0])), uintptr(iovecCount))
 	return errno
 }
 
@@ -523,25 +530,25 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 			udpLength := uint16(header.UDPMinimumSize + payloadLength)
 			var sourceAddress, destinationAddress []byte
 			if frame.length == header.IPv4MinimumSize+header.UDPMinimumSize {
-				ipHdr := header.IPv4(packetHeader[:header.IPv4MinimumSize])
+				ipHdr := header.IPv4(frame.header[:header.IPv4MinimumSize])
 				ipHdr.SetTotalLength(uint16(frame.length + payloadLength))
 				ipHdr.SetChecksum(0)
 				ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 				sourceAddress = ipHdr.SourceAddressSlice()
 				destinationAddress = ipHdr.DestinationAddressSlice()
 			} else {
-				ipHdr := header.IPv6(packetHeader[:header.IPv6MinimumSize])
+				ipHdr := header.IPv6(frame.header[:header.IPv6MinimumSize])
 				ipHdr.SetPayloadLength(udpLength)
 				sourceAddress = ipHdr.SourceAddressSlice()
 				destinationAddress = ipHdr.DestinationAddressSlice()
 			}
-			udpHdr := header.UDP(packetHeader[frame.length-header.UDPMinimumSize : frame.length])
+			udpHdr := header.UDP(frame.header[frame.length-header.UDPMinimumSize : frame.length])
 			udpHdr.SetLength(udpLength)
 			udpHdr.SetChecksum(header.PseudoHeaderChecksum(header.UDPProtocolNumber, sourceAddress, destinationAddress, udpLength))
 			meta.gsoType = goUDPGSOType
 			meta.gsoSize = uint16(len(frame.payload))
 		}
-		segments[0] = packetHeader[:frame.length]
+		segments[0] = frame.header[:frame.length]
 		for packetIndex := index; packetIndex < end; packetIndex++ {
 			segments[packetIndex-index+1] = frames[packetIndex].payload
 		}
@@ -553,6 +560,7 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 			switch errno {
 			case unix.EINVAL, unix.EIO, unix.EOPNOTSUPP:
 				o.device.udpTransmitDisabled.Store(true)
+				frame.header = packetHeader
 				continue
 			}
 		}
