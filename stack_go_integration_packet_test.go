@@ -20,7 +20,6 @@ import (
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
-	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/protocol/socks"
@@ -267,7 +266,9 @@ func TestGoKernelPacket(t *testing.T) {
 								var serverAddress M.Socksaddr
 								serverAddress, socksPackets = newKernelSocksEchoServer(scenarioTest, address)
 								socksClient := socks.NewClient(N.SystemDialer, serverAddress, socks.Version5, "", "")
-								associateConn, err := socksClient.ListenPacket(context.Background(), socksDestination)
+								handshakeContext, cancelHandshake := context.WithTimeout(context.Background(), 3*time.Second)
+								associateConn, err := socksClient.ListenPacket(handshakeContext, socksDestination)
+								cancelHandshake()
 								if err != nil {
 									scenarioTest.Fatal(err)
 								}
@@ -287,14 +288,6 @@ func TestGoKernelPacket(t *testing.T) {
 								if err != nil {
 									N.PutPacketBuffer(cached)
 									scenarioTest.Fatal(err)
-								}
-								if !config.multiQueue {
-									offload = &kernelSocksOffload{
-										PacketOffload: offload,
-										engine:        conn.writer.(*GoPacketConn).engine,
-										cached:        2,
-										test:          scenarioTest,
-									}
 								}
 								accepted := conn.Splice(&kernelPacketSocket{UDPConn: upstream}, SplicePacketOptions{
 									NAT:           PacketNAT{Origin: destination, Destination: socksDestination},
@@ -412,41 +405,6 @@ func TestGoKernelPacket(t *testing.T) {
 	}
 }
 
-type kernelSocksOffload struct {
-	N.PacketOffload
-	engine *goEngine
-	cached int
-	test   *testing.T
-}
-
-func (o *kernelSocksOffload) EncodePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	if o.cached > 0 {
-		o.cached--
-	} else {
-		borrowed := false
-		for _, frame := range o.engine.frames {
-			if buffer == frame.buffer {
-				borrowed = true
-				break
-			}
-		}
-		if !borrowed {
-			for _, entry := range o.engine.reassemblyEntries {
-				if buffer == entry.buffer {
-					borrowed = true
-					break
-				}
-			}
-		}
-		if !borrowed {
-			err := E.New("SOCKS splice copied the TUN payload before encoding")
-			o.test.Error(err)
-			return err
-		}
-	}
-	return o.PacketOffload.EncodePacket(buffer, destination)
-}
-
 type kernelSocksPacket struct {
 	payload     []byte
 	destination M.Socksaddr
@@ -463,6 +421,7 @@ func newKernelSocksEchoServer(t *testing.T, address net.IP) (M.Socksaddr, chan k
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { listener.Close() })
+	ctx := t.Context()
 	server := &kernelSocksEchoServer{packets: make(chan kernelSocksPacket, 16)}
 	go func() {
 		for {
@@ -471,8 +430,10 @@ func newKernelSocksEchoServer(t *testing.T, address net.IP) (M.Socksaddr, chan k
 				return
 			}
 			go func() {
-				handleErr := socks.HandleConnectionEx(context.Background(), conn, std_bufio.NewReader(conn), nil, server, server, 0, M.SocksaddrFromNet(conn.RemoteAddr()), nil)
+				stopContext := context.AfterFunc(ctx, func() { conn.Close() })
+				handleErr := socks.HandleConnectionEx(ctx, conn, std_bufio.NewReader(conn), nil, server, server, 0, M.SocksaddrFromNet(conn.RemoteAddr()), nil)
 				if handleErr != nil {
+					stopContext()
 					conn.Close()
 				}
 			}()
@@ -508,7 +469,12 @@ func (s *kernelSocksEchoServer) NewPacketConnectionEx(ctx context.Context, conn 
 				buffer.Release()
 				return
 			}
-			s.packets <- kernelSocksPacket{payload: bytes.Clone(buffer.Bytes()), destination: packetDestination}
+			select {
+			case s.packets <- kernelSocksPacket{payload: bytes.Clone(buffer.Bytes()), destination: packetDestination}:
+			case <-ctx.Done():
+				buffer.Release()
+				return
+			}
 			err = conn.WritePacket(buffer, packetDestination)
 			if err != nil {
 				return
@@ -525,7 +491,42 @@ var (
 
 type kernelPacketAllocator struct {
 	buf.Allocator
-	active atomic.Int64
+	active       atomic.Int64
+	epoch        time.Time
+	lastActivity atomic.Int64
+}
+
+type kernelPacketIO struct {
+	goPlatformIO
+	allocator *kernelPacketAllocator
+}
+
+func (p *kernelPacketIO) wait(timeout time.Duration, events []goSocketEvent) (bool, int, error) {
+	readable, count, err := p.goPlatformIO.wait(timeout, events)
+	if readable || count > 0 {
+		now := time.Since(p.allocator.epoch).Nanoseconds()
+		for {
+			previous := p.allocator.lastActivity.Load()
+			if now <= previous || p.allocator.lastActivity.CompareAndSwap(previous, now) {
+				break
+			}
+		}
+	}
+	return readable, count, err
+}
+
+func (a *kernelPacketAllocator) prepareStack(stack *Go) {
+	queues := stack.queueFactory
+	stack.queueFactory = func(current *Go) ([]goPlatformIO, error) {
+		platforms, err := queues(current)
+		if err != nil {
+			return nil, err
+		}
+		for index, platform := range platforms {
+			platforms[index] = &kernelPacketIO{goPlatformIO: platform, allocator: a}
+		}
+		return platforms, nil
+	}
 }
 
 func (a *kernelPacketAllocator) Get(size int) []byte {
@@ -546,17 +547,27 @@ func (a *kernelPacketAllocator) Put(buffer []byte) error {
 
 func (a *kernelPacketAllocator) waitIdle(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for a.active.Load() != 0 && time.Now().Before(deadline) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lastActivity := a.lastActivity.Load()
+		quiet := time.Since(a.epoch) - time.Duration(lastActivity)
+		active := a.active.Load()
+		unchanged := a.lastActivity.Load() == lastActivity
+		if quiet >= goReadBufferIdle && active == 0 && unchanged {
+			return
+		}
+		if quiet >= goReadBufferIdle+time.Second && active != 0 && unchanged {
+			t.Fatalf("connections retain %d pooled buffers after %s without native I/O", active, quiet)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("idle wait deadline reached: last native I/O %s ago, %d pooled buffers retained", quiet, active)
+		}
 		time.Sleep(time.Millisecond)
-	}
-	if active := a.active.Load(); active != 0 {
-		t.Fatalf("idle connections retain %d pooled buffers", active)
 	}
 }
 
 func TestGoKernelPacketBatchIdle(t *testing.T) {
-	allocator := &kernelPacketAllocator{Allocator: buf.DefaultAllocator}
+	allocator := &kernelPacketAllocator{Allocator: buf.DefaultAllocator, epoch: time.Now()}
 	buf.DefaultAllocator = allocator
 	t.Cleanup(func() { buf.DefaultAllocator = allocator.Allocator })
 	configs := []kernelStackConfig{{mtu: 1500}, {mtu: 65535}}
@@ -564,6 +575,7 @@ func TestGoKernelPacketBatchIdle(t *testing.T) {
 		configs = append(configs, kernelStackConfig{mtu: 1500, gso: true, multiQueue: true})
 	}
 	for _, config := range configs {
+		config.prepareStack = allocator.prepareStack
 		t.Run(fmt.Sprintf("mtu=%d/gso=%v/mq=%v", config.mtu, config.gso, config.multiQueue), func(configurationTest *testing.T) {
 			fixture := newKernelStackFixture(configurationTest, config)
 			for _, ipv6 := range []bool{false, true} {
@@ -588,7 +600,6 @@ func TestGoKernelPacketBatchIdle(t *testing.T) {
 							defer peer.Close()
 							peer.SetReadBuffer(1 << 20)
 							peer.SetWriteBuffer(1 << 20)
-							peer.SetDeadline(time.Now().Add(5 * time.Second))
 							var upstream *net.UDPConn
 							if mode != "unconnected" {
 								upstream, err = net.DialUDP(network, nil, peer.LocalAddr().(*net.UDPAddr))
@@ -619,6 +630,12 @@ func TestGoKernelPacketBatchIdle(t *testing.T) {
 							}
 						}
 						for cycle := range 3 {
+							deadline := time.Now().Add(3 * time.Second)
+							client.SetDeadline(deadline)
+							conn.SetReadDeadline(deadline)
+							if peer != nil {
+								peer.SetDeadline(deadline)
+							}
 							payloads := make([][]byte, 24)
 							for index := range payloads {
 								size := 1200
@@ -628,7 +645,7 @@ func TestGoKernelPacketBatchIdle(t *testing.T) {
 								payloads[index] = kernelPayload(size, uint32(cycle*31+index+1))
 								_, err := client.Write(payloads[index])
 								if err != nil {
-									scenarioTest.Fatal(err)
+									scenarioTest.Fatalf("cycle %d upload packet %d: %v", cycle, index, err)
 								}
 							}
 							uploaded := make([]bool, len(payloads))

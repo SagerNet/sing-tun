@@ -16,8 +16,6 @@ import (
 
 const goEngineInlineTransmit = false
 
-const goSessionRingCapacity = 0x800000
-
 const (
 	goCompletionKeyTun uintptr = iota + 1
 	goCompletionKeyWake
@@ -59,10 +57,6 @@ func (o *goWindowsIO) start() error {
 		return E.New("go: unsupported TUN implementation")
 	}
 	o.tun = nativeTun
-	err := nativeTun.resizeSessionRing(goSessionRingCapacity)
-	if err != nil {
-		return E.Cause(err, "go: resize wintun session ring")
-	}
 	iocp, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
 	if err != nil {
 		return E.Cause(err, "go: create completion port")
@@ -165,12 +159,12 @@ func (o *goWindowsIO) wait(timeout time.Duration, events []goSocketEvent) (bool,
 		waitMillis = uint32((timeout + time.Millisecond - 1) / time.Millisecond)
 	}
 	var removed uint32
-	err := afd.GetQueuedCompletionStatusEx(o.iocp, &o.completions[0], uint32(len(o.completions)), &removed, waitMillis, false)
-	if err != nil {
-		if err == windows.WAIT_TIMEOUT {
+	errno := afd.GetQueuedCompletionStatusEx(o.iocp, &o.completions[0], uint32(len(o.completions)), &removed, waitMillis, false)
+	if errno != 0 {
+		if errno == windows.WAIT_TIMEOUT {
 			return tunReadable, 0, nil
 		}
-		return false, 0, E.Cause(err, "go: wait for completion")
+		return false, 0, E.Cause(errno, "go: wait for completion")
 	}
 	socketCount := 0
 	for index := range removed {
@@ -342,7 +336,10 @@ func (o *goWindowsIO) writePacketBatch(frames []goUDPFrame) error {
 		frame := &frames[index]
 		segments[0] = frame.header[:frame.length]
 		segments[1] = frame.payload
-		writeError = E.Errors(writeError, o.writeFrame(segments[:], frame.meta))
+		err := o.writeFrame(segments[:], frame.meta)
+		if err != nil {
+			writeError = E.Errors(writeError, err)
+		}
 	}
 	return writeError
 }
@@ -354,6 +351,11 @@ func (o *goWindowsIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 		return errGoFrameDropped
 	}
 	return err
+}
+
+func (o *goWindowsIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
+	frame := [1][]byte{packet}
+	return o.writeFrame(frame[:], meta)
 }
 
 func (o *goWindowsIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {

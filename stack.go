@@ -41,6 +41,7 @@ type StackOptions struct {
 	IncludeAllNetworks     bool
 	InterfaceFinder        control.InterfaceFinder
 	MemoryPressure         func() MemoryPressure
+	TCPCongestionControl   string
 }
 
 func NewStack(
@@ -49,7 +50,7 @@ func NewStack(
 ) (Stack, error) {
 	switch stack {
 	case "", "go":
-		return NewGo(options), nil
+		return NewGo(options)
 	case "gvisor":
 		return NewGVisor(options)
 	case "mixed":

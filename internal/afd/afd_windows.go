@@ -114,12 +114,9 @@ func (d *Device) Poll(baseSocket windows.Handle, events uint32, ioStatusBlock *w
 	pollInfo.Handles[0].Status = 0
 	ioStatusBlock.Status = windows.NTStatus(STATUS_PENDING)
 	size := uint32(unsafe.Sizeof(*pollInfo))
-	err := NtDeviceIoControlFile(d.handle, 0, 0, uintptr(unsafe.Pointer(ioStatusBlock)), ioStatusBlock, IOCTL_AFD_POLL, unsafe.Pointer(pollInfo), size, unsafe.Pointer(pollInfo), size)
-	if err != nil {
-		if ntstatus, isStatus := err.(windows.NTStatus); isStatus && uint32(ntstatus) == STATUS_PENDING {
-			return nil
-		}
-		return err
+	status := NtDeviceIoControlFile(d.handle, 0, 0, uintptr(unsafe.Pointer(ioStatusBlock)), ioStatusBlock, IOCTL_AFD_POLL, unsafe.Pointer(pollInfo), size, unsafe.Pointer(pollInfo), size)
+	if status != 0 && uint32(status) != STATUS_PENDING {
+		return status
 	}
 	return nil
 }
@@ -188,7 +185,11 @@ func (p *WaitCompletionPacket) Associate(iocp windows.Handle, target windows.Han
 }
 
 func (p *WaitCompletionPacket) Cancel() error {
-	return NtCancelWaitCompletionPacket(p.handle, 1)
+	err := NtCancelWaitCompletionPacket(p.handle, 1)
+	if status, isStatus := err.(windows.NTStatus); isStatus && uint32(status) == STATUS_CANCELLED {
+		return nil
+	}
+	return err
 }
 
 func (p *WaitCompletionPacket) Close() error {
