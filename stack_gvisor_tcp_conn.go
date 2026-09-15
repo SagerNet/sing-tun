@@ -18,10 +18,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-var (
-	_ net.Conn     = (*gTCPConn)(nil)
-	_ N.ReadWaiter = (*gTCPConn)(nil)
-)
+var _ N.ReadWaiter = (*gTCPConn)(nil)
 
 type gTCPConn struct {
 	gTCPDeadline
