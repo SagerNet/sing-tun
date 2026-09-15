@@ -123,23 +123,15 @@ type goCongestionOps struct {
 	pacing             bool
 }
 
-var goCongestionRegistry = make(map[string]*goCongestionOps)
-
-const goDefaultCongestionControl = "cubic"
-
-func goRegisterCongestionControl(ops *goCongestionOps) {
-	if ops.slowStartThreshold == nil || ops.undoWindow == nil || (ops.congAvoid == nil && ops.congControl == nil) {
-		panic("go: congestion control " + ops.name + " does not implement required ops")
-	}
-	if _, exists := goCongestionRegistry[ops.name]; exists {
-		panic("go: congestion control " + ops.name + " already registered")
-	}
-	goCongestionRegistry[ops.name] = ops
+var goCongestionRegistry = map[string]*goCongestionOps{
+	goRenoOps.name:  &goRenoOps,
+	goCubicOps.name: &goCubicOps,
+	goBBROps.name:   &goBBROps,
 }
 
 func goLookupCongestionControl(name string) (*goCongestionOps, error) {
 	if name == "" {
-		name = goDefaultCongestionControl
+		name = goCubicOps.name
 	}
 	ops, found := goCongestionRegistry[name]
 	if !found {
@@ -152,10 +144,10 @@ func (c *GoConn) initCongestionControl(ops *goCongestionOps) {
 	c.congestion = ops
 	c.congestionWindow = goInitialWindow
 	c.slowStartThreshold = goInfiniteSlowStartThreshold
-	c.congestionClamp = max(uint32(goMaxCongestionSize/uint64(c.effectiveMSS)), 2)
+	c.congestionClamp = max(uint32(goMaxCongestionSize/uint64(c.effectiveMSS.Load())), 2)
 	c.reordering = goInitialReordering
 	c.reorderWindowSteps = 1
-	c.deliveredTime = c.engine.now()
+	c.deliveredTime = c.engine.coarseTime.Load()
 	c.undoRetransmits = -1
 	c.priorSlowStartThreshold = 0
 	c.roundTripMin.reset(0, ^uint32(0))
@@ -213,10 +205,6 @@ func (c *GoConn) isWindowLimited() bool {
 	return false
 }
 
-func (c *GoConn) minRoundTripMicros() uint32 {
-	return c.roundTripMin.get()
-}
-
 func (c *GoConn) slowStart(acked uint32) uint32 {
 	window := min(c.congestionWindow+acked, c.slowStartThreshold)
 	acked -= window - c.congestionWindow
@@ -263,10 +251,6 @@ var goRenoOps = goCongestionOps{
 	slowStartThreshold: goRenoSlowStartThreshold,
 	congAvoid:          goRenoCongAvoid,
 	undoWindow:         goRenoUndoWindow,
-}
-
-func init() {
-	goRegisterCongestionControl(&goRenoOps)
 }
 
 func (e *goEngine) initUndo(conn *GoConn) {
@@ -328,7 +312,7 @@ func (e *goEngine) endWindowReduction(conn *GoConn) {
 	}
 	if conn.slowStartThreshold < goInfiniteSlowStartThreshold && (conn.congestionState == goCongestionCWR || conn.undoMarker != 0) {
 		conn.setCongestionWindow(conn.slowStartThreshold)
-		conn.congestionWindowStamp = e.now()
+		conn.congestionWindowStamp = e.coarseTime.Load()
 	}
 	conn.congestionEvent(goCongestionEventCompleteCWR)
 }
@@ -366,7 +350,7 @@ func (e *goEngine) enterLoss(conn *GoConn) {
 	} else if !conn.sackPermitted {
 		conn.renoSacked = 0
 	}
-	now := e.now()
+	now := e.coarseTime.Load()
 	for index := range conn.scoreboard.entries {
 		descriptor := &conn.scoreboard.entries[index]
 		if reneging {
@@ -386,7 +370,7 @@ func (e *goEngine) enterLoss(conn *GoConn) {
 	}
 	conn.setCongestionWindow(conn.flight.inFlight() + 1)
 	conn.congestionWindowCount = 0
-	conn.congestionWindowStamp = e.now()
+	conn.congestionWindowStamp = e.coarseTime.Load()
 	if conn.congestionState <= goCongestionDisorder && conn.flight.sackedOut >= goInitialReordering {
 		conn.reordering = min(conn.reordering, goInitialReordering)
 	}
@@ -434,7 +418,7 @@ func (e *goEngine) undoWindowReduction(conn *GoConn, unmarkLoss bool) {
 			conn.slowStartThreshold = conn.priorSlowStartThreshold
 		}
 	}
-	conn.congestionWindowStamp = e.now()
+	conn.congestionWindowStamp = e.coarseTime.Load()
 	conn.undoMarker = 0
 	conn.rackAdvanced = true
 }
@@ -530,7 +514,7 @@ func (e *goEngine) checkSackReordering(conn *GoConn, lowOffset uint64) {
 		return
 	}
 	metric := fack - lowOffset
-	mss := uint64(conn.effectiveMSS)
+	mss := uint64(conn.effectiveMSS.Load())
 	if metric > uint64(conn.reordering)*mss {
 		conn.reordering = uint32(min((metric+mss-1)/mss, goMaxReordering))
 	}
@@ -553,13 +537,13 @@ func (e *goEngine) congestionControl(conn *GoConn, ackedSacked uint32, flags goA
 		e.reduceWindow(conn, ackedSacked, sample.losses, flags)
 	} else if e.mayRaiseWindow(conn, flags) {
 		conn.congestion.congAvoid(conn, ackedSacked)
-		conn.congestionWindowStamp = e.now()
+		conn.congestionWindowStamp = e.coarseTime.Load()
 	}
 	e.updatePacingRate(conn)
 }
 
 func (e *goEngine) updatePacingRate(conn *GoConn) {
-	rate := uint64(conn.effectiveMSS) * (uint64(time.Second/time.Microsecond) / 100)
+	rate := uint64(conn.effectiveMSS.Load()) * (uint64(time.Second/time.Microsecond) / 100)
 	if conn.congestionWindow < conn.slowStartThreshold/2 {
 		rate *= goPacingSlowStartRatio
 	} else {
@@ -584,7 +568,7 @@ func (e *goEngine) validateWindow(conn *GoConn) {
 		conn.maxPacketsOut = peakPackets
 		conn.windowUsageSeq = conn.sentTail.Load()
 	}
-	now := e.now()
+	now := e.coarseTime.Load()
 	if conn.isWindowLimited() {
 		conn.congestionWindowUsed = 0
 		conn.congestionWindowStamp = now
@@ -603,7 +587,7 @@ func (e *goEngine) armIdleRestart(conn *GoConn) {
 		conn.idleDeadline = 0
 		return
 	}
-	conn.idleDeadline = e.now() + int64(conn.retransmitTimeout)*int64(time.Microsecond)
+	conn.idleDeadline = e.coarseTime.Load() + int64(conn.retransmitTimeout)*int64(time.Microsecond)
 }
 
 func (e *goEngine) expireIdleRestart(conn *GoConn, now int64) {

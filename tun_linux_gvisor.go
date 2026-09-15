@@ -177,5 +177,3 @@ func (e *linuxTUNEndpoint) dispatchLoop() {
 		}
 	}
 }
-
-var _ stack.LinkEndpoint = (*linuxTUNEndpoint)(nil)
