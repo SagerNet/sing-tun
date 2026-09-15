@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 
@@ -30,21 +31,13 @@ type goSocket struct {
 }
 
 func goSpliceSocket(conn syscall.Conn) (goSocket, error) {
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return goSocket{}, err
-	}
-	socket := goSocket{fd: -1}
-	var duplicateError error
-	err = rawConn.Control(func(fd uintptr) {
-		socket.fd, duplicateError = unix.FcntlInt(fd, unix.F_DUPFD_CLOEXEC, 0)
+	fd, err := control.Conn0[int](conn, func(fd uintptr) (int, error) {
+		return unix.FcntlInt(fd, unix.F_DUPFD_CLOEXEC, 0)
 	})
-	err = E.Errors(err, duplicateError)
 	if err != nil {
-		socket.close()
 		return goSocket{}, err
 	}
-	return socket, nil
+	return goSocket{fd: fd}, nil
 }
 
 func (s *goSocket) close() {

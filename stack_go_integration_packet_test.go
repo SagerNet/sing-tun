@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,6 +25,49 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/protocol/socks"
 )
+
+func TestGoKernelPacketWriteAfterClose(t *testing.T) {
+	configs := []kernelStackConfig{{mtu: 1500}}
+	if runtime.GOOS == "linux" {
+		configs = append(configs, kernelStackConfig{mtu: 1500, gso: true, multiQueue: true})
+	}
+	if runtime.GOOS != "windows" {
+		configs = append(configs, kernelStackConfig{mtu: 1500, memoryLink: true})
+	}
+	for _, config := range configs {
+		for _, ipv6 := range []bool{false, true} {
+			t.Run(fmt.Sprintf("gso=%v/memory=%v/ipv6=%v", config.gso, config.memoryLink, ipv6), func(t *testing.T) {
+				fixture := newKernelStackFixture(t, config)
+				client, conn, destination := fixture.packetPair(t, ipv6)
+				defer client.Close()
+				batchWriter, batchSupported := conn.CreatePacketBatchWriter()
+				err := fixture.stack.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				options := N.NewReadWaitOptions(nil, conn)
+				newPacket := func() *buf.Buffer {
+					packet := options.NewBufferSize(64)
+					packet.Write([]byte("late UDP reply"))
+					options.PostReturn(packet)
+					return packet
+				}
+				err = conn.WritePacket(newPacket(), destination)
+				if !errors.Is(err, os.ErrClosed) {
+					t.Errorf("packet write after stack close: %v", err)
+				}
+				if batchSupported {
+					packets := []*buf.Buffer{newPacket(), newPacket()}
+					destinations := []M.Socksaddr{destination, destination}
+					err = batchWriter.WritePacketBatch(packets, destinations)
+					if !errors.Is(err, os.ErrClosed) {
+						t.Errorf("packet batch write after stack close: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestGoKernelPacketTimeout(t *testing.T) {
 	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500})
@@ -482,12 +526,6 @@ func (s *kernelSocksEchoServer) NewPacketConnectionEx(ctx context.Context, conn 
 		}
 	}()
 }
-
-var (
-	_ SpliceSocket         = (*kernelPacketSocket)(nil)
-	_ socks.HandlerEx      = (*kernelSocksEchoServer)(nil)
-	_ socks.PacketListener = (*kernelSocksEchoServer)(nil)
-)
 
 type kernelPacketAllocator struct {
 	buf.Allocator
