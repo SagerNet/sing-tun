@@ -270,6 +270,9 @@ func buildBypassRoutes(family int, set *netipx.IPSet, sources []netlink.Route, t
 			route := source
 			route.Dst = prefixToIPNet(prefix)
 			route.Table = tableIndex
+			// NetworkStack IpClientLinkObserver imports every kernel and ra
+			// route on the interface into LinkProperties regardless of table.
+			route.Protocol = unix.RTPROT_STATIC
 			routes = append(routes, route)
 		}
 		var remainingBuilder netipx.IPSetBuilder
