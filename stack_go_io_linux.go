@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -40,6 +41,7 @@ type goLinuxIO struct {
 	ownsFd          bool
 	epollFd         int
 	eventFd         int
+	fdAccess        sync.RWMutex
 	receiveBuffers  []*buf.Buffer
 	readWaitOptions N.ReadWaitOptions
 	events          [goSocketEventBatch + 2]unix.EpollEvent
@@ -368,6 +370,9 @@ func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 			o.device.droppedEngineFrames.record(o.device.stack.logger, "engine frames")
 			return errGoFrameDropped
 		default:
+			if errno == unix.EBADF && o.device.closing.Load() {
+				return os.ErrClosed
+			}
 			return E.Cause(errno, "go: write tun")
 		}
 	}
@@ -378,7 +383,7 @@ func (o *goLinuxIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
 	return o.writeFrame(frame[:], meta)
 }
 
-func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
+func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error {
 	delay := goTransmitBackoffMin
 	waited := time.Duration(0)
 	for {
@@ -407,14 +412,30 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
 			waited += delay
 			delay = min(2*delay, goTransmitBackoffMax)
 		default:
+			if errno == unix.EBADF && o.device.closing.Load() {
+				return os.ErrClosed
+			}
 			return E.Cause(errno, "go: write tun")
 		}
 	}
 }
 
 func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Errno {
+	o.fdAccess.RLock()
+	defer o.fdAccess.RUnlock()
+	if o.device.closing.Load() {
+		return unix.EBADF
+	}
 	var headerStorage [virtioNetHdrLen]byte
 	var iovecStorage [goPacketBatchSize + 2]unix.Iovec
+	iovecs := iovecStorage[:]
+	iovecCapacity := len(frame)
+	if o.device.vnetHeader {
+		iovecCapacity++
+	}
+	if iovecCapacity > len(iovecs) {
+		iovecs = make([]unix.Iovec, iovecCapacity)
+	}
 	iovecCount := 0
 	if o.device.vnetHeader {
 		prefix := goEmptyVirtioHeader[:]
@@ -435,7 +456,7 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 		}
 		vector := unix.Iovec{Base: &prefix[0]}
 		vector.SetLen(len(prefix))
-		iovecStorage[iovecCount] = vector
+		iovecs[iovecCount] = vector
 		iovecCount++
 	}
 	for _, segment := range frame {
@@ -444,12 +465,20 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 		}
 		vector := unix.Iovec{Base: &segment[0]}
 		vector.SetLen(len(segment))
-		iovecStorage[iovecCount] = vector
+		iovecs[iovecCount] = vector
 		iovecCount++
 	}
 	//nolint:staticcheck
-	_, _, errno := unix.RawSyscall(unix.SYS_WRITEV, uintptr(o.tunFd), uintptr(unsafe.Pointer(&iovecStorage[0])), uintptr(iovecCount))
+	_, _, errno := unix.RawSyscall(unix.SYS_WRITEV, uintptr(o.tunFd), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(iovecCount))
 	return errno
+}
+
+func (o *goLinuxIO) mtu() int {
+	return o.device.stack.mtu
+}
+
+func (o *goLinuxIO) supportsSockets() bool {
+	return true
 }
 
 func (o *goLinuxIO) transmitPrefix() int {
@@ -476,6 +505,11 @@ func (o *goLinuxIO) takeTransmitWritable() bool {
 }
 
 func (o *goLinuxIO) wake() {
+	o.fdAccess.RLock()
+	defer o.fdAccess.RUnlock()
+	if o.device.closing.Load() {
+		return
+	}
 	var value [8]byte
 	binary.NativeEndian.PutUint64(value[:], 1)
 	_, _ = unix.Write(o.eventFd, value[:])
@@ -483,6 +517,8 @@ func (o *goLinuxIO) wake() {
 
 func (o *goLinuxIO) close() error {
 	o.device.closing.Store(true)
+	o.fdAccess.Lock()
+	defer o.fdAccess.Unlock()
 	err := E.Errors(unix.Close(o.epollFd), unix.Close(o.eventFd))
 	if o.ownsFd {
 		err = E.Errors(err, unix.Close(o.tunFd))
@@ -490,10 +526,21 @@ func (o *goLinuxIO) close() error {
 	return err
 }
 
+func (o *goLinuxIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error {
+	return o.writePacket(packet, meta)
+}
+
+func (o *goLinuxIO) transmitBacklogBelowBatch() bool {
+	return true
+}
+
 func (o *goLinuxIO) flush() {
 }
 
 func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
+	if o.device.closing.Load() {
+		return os.ErrClosed
+	}
 	var writeError error
 	var segments [goPacketBatchSize + 1][]byte
 	for index := 0; index < len(frames); {
@@ -554,7 +601,11 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 		}
 		errno := o.transmitFrame(segments[:end-index+1], meta)
 		if errno == unix.EINTR {
+			frame.header = packetHeader
 			continue
+		}
+		if errno == unix.EBADF && o.device.closing.Load() {
+			return os.ErrClosed
 		}
 		if errno != 0 && end-index > 1 {
 			switch errno {

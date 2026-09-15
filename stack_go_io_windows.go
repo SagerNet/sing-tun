@@ -2,6 +2,7 @@ package tun
 
 import (
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -43,6 +44,7 @@ type goWindowsIO struct {
 	// CreateEventW(&SecurityAttributes, FALSE, FALSE, NULL)).
 	ringDrained         bool
 	droppedEngineFrames goDropCounter
+	wakeAccess          sync.RWMutex
 	closing             atomic.Bool
 	droppedDataFrames   goDropCounter
 }
@@ -228,9 +230,6 @@ func (o *goWindowsIO) registerSocket(socket *goSocket, token uint32, interest ui
 	}
 	entry := &goAFDEntry{baseHandle: baseHandle, token: token, interest: interest}
 	entry.pinner.Pin(entry)
-	if o.entries == nil {
-		o.entries = make(map[*goAFDEntry]struct{})
-	}
 	o.entries[entry] = struct{}{}
 	socket.entry = entry
 	if interest == 0 {
@@ -358,7 +357,7 @@ func (o *goWindowsIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
 	return o.writeFrame(frame[:], meta)
 }
 
-func (o *goWindowsIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
+func (o *goWindowsIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error {
 	backoff := goTransmitBackoffMin
 	waited := time.Duration(0)
 	for {
@@ -380,6 +379,9 @@ func (o *goWindowsIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
 }
 
 func (o *goWindowsIO) transmitFrame(frame [][]byte) error {
+	if o.closing.Load() {
+		return os.ErrClosed
+	}
 	err := o.tun.transmitGather(frame)
 	if err == nil || err == windows.ERROR_BUFFER_OVERFLOW || err == os.ErrClosed {
 		return err
@@ -395,6 +397,14 @@ func (o *goWindowsIO) transmitChecksumOffload() bool {
 	return false
 }
 
+func (o *goWindowsIO) mtu() int {
+	return o.stack.mtu
+}
+
+func (o *goWindowsIO) supportsSockets() bool {
+	return true
+}
+
 func (o *goWindowsIO) transmitSegmentOffload() bool {
 	return false
 }
@@ -408,11 +418,21 @@ func (o *goWindowsIO) takeTransmitWritable() bool {
 }
 
 func (o *goWindowsIO) wake() {
+	o.wakeAccess.RLock()
+	defer o.wakeAccess.RUnlock()
+	if o.closing.Load() {
+		return
+	}
 	_ = windows.PostQueuedCompletionStatus(o.iocp, 0, goCompletionKeyWake, nil)
 }
 
 func (o *goWindowsIO) close() error {
-	o.closing.Store(true)
+	o.wakeAccess.Lock()
+	closing := o.closing.Swap(true)
+	o.wakeAccess.Unlock()
+	if closing {
+		return nil
+	}
 	var err error
 	if o.waitPacket != nil {
 		err = E.Errors(o.waitPacket.Cancel(), o.waitPacket.Close())
@@ -421,12 +441,80 @@ func (o *goWindowsIO) close() error {
 		<-o.bridgeDone
 		err = E.Errors(windows.CloseHandle(o.bridgeArm), windows.CloseHandle(o.bridgeClose))
 	}
-	err = E.Errors(err, o.afd.Close(), windows.CloseHandle(o.iocp))
 	for entry := range o.entries {
-		entry.pinner.Unpin()
+		entry.interest = 0
+		entry.cancelled = true
+		if entry.armed {
+			err = E.Errors(err, o.afd.Cancel(&entry.ioStatusBlock))
+		} else {
+			o.releaseEntry(entry)
+		}
 	}
-	clear(o.entries)
+	err = E.Errors(err, o.afd.Close())
+	err = E.Errors(err, o.drainClosingEntries(goShutdownBudget))
+	if len(o.entries) == 0 {
+		return E.Errors(err, windows.CloseHandle(o.iocp))
+	}
+	go o.finishClose()
 	return err
+}
+
+func (o *goWindowsIO) drainClosingEntries(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for len(o.entries) > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		waitMillis := uint32((remaining + time.Millisecond - 1) / time.Millisecond)
+		var removed uint32
+		errno := afd.GetQueuedCompletionStatusEx(o.iocp, &o.completions[0], uint32(len(o.completions)), &removed, waitMillis, false)
+		if errno == windows.WAIT_TIMEOUT {
+			return nil
+		}
+		if errno != 0 {
+			return E.Cause(errno, "go: drain cancelled socket polls")
+		}
+		for index := range removed {
+			completion := &o.completions[index]
+			if completion.CompletionKey != 0 {
+				continue
+			}
+			entry := (*goAFDEntry)(unsafe.Pointer(completion.Overlapped))
+			if _, pending := o.entries[entry]; pending {
+				entry.armed = false
+				o.releaseEntry(entry)
+			}
+		}
+		clear(o.completions[:removed])
+	}
+	return nil
+}
+
+func (o *goWindowsIO) finishClose() {
+	logged := false
+	for len(o.entries) > 0 {
+		err := o.drainClosingEntries(time.Second)
+		if err != nil {
+			if !logged {
+				o.stack.logger.Error(err)
+				logged = true
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	err := windows.CloseHandle(o.iocp)
+	if err != nil {
+		o.stack.logger.Error(E.Cause(err, "go: close completion port"))
+	}
+}
+
+func (o *goWindowsIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error {
+	return o.writePacket(packet, meta)
+}
+
+func (o *goWindowsIO) transmitBacklogBelowBatch() bool {
+	return true
 }
 
 func (o *goWindowsIO) flush() {

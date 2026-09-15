@@ -368,7 +368,7 @@ func (p *kernelTCPIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (in
 				continue
 			}
 			if action.delay > 0 {
-				p.delayLocked(flow, event, packet, frame.meta, action.delay)
+				p.delayLocked(flow, event, packet, frame.meta, nil, 0, action.delay)
 				continue
 			}
 			for copyIndex := 1; copyIndex < action.copies; copyIndex++ {
@@ -383,18 +383,18 @@ func (p *kernelTCPIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (in
 }
 
 func (p *kernelTCPIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
-	return p.write(frame, meta, false)
+	return p.write(frame, meta, nil, 0)
 }
 
 func (p *kernelTCPIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
-	return p.write([][]byte{packet}, meta, false)
+	return p.write([][]byte{packet}, meta, nil, 0)
 }
 
-func (p *kernelTCPIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
-	return p.write(frame, meta, true)
+func (p *kernelTCPIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error {
+	return p.write(frame, meta, owner, segmentEnd)
 }
 
-func (p *kernelTCPIO) write(frame [][]byte, meta ForwardFrameMeta, data bool) error {
+func (p *kernelTCPIO) write(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error {
 	packet := slices.Concat(frame...)
 	p.harness.access.Lock()
 	flow, event := p.harness.eventLocked(packet, true)
@@ -421,11 +421,11 @@ func (p *kernelTCPIO) write(frame [][]byte, meta ForwardFrameMeta, data bool) er
 		event.dropped = true
 	case action.delay > 0:
 		event.delayed = true
-		p.delayLocked(flow, event, packet, meta, action.delay)
+		p.delayLocked(flow, event, packet, meta, owner, segmentEnd, action.delay)
 	default:
 		for range event.copies {
-			if data {
-				err = p.goPlatformIO.writeData(frame, meta)
+			if owner != nil {
+				err = p.goPlatformIO.writeData(frame, meta, owner, segmentEnd)
 			} else {
 				err = p.goPlatformIO.writeFrame(frame, meta)
 			}
@@ -440,14 +440,14 @@ func (p *kernelTCPIO) write(frame [][]byte, meta ForwardFrameMeta, data bool) er
 		}
 		flow.writes--
 	}
-	if data {
+	if owner != nil {
 		p.goPlatformIO.flush()
 	}
 	p.harness.access.Unlock()
 	return err
 }
 
-func (p *kernelTCPIO) delayLocked(flow *kernelTCPFlow, event kernelTCPEvent, packet []byte, meta ForwardFrameMeta, delay time.Duration) {
+func (p *kernelTCPIO) delayLocked(flow *kernelTCPFlow, event kernelTCPEvent, packet []byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64, delay time.Duration) {
 	if p.harness.stopped {
 		return
 	}
@@ -470,7 +470,7 @@ func (p *kernelTCPIO) delayLocked(flow *kernelTCPFlow, event kernelTCPEvent, pac
 		event.delivery = true
 		for range event.copies {
 			if event.outgoing {
-				err := p.goPlatformIO.writeData([][]byte{packet}, meta)
+				err := p.goPlatformIO.writeData([][]byte{packet}, meta, owner, segmentEnd)
 				p.goPlatformIO.flush()
 				if err != nil && flow.failure == "" {
 					flow.failure = fmt.Sprintf("deliver delayed packet: %v", err)
