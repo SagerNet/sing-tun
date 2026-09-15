@@ -10,7 +10,6 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
-	N "github.com/sagernet/sing/common/network"
 )
 
 func (d *ForwardDispatcher) hijackDNSPacket(packet *forwardPacket) {
@@ -21,8 +20,6 @@ func (d *ForwardDispatcher) hijackDNSPacket(packet *forwardPacket) {
 	}
 	d.handler.NewDNSPacket(header.UDP(packet.transport).Payload(), M.SocksaddrFromNetIP(packet.source), M.SocksaddrFromNetIP(packet.destination), writer)
 }
-
-var _ N.PacketWriter = (*dnsResponseWriter)(nil)
 
 type dnsResponseWriter struct {
 	writeback      ForwardWriteback
