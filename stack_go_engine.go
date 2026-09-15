@@ -33,6 +33,7 @@ const (
 	goMessageConnReadShut
 	goMessageConnRetransmit
 	goMessageConnWindow
+	goMessageConnTransmit
 	goMessageConnBlocked
 	goMessageConnDropped
 	goMessageConnPacing
@@ -447,6 +448,8 @@ func (e *goEngine) handleMessage(message *goMessage) {
 		e.handleRetransmitArm(message.conn)
 	case goMessageConnWindow:
 		e.handleWindowUpdate(message.conn)
+	case goMessageConnTransmit:
+		e.handleTransmitRequest(message.conn)
 	case goMessageConnBlocked:
 		e.handleTransmitBlocked(message.conn)
 	case goMessageConnDropped:
@@ -500,7 +503,16 @@ func (e *goEngine) releaseInjected() {
 }
 
 func (e *goEngine) handleEngage(conn *GoConn) {
-	if conn.connState.Load() != goConnStateEngaged {
+	if conn.dead || conn.phase != goPhaseJudged {
+		return
+	}
+	conn.access.Lock()
+	conn.phase = goPhaseEngaged
+	conn.access.Unlock()
+	err := conn.writeSynAck()
+	if err != nil {
+		e.sendReset(conn)
+		e.detachConn(conn, E.Cause(err, "go: send SYN-ACK"), goDeathAbortLinger)
 		return
 	}
 	conn.handshakeAttempts = 0
@@ -517,7 +529,9 @@ func (e *goEngine) shutdown() {
 	unreset := e.closeAllFlows()
 	for conn := e.dyingList; conn != nil; conn = conn.dyingNext {
 		e.spliceDetach(conn, net.ErrClosed)
-		conn.receiveDrainable.Store(false)
+		conn.access.Lock()
+		conn.drainable = false
+		conn.access.Unlock()
 	}
 	deadline := e.now() + int64(goShutdownBudget)
 	for len(unreset) > 0 {

@@ -9,7 +9,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
-const goEngineInlineTransmit = false
+const goEngineTransmits = false
 
 func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
 	return nil, E.New("go: unsupported platform")

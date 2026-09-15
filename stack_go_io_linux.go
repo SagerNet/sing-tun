@@ -18,7 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const goEngineInlineTransmit = false
+const goEngineTransmits = false
 
 var goEmptyVirtioHeader [virtioNetHdrLen]byte
 

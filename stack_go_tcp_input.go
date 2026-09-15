@@ -3,6 +3,7 @@ package tun
 import (
 	"encoding/binary"
 	"hash/maphash"
+	"math"
 	"net"
 	"syscall"
 	"time"
@@ -108,11 +109,11 @@ func (e *goEngine) handleTCPSyn(parsed *forwardPacket) {
 			e.handleDuplicateSyn(existing)
 			return
 		}
-		if existing.connState.Load() < goConnStateDead && existing.state != goTCPSynReceived {
+		if !existing.dead && existing.state != goTCPSynReceived {
 			e.markAck(existing, true)
 			return
 		}
-		if existing.connState.Load() < goConnStateDead {
+		if !existing.dead {
 			e.detachConn(existing, E.New("go: connection replaced by new SYN"), goDeathImmediate)
 		}
 		e.removeFlow(existing)
@@ -162,9 +163,8 @@ func (e *goEngine) handleTCPSyn(parsed *forwardPacket) {
 	conn.receiveAvailable.Store(1)
 	conn.receiveNextAck.Store(1)
 	conn.receiveEdge.Store(conn.publishedEdge)
-	conn.sentEdge.Store(conn.publishedEdge)
-	conn.receiveCapacityPublished.Store(conn.receiveCapacity)
-	conn.windowUpdateThreshold.Store(min(uint64(conn.effectiveMSS), conn.receiveCapacity/2))
+	conn.sentEdge = conn.publishedEdge
+	conn.dataSentEdge.Store(conn.publishedEdge)
 	conn.receiveSpaceConsumed = 1
 	conn.receiveSpaceStamp = now
 	conn.sentTail.Store(1)
@@ -174,6 +174,7 @@ func (e *goEngine) handleTCPSyn(parsed *forwardPacket) {
 	conn.sendReleased.Store(1)
 	conn.sendPermit.Store(1 + min(uint64(conn.congestionWindow)*uint64(conn.effectiveMSS), conn.peerWindow))
 	conn.sendPacketPermit.Store(conn.congestionWindow)
+	conn.refreshWindowUpdateAt()
 	conn.buildSynAck(synOptions, localMSS)
 	conn.keyed = true
 	e.flows[key] = conn
@@ -191,7 +192,7 @@ func (e *goEngine) localMSS(ipVersion uint8) uint16 {
 func (e *goEngine) evictFlow() bool {
 	visited := 0
 	for _, conn := range e.flows {
-		if conn.connState.Load() >= goConnStateAborted {
+		if conn.dead {
 			e.removeFlow(conn)
 			return true
 		}
@@ -216,13 +217,15 @@ func (e *goEngine) evictFlow() bool {
 
 func (e *goEngine) handleDuplicateSyn(conn *GoConn) {
 	switch {
-	case conn.connState.Load() == goConnStateEngaged:
+	case conn.dead:
+		if conn.deathClass == goDeathAbortLinger {
+			e.sendReset(conn)
+		}
+	case conn.phase == goPhaseEngaged:
 		err := conn.writeSynAck()
 		if err != nil {
 			e.stack.logger.Trace(E.Cause(err, "go: resend SYN-ACK"))
 		}
-	case conn.connState.Load() >= goConnStateAborted && conn.deathClass == goDeathAbortLinger:
-		e.sendReset(conn)
 	}
 }
 
@@ -232,7 +235,7 @@ func (e *goEngine) inputTCP(conn *GoConn, parsed *forwardPacket) {
 	if dataOffset < header.TCPMinimumSize || dataOffset > len(tcpHdr) {
 		return
 	}
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		e.inputTombstone(conn, parsed)
 		return
 	}
@@ -288,7 +291,7 @@ func (e *goEngine) inputTCP(conn *GoConn, parsed *forwardPacket) {
 	if !e.processAck(conn, tcpHdr, segOffset, len(payload), flags, timestampEcho, hasTimestamp) {
 		return
 	}
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		return
 	}
 	if len(payload) > 0 || flags&header.TCPFlagFin != 0 {
@@ -377,8 +380,9 @@ func (c *GoConn) segmentAcceptable(segOffset int64, segmentLength int64) bool {
 func (e *goEngine) establishConn(conn *GoConn) {
 	conn.state = goTCPEstablished
 	conn.handshakeDeadline = 0
-	conn.everEstablished.Store(true)
-	conn.connState.CompareAndSwap(goConnStateEngaged, goConnStateEstablished)
+	conn.access.Lock()
+	conn.phase = goPhaseEstablished
+	conn.access.Unlock()
 	close(conn.establishedSignal)
 	e.wokeHandlerThisBurst = true
 }
@@ -492,15 +496,13 @@ func (c *GoConn) releaseTransmitted(unacked uint64) {
 }
 
 func (c *GoConn) releaseIdleDescriptors() {
-	if len(c.scoreboard.entries) != 0 || !c.transmitOwner.CompareAndSwap(0, 1) {
+	if len(c.scoreboard.entries) != 0 || !c.transmitAccess.TryLock() {
 		return
 	}
 	if c.sendUnacked.Load() == c.sentTail.Load() && !c.blockedValid {
 		c.descriptors.release()
 	}
-	c.transmitOwner.Store(0)
-	// A writer can publish data while we own the transmitter. Resume it if its
-	// attempt to transmit raced with this cleanup.
+	c.transmitAccess.Unlock()
 	if c.nextTransmitLength() != 0 {
 		c.wakeTransmitter()
 	}
@@ -525,7 +527,12 @@ func (c *GoConn) wakeTransmitter() {
 	if c.nextTransmitLength() == 0 {
 		return
 	}
-	if goEngineInlineTransmit && c.transmitOnEngine() {
+	if goEngineTransmits {
+		if c.engine.inlineTransmitBudget <= 0 {
+			c.engine.postMessage(&c.transmitMessage)
+		} else {
+			c.engine.transmitOnEngine(c, c.engine.inlineTransmitBudget)
+		}
 		return
 	}
 	c.wakeTransmitterGoroutine()
@@ -533,10 +540,8 @@ func (c *GoConn) wakeTransmitter() {
 }
 
 func (c *GoConn) wakeWriter() {
-	if !c.writerParked.Load() {
-		return
-	}
-	if !c.writeReady(int(max(c.writerNeeds.Load(), 1))) {
+	required := c.writerWaiting.Load()
+	if required == 0 || !c.writeReady(int(required)) {
 		return
 	}
 	c.signalWriter()
@@ -624,8 +629,8 @@ func (e *goEngine) deliverInOrder(conn *GoConn, data []byte) {
 	direct := 0
 	taken := false
 	if conn.receiveAvailable.Load() == conn.consumedTail.Load() {
-		target := conn.postedTarget.Swap(nil)
-		if target != nil {
+		target := conn.postedTarget.Load()
+		if target != nil && target != &goTargetFilled && conn.postedTarget.CompareAndSwap(target, &goTargetTaken) {
 			direct = copy(target.target, data)
 			target.filled = direct
 			taken = true
@@ -639,7 +644,7 @@ func (e *goEngine) deliverInOrder(conn *GoConn, data []byte) {
 	conn.receiveAvailable.Store(conn.receiveNext)
 	conn.publishReceiveWindow()
 	if taken {
-		conn.targetDone.Store(true)
+		conn.postedTarget.Store(&goTargetFilled)
 	}
 	if conn.readerParked.Load() || taken {
 		conn.signalReader()
@@ -681,11 +686,12 @@ func (e *goEngine) acceptFin(conn *GoConn) {
 		e.markAck(conn, true)
 		return
 	}
+	conn.access.Lock()
 	conn.finReceived = true
+	conn.access.Unlock()
 	conn.oooRanges = nil
 	conn.receiveNext++
 	conn.receiveNextAck.Store(conn.receiveNext)
-	conn.receiveShutdown.Store(true)
 	conn.publishReceiveWindow()
 	if conn.readerParked.Load() {
 		conn.signalReader()
@@ -738,14 +744,35 @@ func (c *GoConn) publishReceiveWindow() {
 		base = c.receiveNext
 	}
 	edge := base + c.receiveCapacity
-	if edge <= c.publishedEdge {
-		return
+	if edge > c.publishedEdge && (base >= c.receiveNext || edge-c.advertisedEdge() >= c.windowUpdateThreshold()) {
+		c.publishedEdge = edge
+		c.receiveEdge.Store(edge)
 	}
-	if base < c.receiveNext && edge-c.sentEdge.Load() < c.windowUpdateThreshold.Load() {
-		return
+	c.refreshWindowUpdateAt()
+}
+
+func (c *GoConn) advertisedEdge() uint64 {
+	return max(c.sentEdge, c.dataSentEdge.Load())
+}
+
+func (c *GoConn) windowUpdateThreshold() uint64 {
+	return min(uint64(c.effectiveMSS), c.receiveCapacity/2)
+}
+
+func (c *GoConn) refreshWindowUpdateAt() {
+	edge := c.advertisedEdge()
+	capacity := int64(c.receiveCapacity)
+	at := int64(edge) + int64(c.windowUpdateThreshold()) - capacity
+	available := c.receiveAvailable.Load()
+	if available < edge {
+		window := int64(edge - available)
+		if 2*window > capacity {
+			c.windowUpdateAt.Store(math.MaxUint64)
+			return
+		}
+		at = max(at, int64(available)+2*window-capacity)
 	}
-	c.publishedEdge = edge
-	c.receiveEdge.Store(edge)
+	c.windowUpdateAt.Store(uint64(max(at, 0)))
 }
 
 func (e *goEngine) measureReceiveRoundTrip(conn *GoConn) {
@@ -785,8 +812,6 @@ func (e *goEngine) moderateReceiveCapacity(conn *GoConn) {
 		return
 	}
 	conn.receiveCapacity = capacity
-	conn.receiveCapacityPublished.Store(capacity)
-	conn.windowUpdateThreshold.Store(min(uint64(conn.effectiveMSS), capacity/2))
 }
 
 func (e *goEngine) receiveCapacityLimit(conn *GoConn) uint64 {
@@ -862,6 +887,7 @@ func (e *goEngine) sendAck(conn *GoConn) bool {
 	if !e.writeConnControl(conn, &segment) {
 		return false
 	}
+	conn.refreshWindowUpdateAt()
 	conn.dsackStart = 0
 	conn.dsackEnd = 0
 	conn.ackPending = 0
@@ -876,7 +902,7 @@ func (e *goEngine) sendReset(conn *GoConn) bool {
 }
 
 func (e *goEngine) writeConnControl(conn *GoConn, segment *goSegment) bool {
-	frame, _ := conn.buildFrame(e.controlScratch[:], e.controlSegments[:0], segment, &conn.transmitStore, false)
+	frame, _ := conn.buildFrame(e.controlScratch[:], e.controlSegments[:0], segment, &conn.transmitStore, false, true)
 	e.controlSegments = frame
 	err := e.platformIO.writeFrame(frame, ForwardFrameMeta{})
 	clear(frame)
@@ -888,13 +914,13 @@ func (e *goEngine) writeConnControl(conn *GoConn, segment *goSegment) bool {
 }
 
 func (e *goEngine) maybeSendFin(conn *GoConn) {
-	if !conn.finPending || conn.finSent || conn.state == goTCPSynReceived {
+	if !conn.finPending || conn.finSent || conn.state == goTCPSynReceived || conn.dead {
 		return
 	}
-	if conn.connState.Load() >= goConnStateAborted {
-		return
-	}
-	if conn.writerActive.Load() != 0 {
+	conn.access.Lock()
+	writing := conn.writing
+	conn.access.Unlock()
+	if writing {
 		return
 	}
 	buffered := conn.bufferedTail.Load()
@@ -915,18 +941,21 @@ func (e *goEngine) maybeSendFin(conn *GoConn) {
 }
 
 func (e *goEngine) handleCloseRequest(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateDead {
-		if conn.userClosed.Load() || conn.closeMode.Load() == goCloseModeAbort {
-			conn.receiveDrainable.Store(false)
-			e.spliceDetach(conn, conn.loadError())
+	conn.access.Lock()
+	abort := conn.abort || conn.splicePending != nil
+	discard := conn.userClosed || conn.abort
+	if conn.dead && discard {
+		conn.drainable = false
+	}
+	err := conn.err
+	conn.access.Unlock()
+	if conn.dead {
+		if discard {
+			e.spliceDetach(conn, err)
 		}
 		return
 	}
-	if conn.connState.Load() == goConnStateAborted {
-		e.detachConn(conn, nil, goDeathAbortLinger)
-		return
-	}
-	if conn.closeMode.Load() == goCloseModeAbort || conn.splice != nil || conn.splicePending.Load() != nil {
+	if abort || conn.splice != nil {
 		e.sendReset(conn)
 		e.detachConn(conn, net.ErrClosed, goDeathAbortLinger)
 		return
@@ -936,7 +965,7 @@ func (e *goEngine) handleCloseRequest(conn *GoConn) {
 }
 
 func (e *goEngine) handleReadShut(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		return
 	}
 	conn.discardReceive = true
@@ -953,25 +982,25 @@ func (e *goEngine) handleReadShut(conn *GoConn) {
 }
 
 func (e *goEngine) handleWindowUpdate(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		return
 	}
 	conn.receiveChain.releaseBelow(conn.consumedTail.Load())
 	conn.publishReceiveWindow()
-	if conn.publishedEdge > conn.sentEdge.Load() || conn.ackPending > 0 {
+	if conn.publishedEdge > conn.advertisedEdge() || conn.ackPending > 0 {
 		e.markAck(conn, true)
 	}
 }
 
 func (e *goEngine) handleRetransmitArm(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead || conn.retransmitDeadline != 0 {
 		return
 	}
 	e.rearmRetransmit(conn)
 }
 
 func (e *goEngine) handleDroppedFrames(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		return
 	}
 	e.drainDescriptors(conn)
@@ -996,7 +1025,7 @@ func (e *goEngine) handleDroppedFrames(conn *GoConn) {
 }
 
 func (e *goEngine) handleTransmitBlocked(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		conn.transmitSignal.notify()
 		return
 	}
@@ -1021,8 +1050,8 @@ func (e *goEngine) releaseBlockedWriters() {
 		next := conn.blockedNext
 		conn.blockedNext = nil
 		conn.onBlockedList = false
-		if conn.splice != nil {
-			e.spliceRetryBlocked(conn)
+		if conn.splice != nil || goEngineTransmits {
+			e.retryBlockedOnEngine(conn)
 		} else {
 			conn.transmitSignal.notify()
 			e.wokeHandlerThisBurst = true
@@ -1045,16 +1074,12 @@ func (c *GoConn) hasOutstanding() bool {
 func (e *goEngine) rearmRetransmit(conn *GoConn) {
 	if !conn.hasOutstanding() {
 		conn.retransmitDeadline = 0
-		conn.retransmitArmed.Store(false)
-		if !conn.hasOutstanding() {
-			if conn.persistNeeded() {
-				e.updatePersist(conn)
-			} else {
-				e.rearmTimer(conn)
-			}
-			return
+		if conn.persistNeeded() {
+			e.updatePersist(conn)
+		} else {
+			e.rearmTimer(conn)
 		}
-		conn.retransmitArmed.Store(true)
+		return
 	}
 	if conn.persistNeeded() {
 		e.updatePersist(conn)
@@ -1194,24 +1219,26 @@ func (e *goEngine) retransmitFrom(conn *GoConn, offset uint64) {
 }
 
 func (e *goEngine) detachConn(conn *GoConn, err error, class uint8) {
-	if conn.connState.Load() >= goConnStateDead {
+	if conn.dead {
 		return
 	}
-	if err != nil {
-		conn.storeError(err)
+	conn.access.Lock()
+	if err != nil && conn.err == nil {
+		conn.err = err
 	}
-	if class == goDeathFinLinger && conn.receiveAvailable.Load() > conn.consumedTail.Load() {
-		conn.receiveDrainable.Store(true)
-	}
-	conn.connState.Store(goConnStateDead)
+	err = conn.err
+	conn.drainable = class == goDeathFinLinger && conn.receiveAvailable.Load() > conn.consumedTail.Load()
+	conn.dead = true
+	established := conn.phase == goPhaseEstablished
+	conn.access.Unlock()
 	conn.deathClass = class
 	conn.state = goTCPClosed
 	if class == goDeathFinLinger && conn.splice != nil && !conn.splice.uploadClosed {
 		e.spliceMarkDirty(conn)
 	} else {
-		e.spliceDetach(conn, conn.loadError())
+		e.spliceDetach(conn, err)
 	}
-	if !conn.everEstablished.Load() {
+	if !established {
 		close(conn.establishedSignal)
 	}
 	close(conn.closeSignal)
@@ -1249,7 +1276,7 @@ func (e *goEngine) detachConn(conn *GoConn, err error, class uint8) {
 }
 
 func (e *goEngine) removeFlow(conn *GoConn) {
-	if conn.connState.Load() < goConnStateDead {
+	if !conn.dead {
 		e.detachConn(conn, net.ErrClosed, goDeathImmediate)
 		return
 	}
@@ -1278,9 +1305,7 @@ func (e *goEngine) reapDying() {
 	for conn := e.dyingList; conn != nil; {
 		next := conn.dyingNext
 		conn.dyingNext = nil
-		if conn.reclaimable() {
-			e.platformIO.flush()
-			conn.releaseResources()
+		if conn.reclaim() {
 			conn.onDyingList = false
 		} else {
 			if now-conn.dyingSince > int64(goDyingLeakTimeout) {
@@ -1295,22 +1320,26 @@ func (e *goEngine) reapDying() {
 	e.dyingList = kept
 }
 
-func (c *GoConn) reclaimable() bool {
-	if c.spliced.Load() || c.writerActive.Load() != 0 || c.flushActive.Load() != 0 || c.transmitterActive.Load() != 0 || c.postedTarget.Load() != nil {
+func (c *GoConn) reclaim() bool {
+	c.access.Lock()
+	blocked := c.spliced || c.transmitterRunning || (c.drainable && !c.userClosed && c.receiveAvailable.Load() > c.consumedTail.Load())
+	c.access.Unlock()
+	if blocked || !c.readAccess.TryLock() {
 		return false
 	}
-	if c.receiveDrainable.Load() && !c.userClosed.Load() && c.receiveAvailable.Load() > c.consumedTail.Load() {
+	defer c.readAccess.Unlock()
+	if !c.writeAccess.TryLock() {
 		return false
 	}
-	c.receiveReleased.Store(true)
-	if c.readerActive.Load() != 0 {
-		c.receiveReleased.Store(false)
+	defer c.writeAccess.Unlock()
+	if !c.transmitAccess.TryLock() {
 		return false
 	}
-	return true
-}
-
-func (c *GoConn) releaseResources() {
+	defer c.transmitAccess.Unlock()
+	c.access.Lock()
+	c.released = true
+	c.access.Unlock()
+	c.engine.platformIO.flush()
 	c.receiveChain.releaseAll()
 	c.transmitStore.releaseAll()
 	c.oooRanges = nil
@@ -1321,12 +1350,13 @@ func (c *GoConn) releaseResources() {
 		c.receiveTarget.buffer.Release()
 		c.receiveTarget.buffer = nil
 	}
+	return true
 }
 
 func (e *goEngine) closeAllFlows() []*GoConn {
 	var unreset []*GoConn
 	for _, conn := range e.flows {
-		if conn.connState.Load() < goConnStateDead && !e.sendReset(conn) {
+		if !conn.dead && !e.sendReset(conn) {
 			unreset = append(unreset, conn)
 		}
 		e.detachConn(conn, net.ErrClosed, goDeathImmediate)
@@ -1337,7 +1367,7 @@ func (e *goEngine) closeAllFlows() []*GoConn {
 
 func (e *goEngine) expireSweepTick(now int64) {
 	for _, conn := range e.flows {
-		if conn.connState.Load() >= goConnStateDead {
+		if conn.dead {
 			continue
 		}
 		sent := conn.sentTail.Load()
@@ -1361,7 +1391,10 @@ func (e *goEngine) expireSweepTick(now int64) {
 }
 
 func (e *goEngine) keepalive(conn *GoConn, now int64) {
-	if conn.state == goTCPFinWait2 && conn.userClosed.Load() && now-conn.finWait2Since > int64(goFinWait2Timeout) {
+	conn.access.Lock()
+	userClosed := conn.userClosed
+	conn.access.Unlock()
+	if conn.state == goTCPFinWait2 && userClosed && now-conn.finWait2Since > int64(goFinWait2Timeout) {
 		e.sendReset(conn)
 		e.detachConn(conn, E.Cause(syscall.ETIMEDOUT, "go: orphaned FIN_WAIT_2"), goDeathImmediate)
 		return
