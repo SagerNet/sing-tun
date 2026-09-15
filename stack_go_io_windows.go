@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const goEngineInlineTransmit = false
+const goEngineTransmits = false
 
 const (
 	goCompletionKeyTun uintptr = iota + 1

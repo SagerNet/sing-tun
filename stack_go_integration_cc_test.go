@@ -101,7 +101,7 @@ func TestGoKernelTCPLifecycle(t *testing.T) {
 								}
 							}
 							traffic.await(test, conn, "graceful close", func(flow kernelTCPFlow) bool {
-								return flow.fin != 0 && flow.acked >= flow.fin && flow.peerFIN && conn.connState.Load() >= goConnStateAborted
+								return flow.fin != 0 && flow.acked >= flow.fin && flow.peerFIN && conn.closed()
 							})
 						})
 					}
