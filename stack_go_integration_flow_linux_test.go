@@ -106,13 +106,13 @@ func TestGoKernelReceiveWindowUpdateLoss(t *testing.T) {
 			}()
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
-				if server.sentEdge.Load()-server.receiveAvailable.Load() < 1<<server.localWindowShift {
+				if server.receiveEdge.Load()-server.receiveAvailable.Load() < 1<<server.localWindowShift {
 					break
 				}
 				time.Sleep(time.Millisecond)
 			}
 			available := server.receiveAvailable.Load() - 1
-			if available == 0 || server.sentEdge.Load()-server.receiveAvailable.Load() >= 1<<server.localWindowShift {
+			if available == 0 || server.receiveEdge.Load()-server.receiveAvailable.Load() >= 1<<server.localWindowShift {
 				test.Fatal("Go receive window did not close")
 			}
 			windowUpdate := func(event kernelTCPEvent) bool {
@@ -220,20 +220,20 @@ func TestGoKernelZeroWindowHalfClose(t *testing.T) {
 			}}
 			fixture, traffic := newKernelTCPFixture(test, config, kernelTCPConfig{})
 			client, server := fixture.pair(test, ipv6)
-			payload := kernelPayload(int(server.sendPermit.Load()-1), 139)
+			payload := kernelPayload(int(server.sendPermit.Load()&^goPermitWindowBit-1), 139)
 			_, err := server.Write(payload)
 			if err != nil {
 				test.Fatal(err)
 			}
 			deadline := time.Now().Add(time.Second)
 			for time.Now().Before(deadline) {
-				if server.sendUnacked.Load() == uint64(len(payload)+1) && server.sendPermit.Load() == server.sendUnacked.Load() {
+				if server.sendUnacked.Load() == uint64(len(payload)+1) && server.sendPermit.Load()&^goPermitWindowBit == server.sendUnacked.Load() {
 					break
 				}
 				time.Sleep(time.Millisecond)
 			}
-			if server.sendUnacked.Load() != uint64(len(payload)+1) || server.sendPermit.Load() != server.sendUnacked.Load() {
-				test.Fatalf("window did not close after acknowledging all data: length=%d unacked=%d permit=%d", len(payload), server.sendUnacked.Load(), server.sendPermit.Load())
+			if server.sendUnacked.Load() != uint64(len(payload)+1) || server.sendPermit.Load()&^goPermitWindowBit != server.sendUnacked.Load() {
+				test.Fatalf("window did not close after acknowledging all data: length=%d unacked=%d permit=%d", len(payload), server.sendUnacked.Load(), server.sendPermit.Load()&^goPermitWindowBit)
 			}
 			finAcknowledgement := func(event kernelTCPEvent) bool {
 				return !event.outgoing && event.flags&header.TCPFlagAck != 0 && event.ack == uint64(len(payload)+2)
@@ -303,12 +303,12 @@ func TestGoKernelWindowLimitedRecovery(t *testing.T) {
 			}
 			deadline := time.Now().Add(time.Second)
 			for time.Now().Before(deadline) {
-				if server.sendPermit.Load() == server.sendUnacked.Load() && server.sentTail.Load() > server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
+				if server.sendPermit.Load()&^goPermitWindowBit == server.sendUnacked.Load() && server.sentTail.Load() > server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
 					break
 				}
 				time.Sleep(time.Millisecond)
 			}
-			if server.sendPermit.Load() != server.sendUnacked.Load() || server.sentTail.Load() <= server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
+			if server.sendPermit.Load()&^goPermitWindowBit != server.sendUnacked.Load() || server.sentTail.Load() <= server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
 				test.Fatal("window did not shrink below outstanding data")
 			}
 			completed := make(chan kernelIOResult, 1)
@@ -318,10 +318,10 @@ func TestGoKernelWindowLimitedRecovery(t *testing.T) {
 				completed <- kernelIOResult{n: n + initial, err: writeErr}
 			}()
 			deadline = time.Now().Add(time.Second)
-			for !server.writerParked.Load() && time.Now().Before(deadline) {
+			for server.writerWaiting.Load() == 0 && time.Now().Before(deadline) {
 				time.Sleep(time.Millisecond)
 			}
-			if !server.writerParked.Load() {
+			if server.writerWaiting.Load() == 0 {
 				test.Fatal("write did not block at the closed window")
 			}
 			server.SetWriteDeadline(time.Now())
@@ -403,14 +403,14 @@ func TestGoKernelZeroWindow(t *testing.T) {
 			}
 			deadline := time.Now().Add(time.Second)
 			for time.Now().Before(deadline) {
-				if server.sendPermit.Load() == server.sendUnacked.Load() && server.sentTail.Load() == server.bufferedTail.Load() {
+				if server.sendPermit.Load()&^goPermitWindowBit == server.sendUnacked.Load() && server.sentTail.Load() == server.bufferedTail.Load() {
 					break
 				}
 				time.Sleep(time.Millisecond)
 			}
 			unacked := server.sendUnacked.Load()
-			if server.sendPermit.Load() != unacked || server.sentTail.Load() != uint64(len(payload)+1) || unacked <= 1 || unacked >= server.sentTail.Load() {
-				test.Fatalf("window did not close with only outstanding data: unacked=%d sent=%d buffered=%d permit=%d", unacked, server.sentTail.Load(), server.bufferedTail.Load(), server.sendPermit.Load())
+			if server.sendPermit.Load()&^goPermitWindowBit != unacked || server.sentTail.Load() != uint64(len(payload)+1) || unacked <= 1 || unacked >= server.sentTail.Load() {
+				test.Fatalf("window did not close with only outstanding data: unacked=%d sent=%d buffered=%d permit=%d", unacked, server.sentTail.Load(), server.bufferedTail.Load(), server.sendPermit.Load()&^goPermitWindowBit)
 			}
 			windowUpdate := func(event kernelTCPEvent) bool {
 				return !event.outgoing && event.flags == header.TCPFlagAck && event.window > 0

@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	goWakeIdent            = 0
-	goEngineInlineTransmit = true
+	goWakeIdent       = 0
+	goEngineTransmits = true
 
 	goDarwinTransmitBatch = 64
 	goDarwinBatchHeader   = 128
