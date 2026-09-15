@@ -24,7 +24,6 @@ type UDPEgressPoolOptions struct {
 	Control          control.Func
 	InterfaceFinder  control.InterfaceFinder
 	InterfaceMonitor DefaultInterfaceMonitor
-	ExcludeInterface string
 	IsExempt         func() bool
 }
 
@@ -34,7 +33,6 @@ type UDPEgressPool struct {
 	control              control.Func
 	interfaceFinder      control.InterfaceFinder
 	interfaceMonitor     DefaultInterfaceMonitor
-	excludeInterface     string
 	isExempt             func() bool
 	access               sync.Mutex
 	port                 uint16
@@ -70,7 +68,6 @@ func NewUDPEgressPool(options UDPEgressPoolOptions) *UDPEgressPool {
 		control:              options.Control,
 		interfaceFinder:      options.InterfaceFinder,
 		interfaceMonitor:     options.InterfaceMonitor,
-		excludeInterface:     options.ExcludeInterface,
 		isExempt:             options.IsExempt,
 		anchorInterfaceIndex: -1,
 		members:              make(map[udpEgressSpec]*udpEgressMember),
@@ -182,8 +179,7 @@ func (p *UDPEgressPool) rebuildLocked() {
 				networkInterface.Flags&net.FlagLoopback != 0 ||
 				networkInterface.Flags&net.FlagPointToPoint != 0 ||
 				networkInterface.Flags&net.FlagBroadcast == 0 ||
-				networkInterface.Index == p.anchorInterfaceIndex ||
-				networkInterface.Name == p.excludeInterface {
+				networkInterface.Index == p.anchorInterfaceIndex {
 				continue
 			}
 			for _, prefix := range networkInterface.Addresses {
