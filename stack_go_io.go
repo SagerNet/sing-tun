@@ -46,10 +46,14 @@ type goPlatformIO interface {
 	readBurst(frames []goFrame, options N.ReadWaitOptions) (count int, drained bool, err error)
 	writeFrame(frame [][]byte, meta ForwardFrameMeta) error
 	writePacket(packet []byte, meta ForwardFrameMeta) error
-	writeData(frame [][]byte, meta ForwardFrameMeta) error
+	writeDatagram(packet []byte, meta ForwardFrameMeta) error
+	writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error
 	writePacketBatch(frames []goUDPFrame) error
+	transmitBacklogBelowBatch() bool
 	releaseReadBuffers()
 	flush()
+	mtu() int
+	supportsSockets() bool
 	transmitPrefix() int
 	transmitChecksumOffload() bool
 	transmitSegmentOffload() bool
@@ -71,10 +75,7 @@ func (w *goWriteback) WriteReturnPackets(packets [][]byte) error {
 	prefix := w.platformIO.transmitPrefix()
 	var writeErr error
 	for _, packet := range packets {
-		err := goIgnoreDropped(w.platformIO.writePacket(packet[prefix:], ForwardFrameMeta{}))
-		if err != nil {
-			writeErr = E.Errors(writeErr, err)
-		}
+		writeErr = E.Errors(writeErr, goIgnoreDropped(w.platformIO.writeDatagram(packet[prefix:], ForwardFrameMeta{})))
 	}
 	return writeErr
 }
