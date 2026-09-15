@@ -10,12 +10,14 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -32,6 +34,9 @@ type kernelStackConfig struct {
 	mtu                  uint32
 	gso                  bool
 	multiQueue           bool
+	memoryLink           bool
+	memoryOutbound       bool
+	noHandler            bool
 	prepare              func(*testing.T, *Options)
 	configure            func(*testing.T, Options)
 	ctx                  context.Context
@@ -50,6 +55,8 @@ type kernelAccept struct {
 
 type kernelStackFixture struct {
 	stack                *Go
+	memoryTun            *MemoryTun
+	bridge               *memoryBridge
 	options              Options
 	access               sync.Mutex
 	tcp                  map[uint16]chan kernelAccept
@@ -113,9 +120,20 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 	if config.ctx == nil {
 		config.ctx = context.Background()
 	}
+	var stackTun Tun
+	stackTun = device
+	if config.memoryLink {
+		fixture.bridge = newMemoryBridge(t, device, int(fixture.options.MTU), config.memoryOutbound)
+		fixture.memoryTun = fixture.bridge.memoryTun
+		stackTun = fixture.memoryTun
+	}
+	var handler Handler = fixture
+	if config.noHandler {
+		handler = nil
+	}
 	stackOptions := StackOptions{
-		Context: config.ctx, Tun: device, TunOptions: fixture.options,
-		Handler: fixture, Logger: logger.NOP(), UDPTimeout: time.Minute, ICMPTimeout: time.Minute,
+		Context: config.ctx, Tun: stackTun, TunOptions: fixture.options,
+		Handler: handler, Logger: logger.NOP(), UDPTimeout: time.Minute, ICMPTimeout: time.Minute,
 		UDPMapping: config.udpMapping, UDPFiltering: config.udpFiltering,
 		TCPCongestionControl: config.congestion,
 	}
@@ -145,6 +163,191 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 	}
 	t.Cleanup(func() { stack.Close() })
 	return fixture
+}
+
+type memoryBridge struct {
+	device           Tun
+	memoryTun        *MemoryTun
+	inbound          bridgeGate
+	outbound         bridgeGate
+	outboundLargest  atomic.Int64
+	outboundDrop     atomic.Int32
+	observerAccess   sync.Mutex
+	inboundObserver  func(packet []byte)
+	outboundObserver func(packet []byte)
+	outboundFilter   func(packet []byte) bool
+	done             chan struct{}
+}
+
+type bridgeGate struct {
+	access sync.Mutex
+	resume *sync.Cond
+	paused bool
+}
+
+func (g *bridgeGate) pass() {
+	g.access.Lock()
+	for g.paused {
+		g.resume.Wait()
+	}
+	g.access.Unlock()
+}
+
+func (g *bridgeGate) pause(paused bool) {
+	g.access.Lock()
+	g.paused = paused
+	g.access.Unlock()
+	g.resume.Broadcast()
+}
+
+func newMemoryBridge(t *testing.T, device Tun, mtu int, callback bool) *memoryBridge {
+	bridge := &memoryBridge{device: device, done: make(chan struct{})}
+	bridge.inbound.resume = sync.NewCond(&bridge.inbound.access)
+	bridge.outbound.resume = sync.NewCond(&bridge.outbound.access)
+	memoryOptions := MemoryTunOptions{MTU: mtu}
+	if callback {
+		memoryOptions.Outbound = bridge.writeOutbound
+	}
+	bridge.memoryTun = NewMemoryTun(memoryOptions)
+	t.Cleanup(func() { bridge.memoryTun.Close() })
+	go bridge.pumpInbound()
+	if !callback {
+		go bridge.pumpOutbound()
+	}
+	t.Cleanup(func() {
+		close(bridge.done)
+		bridge.inbound.pause(false)
+		bridge.outbound.pause(false)
+	})
+	return bridge
+}
+
+func (b *memoryBridge) pumpInbound() {
+	storage := make([]byte, 65536+PacketOffset)
+	for {
+		n, err := b.device.Read(storage)
+		if err != nil {
+			return
+		}
+		if n <= PacketOffset {
+			continue
+		}
+		b.inbound.pass()
+		select {
+		case <-b.done:
+			return
+		default:
+		}
+		b.observerAccess.Lock()
+		observer := b.inboundObserver
+		b.observerAccess.Unlock()
+		if observer != nil {
+			observer(storage[PacketOffset:n])
+		}
+		_, err = b.memoryTun.WritePackets([][]byte{storage[PacketOffset:n]})
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (b *memoryBridge) pumpOutbound() {
+	storage := make([][]byte, 64)
+	for index := range storage {
+		storage[index] = make([]byte, 65536+PacketOffset)
+	}
+	sizes := make([]int, len(storage))
+	for {
+		count, err := b.memoryTun.ReadPackets(storage, sizes, PacketOffset)
+		if err != nil {
+			return
+		}
+		b.outbound.pass()
+		select {
+		case <-b.done:
+			return
+		default:
+		}
+		for index := range count {
+			err = b.forwardOutbound(storage[index][:PacketOffset+sizes[index]])
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (b *memoryBridge) writeOutbound(packets []*buf.Buffer) error {
+	defer buf.ReleaseMulti(packets)
+	for _, packet := range packets {
+		b.outbound.pass()
+		select {
+		case <-b.done:
+			return os.ErrClosed
+		default:
+		}
+		frame := make([]byte, PacketOffset+packet.Len())
+		copy(frame[PacketOffset:], packet.Bytes())
+		err := b.forwardOutbound(frame)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *memoryBridge) forwardOutbound(frame []byte) error {
+	packet := frame[PacketOffset:]
+	if b.outboundDrop.Load() > 0 && b.outboundDrop.Add(-1) >= 0 {
+		return nil
+	}
+	b.observerAccess.Lock()
+	observer := b.outboundObserver
+	filter := b.outboundFilter
+	b.observerAccess.Unlock()
+	if filter != nil && !filter(packet) {
+		return nil
+	}
+	if observer != nil {
+		observer(packet)
+	}
+	for {
+		largest := b.outboundLargest.Load()
+		if int64(len(packet)) <= largest || b.outboundLargest.CompareAndSwap(largest, int64(len(packet))) {
+			break
+		}
+	}
+	PacketFillHeader(frame, header.IPVersion(packet))
+	_, err := b.device.Write(frame)
+	return err
+}
+
+func (b *memoryBridge) pauseOutbound(paused bool) {
+	b.outbound.pause(paused)
+}
+
+func (b *memoryBridge) pauseInbound(paused bool) {
+	b.inbound.pause(paused)
+}
+
+func (b *memoryBridge) observe(inbound func(packet []byte), outbound func(packet []byte)) {
+	b.observerAccess.Lock()
+	b.inboundObserver = inbound
+	b.outboundObserver = outbound
+	b.observerAccess.Unlock()
+}
+
+func (b *memoryBridge) filterOutbound(filter func(packet []byte) bool) {
+	b.observerAccess.Lock()
+	b.outboundFilter = filter
+	b.observerAccess.Unlock()
+}
+
+func (f *kernelStackFixture) kernelAddress(ipv6 bool) netip.Addr {
+	if ipv6 {
+		return f.options.Inet6Address[0].Addr()
+	}
+	return f.options.Inet4Address[0].Addr()
 }
 
 func (f *kernelStackFixture) JudgeFlow(uint8, netip.AddrPort, netip.AddrPort, []byte) FlowVerdict {
@@ -184,11 +387,7 @@ func (f *kernelStackFixture) NewPacketConnectionEx(_ context.Context, conn N.Pac
 }
 
 func (f *kernelStackFixture) address(ipv6 bool, port uint16) string {
-	address := f.options.Inet4Address[0].Addr().Next()
-	if ipv6 {
-		address = f.options.Inet6Address[0].Addr().Next()
-	}
-	return netip.AddrPortFrom(address, port).String()
+	return netip.AddrPortFrom(f.kernelAddress(ipv6).Next(), port).String()
 }
 
 func (f *kernelStackFixture) pair(t *testing.T, ipv6 bool) (*net.TCPConn, *GoConn) {
@@ -362,13 +561,19 @@ func TestGoKernelStream(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		configs = append(configs, kernelStackConfig{mtu: 1500, gso: true}, kernelStackConfig{mtu: 1500, multiQueue: true}, kernelStackConfig{mtu: 1500, gso: true, multiQueue: true})
 	}
+	if runtime.GOOS != "windows" {
+		configs = append(configs, kernelStackConfig{mtu: 1500, memoryLink: true}, kernelStackConfig{mtu: 9000, memoryLink: true})
+	}
 	for _, config := range configs {
-		t.Run(fmt.Sprintf("mtu=%d/gso=%v/mq=%v", config.mtu, config.gso, config.multiQueue), func(configurationTest *testing.T) {
+		t.Run(fmt.Sprintf("mtu=%d/gso=%v/mq=%v/memory=%v", config.mtu, config.gso, config.multiQueue, config.memoryLink), func(configurationTest *testing.T) {
 			fixture := newKernelStackFixture(configurationTest, config)
 			for _, ipv6 := range []bool{false, true} {
 				configurationTest.Run(fmt.Sprintf("ipv6=%v", ipv6), func(addressTest *testing.T) {
 					addressTest.Parallel()
 					for _, splice := range []bool{false, true} {
+						if splice && config.memoryLink {
+							continue
+						}
 						addressTest.Run(fmt.Sprintf("duplex/splice=%v", splice), func(scenarioTest *testing.T) {
 							scenarioTest.Parallel()
 							var client, server net.Conn
@@ -435,11 +640,6 @@ func TestGoKernelStream(t *testing.T) {
 		})
 	}
 }
-
-var (
-	_ Handler      = (*kernelStackFixture)(nil)
-	_ SpliceSocket = (*kernelSocket)(nil)
-)
 
 func TestGoKernelFlowControl(t *testing.T) {
 	previous := runtime.GOMAXPROCS(4)
