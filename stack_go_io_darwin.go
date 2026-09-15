@@ -53,6 +53,7 @@ type goDarwinIO struct {
 	stack                 *Go
 	tunFd                 int
 	kqueueFd              int
+	pollAccess            sync.RWMutex
 	transmitAccess        *sync.Mutex
 	receiveBuffers        []*buf.Buffer
 	readWaitOptions       N.ReadWaitOptions
@@ -401,9 +402,12 @@ func (o *goDarwinIO) writePacket(packet []byte, meta ForwardFrameMeta) error {
 	return o.writeFrame(frame[:], meta)
 }
 
-func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta) error {
+func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error {
 	o.transmitAccess.Lock()
 	defer o.transmitAccess.Unlock()
+	if o.closing.Load() {
+		return os.ErrClosed
+	}
 	frameLength := 0
 	for _, segment := range frame {
 		frameLength += len(segment)
@@ -460,6 +464,14 @@ func (o *goDarwinIO) writeUnbatchedLocked(frame [][]byte) error {
 	return o.writePacketLocked(frame)
 }
 
+func (o *goDarwinIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error {
+	return o.writePacket(packet, meta)
+}
+
+func (o *goDarwinIO) transmitBacklogBelowBatch() bool {
+	return true
+}
+
 func (o *goDarwinIO) flush() {
 	o.transmitAccess.Lock()
 	o.flushLocked()
@@ -512,6 +524,9 @@ func (o *goDarwinIO) gateRoom(pending int) int {
 // consumed every frame handed to it: the ones before the failure were delivered, the failing one
 // is charged to the kernel (an ENOSPC leaks it), the rest are dropped and left to retransmission.
 func (o *goDarwinIO) flushLocked() {
+	if o.closing.Load() {
+		return
+	}
 	pending := o.batchCount - o.batchStart
 	if pending == 0 {
 		o.gateReleaseLocked()
@@ -523,6 +538,9 @@ func (o *goDarwinIO) flushLocked() {
 		messages := o.batchMessages[o.batchStart : o.batchStart+room]
 		n, errno := rawfile.NonBlockingSendMMsg(o.tunFd, messages)
 		if errno == unix.EINTR {
+			if o.closing.Load() {
+				return
+			}
 			continue
 		}
 		if errno == unix.ENOBUFS || errno == unix.EAGAIN {
@@ -676,6 +694,9 @@ func (o *goDarwinIO) compactBatch() {
 }
 
 func (o *goDarwinIO) writePacketLocked(frame [][]byte) error {
+	if o.closing.Load() {
+		return os.ErrClosed
+	}
 	defer func() { clear(o.transmitIovecs) }()
 	if o.gateRoom(1) == 0 {
 		o.gateBlockLocked()
@@ -730,11 +751,24 @@ func (o *goDarwinIO) transmitChecksumOffload() bool {
 	return false
 }
 
+func (o *goDarwinIO) mtu() int {
+	return o.stack.mtu
+}
+
+func (o *goDarwinIO) supportsSockets() bool {
+	return true
+}
+
 func (o *goDarwinIO) transmitSegmentOffload() bool {
 	return false
 }
 
 func (o *goDarwinIO) armTransmitWritable() (bool, error) {
+	o.pollAccess.RLock()
+	defer o.pollAccess.RUnlock()
+	if o.closing.Load() {
+		return false, os.ErrClosed
+	}
 	if o.gateBlocked.Load() {
 		return true, nil
 	}
@@ -750,17 +784,34 @@ func (o *goDarwinIO) takeTransmitWritable() bool {
 }
 
 func (o *goDarwinIO) wake() {
+	o.pollAccess.RLock()
+	defer o.pollAccess.RUnlock()
+	if o.closing.Load() {
+		return
+	}
 	_, _ = unix.Kevent(o.kqueueFd, o.wakeEvent[:], nil, nil)
 }
 
 func (o *goDarwinIO) close() error {
 	o.closing.Store(true)
+	o.transmitAccess.Lock()
+	defer o.transmitAccess.Unlock()
+	o.pollAccess.Lock()
+	defer o.pollAccess.Unlock()
+	clear(o.batchIovecs)
+	clear(o.batchMessages)
+	o.batchSpill = nil
+	o.batchCount = 0
+	o.batchStart = 0
 	return unix.Close(o.kqueueFd)
 }
 
 func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {
 	o.transmitAccess.Lock()
 	defer o.transmitAccess.Unlock()
+	if o.closing.Load() {
+		return os.ErrClosed
+	}
 	defer func() {
 		clear(o.packetMessages[:])
 		clear(o.packetIovecs[:])
@@ -811,6 +862,9 @@ func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {
 		}
 		written, errno := rawfile.NonBlockingSendMMsg(o.tunFd, o.packetMessages[:count])
 		if errno == unix.EINTR {
+			if o.closing.Load() {
+				return os.ErrClosed
+			}
 			continue
 		}
 		if (errno == unix.EMSGSIZE || errno == unix.ENOBUFS) && count > 1 {

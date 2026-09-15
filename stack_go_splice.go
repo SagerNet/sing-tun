@@ -67,6 +67,9 @@ func (e *goEngine) allocateSpliceToken(stream *GoConn, packet *GoPacketConn) uin
 	}
 	slot := &e.spliceSlots[index]
 	slot.generation = (slot.generation + 1) & (1<<goSpliceTokenShift - 1)
+	if slot.generation == 0 {
+		slot.generation = 1
+	}
 	slot.stream = stream
 	slot.packet = packet
 	return index<<goSpliceTokenShift | slot.generation
@@ -81,11 +84,7 @@ func (e *goEngine) releaseSpliceToken(token uint32) {
 }
 
 func (e *goEngine) spliceSlot(token uint32) *goSpliceSlot {
-	index := token >> goSpliceTokenShift
-	if index >= uint32(len(e.spliceSlots)) {
-		return nil
-	}
-	slot := &e.spliceSlots[index]
+	slot := &e.spliceSlots[token>>goSpliceTokenShift]
 	if slot.generation != token&(1<<goSpliceTokenShift-1) {
 		return nil
 	}
@@ -130,6 +129,9 @@ type goSpliceStream struct {
 }
 
 func (c *GoConn) Splice(owner SpliceSocket, options SpliceOptions) bool {
+	if !c.engine.platformIO.supportsSockets() {
+		return false
+	}
 	c.access.Lock()
 	eligible := !c.dead && c.phase == goPhaseEstablished && !c.spliced && c.splicePending == nil
 	c.access.Unlock()
@@ -145,7 +147,7 @@ func (c *GoConn) Splice(owner SpliceSocket, options SpliceOptions) bool {
 	socket, err := goSpliceSocket(owner)
 	if err != nil {
 		owner.Detach()
-		c.engine.stack.logger.Debug(E.Cause(err, "go: splice ", c.destination))
+		c.engine.stack.logger.Debug(E.Cause(err, "go: splice ", c.local))
 		return false
 	}
 	splice.socket = socket
@@ -394,8 +396,9 @@ func (e *goEngine) spliceReadPeer(conn *GoConn) {
 	// socket is waiting. Unacknowledged and out-of-order data remain retained.
 	defer conn.releaseDrainedSlabs()
 	splice := conn.splice
+	capacity := conn.loadTransmitCapacity()
 	for !splice.downloadClosed {
-		budget := conn.writeBudget(0)
+		budget := conn.writeBudget(0, capacity)
 		if budget <= 0 {
 			splice.readStalled = true
 			e.spliceSetInterest(conn, splice.interest&^goInterestRead)
@@ -466,7 +469,7 @@ func (e *goEngine) spliceResume(conn *GoConn) {
 		return
 	}
 	splice := conn.splice
-	if splice == nil || !splice.readStalled || splice.downloadClosed || conn.writeBudget(0) <= 0 {
+	if splice == nil || !splice.readStalled || splice.downloadClosed || conn.writeBudget(0, conn.loadTransmitCapacity()) <= 0 {
 		return
 	}
 	splice.readStalled = false
@@ -523,6 +526,9 @@ func (c *UDPNatConn) Splice(owner SpliceSocket, options SplicePacketOptions) boo
 }
 
 func (w *GoPacketConn) spliceTo(owner SpliceSocket, options SplicePacketOptions) bool {
+	if !w.platformIO.supportsSockets() {
+		return false
+	}
 	if options.NAT.Origin.IsValid() && (!options.NAT.Origin.IsIP() || !options.NAT.Destination.IsIP() && options.Offload == nil) {
 		return false
 	}
@@ -709,6 +715,39 @@ func (e *goEngine) releasePending(message *goMessage) {
 		if pending != nil {
 			e.packetSpliceRelease(pending, net.ErrClosed)
 		}
+	case goMessageConnDial:
+		conn := message.conn
+		conn.access.Lock()
+		if conn.err == nil {
+			conn.err = net.ErrClosed
+		}
+		dead := conn.dead
+		conn.dead = true
+		conn.access.Unlock()
+		if !dead {
+			close(conn.establishedSignal)
+			close(conn.closeSignal)
+		}
+	case goMessageUDPOpen:
+		socket := message.socket
+		socket.access.Lock()
+		if socket.openErr == nil {
+			socket.openErr = net.ErrClosed
+		}
+		socket.access.Unlock()
+		close(socket.openSignal)
+	case goMessageUDPClose:
+		message.socket.drain()
+	case goMessageListenOpen:
+		listener := message.listener
+		listener.access.Lock()
+		if listener.openErr == nil {
+			listener.openErr = net.ErrClosed
+		}
+		listener.access.Unlock()
+		close(listener.openSignal)
+	case goMessageListenClose:
+		message.listener.drain()
 	case goMessageInject:
 		e.releaseInjected()
 	}
@@ -932,7 +971,7 @@ func (e *goEngine) flushPacketFrames() {
 }
 
 func (e *goEngine) packetSpliceDownload(w *GoPacketConn, data []byte, destination M.Socksaddr) {
-	if len(data)+w.templateLength > w.mtu {
+	if len(data)+w.templateLength > w.platformIO.mtu() {
 		e.flushPacketFrames()
 		buffer := buf.NewSize(w.FrontHeadroom() + len(data))
 		buffer.Resize(w.FrontHeadroom(), 0)

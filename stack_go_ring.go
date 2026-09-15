@@ -649,10 +649,6 @@ func (s *goScoreboard) split(index int, offset uint64) {
 	s.entries[index].endOffset = offset
 }
 
-func (s *goScoreboard) reset() {
-	s.entries = nil
-}
-
 func (s *goScoreboard) trim() {
 	if len(s.entries) == 0 && cap(s.entries) > goScoreboardInlineCapacity {
 		s.entries = nil
