@@ -43,21 +43,77 @@ func (c *GoConn) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	c.writeAccess.Lock()
-	defer c.writeAccess.Unlock()
-	if !c.enterWriter() {
-		return 0, net.ErrClosed
+	var n int
+	if c.enterWriter() {
+		n, err = c.writeLocked(p)
+		c.exitWriter()
+	} else {
+		err = net.ErrClosed
 	}
-	defer c.exitWriter()
-	return c.writeLocked(p)
+	c.writeAccess.Unlock()
+	c.engine.reapAfterExit()
+	return n, err
+}
+
+func (c *GoConn) WriteBuffer(buffer *buf.Buffer) error {
+	err := c.awaitHandshake(context.Background(), c.writeDeadline.Wait())
+	if err != nil {
+		buffer.Release()
+		return err
+	}
+	c.writeAccess.Lock()
+	if c.enterWriter() {
+		err = c.writeBufferLocked(buffer)
+		c.exitWriter()
+	} else {
+		buffer.Release()
+		err = net.ErrClosed
+	}
+	c.writeAccess.Unlock()
+	c.engine.reapAfterExit()
+	return err
+}
+
+func (c *GoConn) enterWriter() bool {
+	c.access.Lock()
+	defer c.access.Unlock()
+	if c.dead || c.spliced || c.splicePending != nil {
+		return false
+	}
+	c.writing = true
+	return true
+}
+
+func (c *GoConn) exitWriter() {
+	c.access.Lock()
+	c.writing = false
+	dead := c.dead
+	finRequested := c.finRequested
+	c.access.Unlock()
+	if !dead {
+		sent := c.sentTail.Load()
+		if c.bufferedTail.Load() > sent {
+			c.transmitPublished()
+		} else {
+			c.checkAppLimited(0, c.sendPermit.Load()&^goPermitWindowBit, sent)
+		}
+	}
+	if finRequested {
+		c.engine.postMessage(&c.closeMessage)
+	}
 }
 
 func (c *GoConn) writeLocked(p []byte) (int, error) {
 	total := 0
 	for {
-		if c.connState.Load() >= goConnStateAborted {
+		c.access.Lock()
+		dead := c.dead
+		writeShut := c.writeShut
+		c.access.Unlock()
+		if dead {
 			return total, c.closeError()
 		}
-		if c.writeShut.Load() {
+		if writeShut {
 			return total, net.ErrClosed
 		}
 		select {
@@ -88,31 +144,23 @@ func (c *GoConn) writeLocked(p []byte) (int, error) {
 	}
 }
 
-func (c *GoConn) WriteBuffer(buffer *buf.Buffer) error {
-	err := c.awaitHandshake(context.Background(), c.writeDeadline.Wait())
-	if err != nil {
-		buffer.Release()
-		return err
-	}
-	c.writeAccess.Lock()
-	defer c.writeAccess.Unlock()
-	if !c.enterWriter() {
-		buffer.Release()
-		return net.ErrClosed
-	}
-	defer c.exitWriter()
+func (c *GoConn) writeBufferLocked(buffer *buf.Buffer) error {
 	length := buffer.Len()
 	if length > goTransmitCapacityMax {
 		defer buffer.Release()
-		_, err = c.writeLocked(buffer.Bytes())
+		_, err := c.writeLocked(buffer.Bytes())
 		return err
 	}
 	for {
-		if c.connState.Load() >= goConnStateAborted {
+		c.access.Lock()
+		dead := c.dead
+		writeShut := c.writeShut
+		c.access.Unlock()
+		if dead {
 			buffer.Release()
 			return c.closeError()
 		}
-		if c.writeShut.Load() {
+		if writeShut {
 			buffer.Release()
 			return net.ErrClosed
 		}
@@ -130,10 +178,10 @@ func (c *GoConn) WriteBuffer(buffer *buf.Buffer) error {
 		if budget < length {
 			if budget > 0 && c.storeEmpty() {
 				defer buffer.Release()
-				_, err = c.writeLocked(buffer.Bytes())
+				_, err := c.writeLocked(buffer.Bytes())
 				return err
 			}
-			err = c.parkWriter(length)
+			err := c.parkWriter(length)
 			if err != nil {
 				buffer.Release()
 				return err
@@ -143,7 +191,7 @@ func (c *GoConn) WriteBuffer(buffer *buf.Buffer) error {
 		buffered := c.bufferedTail.Load()
 		if !c.transmitStore.adopt(buffered, buffer) {
 			defer buffer.Release()
-			_, err = c.writeLocked(buffer.Bytes())
+			_, err := c.writeLocked(buffer.Bytes())
 			return err
 		}
 		c.publishBuffered(buffered + uint64(length))
@@ -161,21 +209,22 @@ func (c *GoConn) WriterMTU() int {
 
 func (c *GoConn) publishBuffered(tail uint64) {
 	c.bufferedTail.Store(tail)
-	if c.transmitterActive.Load() != 0 {
-		c.transmitSignal.notify()
-		return
-	}
-	c.transmitInline()
+	c.transmitPublished()
 }
 
-func (c *GoConn) transmitInline() {
+func (c *GoConn) transmitPublished() {
+	if goEngineTransmits {
+		c.engine.postMessage(&c.transmitMessage)
+		return
+	}
 	for {
-		if !c.transmitOwner.CompareAndSwap(0, 1) {
+		if !c.transmitAccess.TryLock() {
 			c.transmitSignal.notify()
 			return
 		}
-		_, result := c.transmitLoop(false, 0)
-		c.transmitOwner.Store(0)
+		_, result, armed := c.transmitLoop(false, 0)
+		c.transmitAccess.Unlock()
+		c.afterTransmit(armed)
 		switch result {
 		case goTransmitBlocked:
 			c.wakeTransmitterGoroutine()
@@ -183,35 +232,113 @@ func (c *GoConn) transmitInline() {
 		case goTransmitPaced:
 			return
 		}
-		if c.connState.Load() >= goConnStateAborted || c.nextTransmitLength() == 0 {
+		if c.closed() || c.nextTransmitLength() == 0 {
 			return
 		}
 	}
 }
 
-func (c *GoConn) transmitOnEngine() bool {
-	budget := c.engine.inlineTransmitBudget
-	if budget <= 0 {
-		return false
+func (c *GoConn) afterTransmit(armed bool) {
+	if armed {
+		c.engine.postMessage(&c.retransmitMessage)
 	}
-	if !c.transmitOwner.CompareAndSwap(0, 1) {
-		c.transmitSignal.notify()
-		return true
+	c.access.Lock()
+	finRequested := c.finRequested
+	c.access.Unlock()
+	if finRequested && c.sentTail.Load() == c.bufferedTail.Load() {
+		c.engine.postMessage(&c.closeMessage)
 	}
-	written, result := c.transmitLoop(false, budget)
-	c.transmitOwner.Store(0)
-	c.engine.inlineTransmitBudget = budget - written
+}
+
+func (e *goEngine) transmitOnEngine(conn *GoConn, budget int) {
+	if !conn.transmitAccess.TryLock() {
+		conn.transmitSignal.notify()
+		return
+	}
+	written, result, armed := conn.transmitLoop(false, budget)
+	conn.transmitAccess.Unlock()
+	if budget > 0 {
+		e.inlineTransmitBudget = budget - written
+	}
+	if conn.retransmitDeadline == 0 && (armed || conn.hasOutstanding()) {
+		e.rearmRetransmit(conn)
+	}
+	e.maybeSendFin(conn)
 	switch result {
 	case goTransmitBlocked:
-		return false
-	case goTransmitPaced:
-		return true
+		e.handleTransmitBlocked(conn)
+	case goTransmitDone:
+		if !conn.dead && conn.nextTransmitLength() != 0 {
+			e.postMessage(&conn.transmitMessage)
+		}
 	}
-	return c.connState.Load() >= goConnStateAborted || c.nextTransmitLength() == 0
+}
+
+func (e *goEngine) handleTransmitRequest(conn *GoConn) {
+	if conn.dead {
+		return
+	}
+	if conn.splice != nil {
+		e.spliceResume(conn)
+		return
+	}
+	e.transmitOnEngine(conn, 0)
+}
+
+func (e *goEngine) retryBlockedOnEngine(conn *GoConn) {
+	if !conn.transmitAccess.TryLock() {
+		conn.transmitSignal.notify()
+		return
+	}
+	segment := conn.blockedSegment
+	end := segment.offset + uint64(segment.length)
+	err := conn.transmitFrame(&segment)
+	switch err {
+	case nil:
+	case errGoTransmitBlocked:
+		conn.amendDescriptors(segment.offset, segment.length, goDescriptorNoSample)
+		conn.transmitAccess.Unlock()
+		e.handleTransmitBlocked(conn)
+		return
+	case errGoFrameDropped:
+		conn.amendDescriptors(segment.offset, segment.length, goDescriptorDropped)
+		conn.blockedValid = false
+		conn.blockedFrame = nil
+		conn.transmittedTail.Store(end)
+		conn.transmitAccess.Unlock()
+		e.handleDroppedFrames(conn)
+		return
+	default:
+		conn.transmitAccess.Unlock()
+		e.abortConn(conn, E.Cause(err, "go: write tun"))
+		return
+	}
+	if conn.congestion.pacing {
+		conn.advancePacing(e.now(), segment.length)
+	}
+	conn.blockedValid = false
+	conn.blockedFrame = nil
+	conn.transmittedTail.Store(end)
+	conn.transmitAccess.Unlock()
+	if conn.splice != nil {
+		e.spliceResume(conn)
+		if conn.splice != nil && conn.splice.downloadClosed {
+			e.maybeSendFin(conn)
+			e.spliceMaybeFinish(conn)
+		}
+		return
+	}
+	e.transmitOnEngine(conn, 0)
 }
 
 func (c *GoConn) wakeTransmitterGoroutine() {
-	if c.transmitterActive.CompareAndSwap(0, 1) {
+	c.access.Lock()
+	spawn := !c.transmitterRunning && !c.dead
+	if spawn {
+		c.transmitterRunning = true
+	}
+	c.access.Unlock()
+	if spawn {
 		go c.runTransmitter()
 		return
 	}
@@ -219,21 +346,24 @@ func (c *GoConn) wakeTransmitterGoroutine() {
 }
 
 func (c *GoConn) hasDataWaiting() bool {
-	return c.bufferedTail.Load() > c.sentTail.Load() || c.writerParked.Load()
+	return c.bufferedTail.Load() > c.sentTail.Load() || c.writerWaiting.Load() != 0
 }
 
 func (c *GoConn) runTransmitter() {
 	defer func() {
-		c.transmitterActive.Store(0)
+		c.access.Lock()
+		c.transmitterRunning = false
+		c.access.Unlock()
 		c.engine.reapAfterExit()
 	}()
 	for {
-		if c.connState.Load() >= goConnStateAborted {
+		if c.closed() {
 			return
 		}
-		if c.transmitOwner.CompareAndSwap(0, 1) {
-			c.transmitLoop(true, 0)
-			c.transmitOwner.Store(0)
+		if c.transmitAccess.TryLock() {
+			_, _, armed := c.transmitLoop(true, 0)
+			c.transmitAccess.Unlock()
+			c.afterTransmit(armed)
 		}
 		select {
 		case <-c.transmitSignal:
@@ -250,20 +380,26 @@ func (c *GoConn) nextTransmitLength() int {
 		return 0
 	}
 	permit := c.sendPermit.Load()
-	if permit <= sent {
-		if c.permitWindowBound.Load() {
+	if permit&^goPermitWindowBit <= sent {
+		if permit&goPermitWindowBit != 0 {
 			c.windowLimitedSince.Store(true)
 		}
 		return 0
 	}
+	permit &^= goPermitWindowBit
 	packets := int32(c.sendPacketPermit.Load() - c.dataSegmentsOut.Load())
 	if packets <= 0 {
 		c.windowLimitedSince.Store(true)
 		return 0
 	}
 	length := int(min(pending, permit-sent, uint64(packets)*uint64(c.effectiveMSS)))
-	if pending < uint64(c.effectiveMSS) && c.writerActive.Load() != 0 && sent > c.sendUnacked.Load() {
-		return 0
+	if pending < uint64(c.effectiveMSS) && sent > c.sendUnacked.Load() {
+		c.access.Lock()
+		writing := c.writing
+		c.access.Unlock()
+		if writing {
+			return 0
+		}
 	}
 	// Windows delays the ACK of a lone segment by 40 ms and its receive window auto-tuning never
 	// grows while every window is drained by one segment, so a window narrower than two segments is
@@ -289,7 +425,7 @@ func (c *GoConn) writeBudget(pending int) int {
 		}
 	}
 	unacked := c.sendUnacked.Load()
-	permit := max(c.sendPermit.Load(), unacked)
+	permit := max(c.sendPermit.Load()&^goPermitWindowBit, unacked)
 	limit := min(permit+max(permit-unacked, goTransmitReadAhead), released+goTransmitCapacityMax)
 	budget := int64(limit) - int64(buffered)
 	if pending > 0 {
@@ -311,33 +447,36 @@ func (c *GoConn) writeReady(required int) bool {
 }
 
 func (c *GoConn) parkWriter(required int) error {
-	c.writerNeeds.Store(int32(required))
-	c.writerParked.Store(true)
+	c.writerWaiting.Store(int32(required))
 	c.writeSignal.drain()
 	if c.writeReady(required) {
-		c.writerParked.Store(false)
+		c.writerWaiting.Store(0)
 		return nil
 	}
-	if c.connState.Load() >= goConnStateAborted {
-		c.writerParked.Store(false)
+	c.access.Lock()
+	dead := c.dead
+	writeShut := c.writeShut
+	c.access.Unlock()
+	if dead {
+		c.writerWaiting.Store(0)
 		return c.closeError()
 	}
-	if c.writeShut.Load() {
-		c.writerParked.Store(false)
+	if writeShut {
+		c.writerWaiting.Store(0)
 		return net.ErrClosed
 	}
 	deadlineSignal := c.writeDeadline.Wait()
 	select {
 	case <-c.writeSignal:
 	case <-deadlineSignal:
-		c.writerParked.Store(false)
+		c.writerWaiting.Store(0)
 		return os.ErrDeadlineExceeded
 	case <-c.closeSignal:
-		c.writerParked.Store(false)
+		c.writerWaiting.Store(0)
 		return c.closeError()
 	}
-	c.writerParked.Store(false)
-	if c.connState.Load() >= goConnStateAborted {
+	c.writerWaiting.Store(0)
+	if c.closed() {
 		return c.closeError()
 	}
 	return nil
@@ -350,7 +489,7 @@ func (c *GoConn) parkTransmitBlocked() error {
 	case <-c.closeSignal:
 		return c.closeError()
 	}
-	if c.connState.Load() >= goConnStateAborted {
+	if c.closed() {
 		return c.closeError()
 	}
 	return nil
@@ -364,24 +503,23 @@ const (
 	goTransmitPaced
 )
 
-func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResult) {
+func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResult, bool) {
 	if transmitter {
 		defer c.engine.platformIO.flush()
 	}
-	sentAny := false
 	written := 0
+	armed := false
 	if c.blockedValid {
 		if !transmitter {
-			return written, goTransmitBlocked
+			return written, goTransmitBlocked, armed
 		}
 		if !c.retryBlocked() {
-			return written, goTransmitDone
+			return written, goTransmitDone, armed
 		}
-		sentAny = true
 	}
 	paced := c.congestion.pacing
 	result := goTransmitDone
-	for c.connState.Load() < goConnStateAborted {
+	for !c.closed() {
 		if budget > 0 && written >= budget {
 			break
 		}
@@ -389,9 +527,10 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 		if length == 0 {
 			sent := c.sentTail.Load()
 			pending := c.bufferedTail.Load() - sent
-			c.checkAppLimited(pending, c.sendPermit.Load(), sent)
-			if pending > 0 && !c.permitWindowBound.Load() && sent == c.sendUnacked.Load() {
-				c.armRetransmitIfIdle()
+			permit := c.sendPermit.Load()
+			c.checkAppLimited(pending, permit&^goPermitWindowBit, sent)
+			if pending > 0 && permit&goPermitWindowBit == 0 && sent == c.sendUnacked.Load() {
+				armed = true
 			}
 			break
 		}
@@ -415,6 +554,7 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 		flightEmpty := sent == unacked
 		if flightEmpty {
 			flags |= goDescriptorTxStart
+			armed = true
 		}
 		if !paced {
 			now = c.engine.readClock()
@@ -426,9 +566,9 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 		if flight > c.peakFlight.Load() {
 			c.peakFlight.Store(flight)
 		}
-		sentAny = true
+		permit := c.sendPermit.Load()
 		if int32(c.sendPacketPermit.Load()-c.dataSegmentsOut.Load()) <= 0 ||
-			sent+uint64(length) >= c.sendPermit.Load() && c.permitWindowBound.Load() {
+			sent+uint64(length) >= permit&^goPermitWindowBit && permit&goPermitWindowBit != 0 {
 			c.windowLimitedSince.Store(true)
 		}
 		err := c.transmitFrame(&segment)
@@ -443,25 +583,23 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 			c.blockedSegment = segment
 			c.blockedValid = true
 			if !transmitter {
-				c.finishTransmit(sentAny)
-				return written, goTransmitBlocked
+				return written, goTransmitBlocked, armed
 			}
 			if !c.retryBlocked() {
-				return written, goTransmitDone
+				return written, goTransmitDone, armed
 			}
 		case errGoFrameDropped:
 			c.amendDescriptors(segment.offset, segment.length, goDescriptorDropped)
 			c.transmittedTail.Store(sent + uint64(length))
 			c.engine.postMessage(&c.droppedMessage)
 		default:
-			if c.connState.Load() < goConnStateAborted {
-				c.requestAbort(E.Cause(err, "go: write tun"))
+			if !c.closed() {
+				c.fail(E.Cause(err, "go: write tun"))
 			}
-			return written, goTransmitDone
+			return written, goTransmitDone, armed
 		}
 	}
-	c.finishTransmit(sentAny)
-	return written, result
+	return written, result, armed
 }
 
 func (c *GoConn) retryBlocked() bool {
@@ -480,8 +618,8 @@ func (c *GoConn) retryBlocked() bool {
 		case errGoFrameDropped:
 			c.amendDescriptors(c.blockedSegment.offset, c.blockedSegment.length, goDescriptorDropped)
 		default:
-			if c.connState.Load() < goConnStateAborted {
-				c.requestAbort(E.Cause(err, "go: write tun"))
+			if !c.closed() {
+				c.fail(E.Cause(err, "go: write tun"))
 			}
 			return false
 		}
@@ -494,22 +632,6 @@ func (c *GoConn) retryBlocked() bool {
 			c.engine.postMessage(&c.droppedMessage)
 		}
 		return true
-	}
-}
-
-func (c *GoConn) finishTransmit(sentAny bool) {
-	if !sentAny {
-		return
-	}
-	if c.spliced.Load() {
-		if c.retransmitDeadline == 0 {
-			c.engine.rearmRetransmit(c)
-		}
-		return
-	}
-	c.armRetransmitIfIdle()
-	if c.finRequested.Load() && c.sentTail.Load() == c.bufferedTail.Load() {
-		c.engine.postMessage(&c.closeMessage)
 	}
 }
 
@@ -591,7 +713,7 @@ func (c *GoConn) transmitFrame(segment *goSegment) error {
 			c.transmitSegments = append(c.transmitSegments[:0], packet)
 			frame = c.transmitSegments
 		} else {
-			frame, meta = c.buildFrame(c.transmitScratch[:], c.transmitSegments[:0], segment, &c.transmitStore, offload)
+			frame, meta = c.buildFrame(c.transmitScratch[:], c.transmitSegments[:0], segment, &c.transmitStore, offload, false)
 			c.transmitSegments = frame
 		}
 	}
@@ -605,12 +727,6 @@ func (c *GoConn) transmitFrame(segment *goSegment) error {
 		c.blockedMeta = meta
 	}
 	return err
-}
-
-func (c *GoConn) armRetransmitIfIdle() {
-	if c.retransmitArmed.CompareAndSwap(false, true) {
-		c.engine.postMessage(&c.retransmitMessage)
-	}
 }
 
 type goFrameLayout struct {
@@ -642,7 +758,7 @@ func (c *GoConn) frameLayout(segment *goSegment) goFrameLayout {
 	return layout
 }
 
-func (c *GoConn) encodeHeaders(packet []byte, layout *goFrameLayout, segment *goSegment) uint16 {
+func (c *GoConn) encodeHeaders(packet []byte, layout *goFrameLayout, segment *goSegment, control bool) uint16 {
 	tcpHdr := header.TCP(packet[layout.ipHeaderLength:])
 	receiveAck := c.receiveNextAck.Load()
 	edge := c.receiveEdge.Load()
@@ -650,11 +766,10 @@ func (c *GoConn) encodeHeaders(packet []byte, layout *goFrameLayout, segment *go
 	if edge > receiveAck {
 		window = uint16(min((edge-receiveAck)>>c.localWindowShift, 0xffff))
 	}
-	for {
-		sent := c.sentEdge.Load()
-		if edge <= sent || c.sentEdge.CompareAndSwap(sent, edge) {
-			break
-		}
+	if control {
+		c.sentEdge = max(c.sentEdge, edge)
+	} else if edge > c.dataSentEdge.Load() {
+		c.dataSentEdge.Store(edge)
 	}
 	tcpHdr.Encode(&header.TCPFields{
 		SrcPort:    c.destination.Port,
@@ -721,10 +836,10 @@ func (c *GoConn) offloadMeta(tcpHdr header.TCP, pseudoSum uint16, layout *goFram
 	return meta
 }
 
-func (c *GoConn) buildFrame(scratch []byte, segments [][]byte, segment *goSegment, store *goTransmitStore, offload bool) ([][]byte, ForwardFrameMeta) {
+func (c *GoConn) buildFrame(scratch []byte, segments [][]byte, segment *goSegment, store *goTransmitStore, offload bool, control bool) ([][]byte, ForwardFrameMeta) {
 	layout := c.frameLayout(segment)
 	packet := scratch[:layout.headerLength()]
-	pseudoSum := c.encodeHeaders(packet, &layout, segment)
+	pseudoSum := c.encodeHeaders(packet, &layout, segment, control)
 	segments = append(segments, packet)
 	if segment.length > 0 {
 		segments = store.appendRuns(segments, segment.offset, segment.length)
@@ -745,7 +860,7 @@ func (c *GoConn) buildContiguousFrame(buffer *buf.Buffer, payload []byte, segmen
 	headerLength := layout.headerLength()
 	packet := buffer.ExtendHeader(headerLength)
 	packet = packet[:headerLength+len(payload)]
-	pseudoSum := c.encodeHeaders(packet[:headerLength], &layout, segment)
+	pseudoSum := c.encodeHeaders(packet[:headerLength], &layout, segment, false)
 	tcpHdr := header.TCP(packet[layout.ipHeaderLength:])
 	if offload {
 		return packet, c.offloadMeta(tcpHdr, pseudoSum, &layout, segment)
@@ -830,13 +945,6 @@ func (c *GoConn) buildSynAck(synOptions header.TCPSynOptions, localMSS uint16) {
 
 func (c *GoConn) writeSynAck() error {
 	return goIgnoreDropped(c.engine.platformIO.writePacket(c.synAckImage[:c.synAckLength], ForwardFrameMeta{}))
-}
-
-func (c *GoConn) writeReset() error {
-	var frame [1][]byte
-	segment := goSegment{offset: 0, flags: header.TCPFlagRst | header.TCPFlagAck}
-	segments, _ := c.buildFrame(c.transmitScratch[:], frame[:0], &segment, &c.transmitStore, false)
-	return goIgnoreDropped(c.engine.platformIO.writePacket(segments[0], ForwardFrameMeta{}))
 }
 
 var errGoTransmitBlocked = E.New("go: transmit blocked")

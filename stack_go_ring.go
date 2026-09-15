@@ -501,7 +501,7 @@ func (p *goDescriptorPool) trim() {
 }
 
 // release requires exclusive access to both sides of the ring. For a live
-// connection the engine holds transmitOwner and checks that all sent data is ACKed.
+// connection the engine holds transmitAccess and checks that all sent data is ACKed.
 func (r *goDescriptorRing) release() {
 	for index := range r.blocks {
 		if block := r.blocks[index].Swap(nil); block != nil {
