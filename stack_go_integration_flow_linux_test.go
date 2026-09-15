@@ -159,7 +159,7 @@ func TestGoKernelSACKReneging(t *testing.T) {
 			traffic.setFilter(server, func(event kernelTCPEvent) kernelTCPAction {
 				return kernelTCPAction{drop: event.outgoing && event.sequence == 1 && event.end > event.sequence}
 			})
-			mss := int(server.effectiveMSS)
+			mss := int(server.effectiveMSS.Load())
 			payload := kernelPayload(8*mss, 137)
 			_, err := server.Write(payload)
 			if err != nil {
@@ -296,19 +296,19 @@ func TestGoKernelWindowLimitedRecovery(t *testing.T) {
 				test.Fatalf("delay ACKs: %s: %v", output, err)
 			}
 			payload := kernelPayload(8<<20, 223)
-			initial := 4 * int(server.effectiveMSS)
+			initial := 4 * int(server.effectiveMSS.Load())
 			_, err = server.Write(payload[:initial])
 			if err != nil {
 				test.Fatal(err)
 			}
 			deadline := time.Now().Add(time.Second)
 			for time.Now().Before(deadline) {
-				if server.sendPermit.Load()&^goPermitWindowBit == server.sendUnacked.Load() && server.sentTail.Load() > server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
+				if server.sendPermit.Load()&^goPermitWindowBit == server.sendUnacked.Load() && server.sentTail.Load() > server.sendUnacked.Load()+2*uint64(server.effectiveMSS.Load()) {
 					break
 				}
 				time.Sleep(time.Millisecond)
 			}
-			if server.sendPermit.Load()&^goPermitWindowBit != server.sendUnacked.Load() || server.sentTail.Load() <= server.sendUnacked.Load()+2*uint64(server.effectiveMSS) {
+			if server.sendPermit.Load()&^goPermitWindowBit != server.sendUnacked.Load() || server.sentTail.Load() <= server.sendUnacked.Load()+2*uint64(server.effectiveMSS.Load()) {
 				test.Fatal("window did not shrink below outstanding data")
 			}
 			completed := make(chan kernelIOResult, 1)
@@ -388,14 +388,10 @@ func TestGoKernelZeroWindow(t *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			runTC := func(args ...string) {
-				test.Helper()
-				output, commandErr := kernelCommand("tc", args...)
-				if commandErr != nil {
-					test.Fatalf("tc %v: %s: %v", args, output, commandErr)
-				}
+			output, err := kernelCommand("tc", "qdisc", "replace", "dev", fixture.options.Name, "root", "netem", "delay", "50ms")
+			if err != nil {
+				test.Fatalf("tc qdisc replace: %s: %v", output, err)
 			}
-			runTC("qdisc", "replace", "dev", fixture.options.Name, "root", "netem", "delay", "50ms")
 			payload := kernelPayload(32768, 107)
 			_, err = server.Write(payload)
 			if err != nil {
@@ -418,7 +414,10 @@ func TestGoKernelZeroWindow(t *testing.T) {
 			traffic.setFilter(server, func(event kernelTCPEvent) kernelTCPAction {
 				return kernelTCPAction{drop: windowUpdate(event)}
 			})
-			runTC("qdisc", "del", "dev", fixture.options.Name, "root")
+			output, err = kernelCommand("tc", "qdisc", "del", "dev", fixture.options.Name, "root")
+			if err != nil {
+				test.Fatalf("tc qdisc del: %s: %v", output, err)
+			}
 			err = client.SetReadBuffer(4 << 20)
 			if err != nil {
 				test.Fatal(err)

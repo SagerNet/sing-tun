@@ -143,7 +143,7 @@ func TestGoKernelTCPSendBudget(t *testing.T) {
 						test.Cleanup(resumeOnce)
 						test.Cleanup(releaseOnce)
 						client, server := fixture.pair(test, false)
-						mss := int(server.effectiveMSS)
+						mss := int(server.effectiveMSS.Load())
 						err := kernelTCPWrite(server, kernelPayload(mss, 19), buffered)
 						if err != nil {
 							test.Fatal(err)
@@ -205,7 +205,7 @@ func TestGoKernelTCPWaiting(t *testing.T) {
 				}
 				fixture, traffic := newKernelTCPFixture(test, kernelStackConfig{mtu: 1500, congestion: congestion}, kernelTCPConfig{receiveDelay: 100 * time.Millisecond, checkpoint: checkpoint})
 				client, server := fixture.pair(test, false)
-				size := goInitialWindow * int(server.effectiveMSS)
+				size := goInitialWindow * int(server.effectiveMSS.Load())
 				warmup := kernelPayload(size, 31)
 				payload := kernelPayload(2*size, 37)
 				readResult := make(chan error, 1)
@@ -248,7 +248,7 @@ func TestGoKernelTCPWaiting(t *testing.T) {
 						delivered += event.end - event.sequence
 						rate = max(rate, event.rate)
 					}
-					allowed := rate*uint64(last-first+2*time.Millisecond)/uint64(time.Second) + 2*uint64(server.effectiveMSS)
+					allowed := rate*uint64(last-first+2*time.Millisecond)/uint64(time.Second) + 2*uint64(server.effectiveMSS.Load())
 					if delivered == 0 || delivered > allowed {
 						test.Errorf("pacing envelope: sent=%d bytes over %s at up to %d bytes/s, allowed=%d; recent TCP events: %+v", delivered, last-first, rate, allowed, flow.events)
 					}
@@ -329,7 +329,7 @@ func TestGoKernelTCPRecovery(t *testing.T) {
 							configTest.Run(fmt.Sprintf("ipv6=%v/%s/%s", ipv6, writer, pattern), func(test *testing.T) {
 								test.Parallel()
 								client, sender, conn := traffic.pair(test, fixture, ipv6, writer)
-								mss := int(conn.effectiveMSS)
+								mss := int(conn.effectiveMSS.Load())
 								start := uint64(1)
 								for round := range 4 {
 									segments := 8
@@ -405,7 +405,7 @@ func TestGoKernelTCPTransmitLifetime(t *testing.T) {
 							fixture, traffic := newKernelTCPFixture(test, kernelStackConfig{mtu: 1500, congestion: congestion}, kernelTCPConfig{})
 							client, sender, conn := traffic.pair(test, fixture, ipv6, writer)
 							barrier := newKernelTCPBarrier(test)
-							mss := int(conn.effectiveMSS)
+							mss := int(conn.effectiveMSS.Load())
 							prefix := mss
 							length := 1
 							switch shape {

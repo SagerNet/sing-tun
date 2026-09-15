@@ -68,11 +68,11 @@ func (s *goCubicState) reset() {
 }
 
 func goCubicJiffies(c *GoConn) uint32 {
-	return uint32(c.engine.now()/int64(time.Millisecond)) + 1
+	return uint32(c.engine.coarseTime.Load()/int64(time.Millisecond)) + 1
 }
 
 func goCubicMicros(c *GoConn) int64 {
-	return c.engine.now() / int64(time.Microsecond)
+	return c.engine.coarseTime.Load() / int64(time.Microsecond)
 }
 
 func (s *goCubicState) hystartReset(c *GoConn) {
@@ -228,7 +228,7 @@ func goCubicHystartAckDelay(c *GoConn) uint32 {
 	if rate == 0 {
 		return 0
 	}
-	return uint32(min(uint64(time.Second/time.Microsecond)/1000, uint64(c.gsoMaxSize())*4*uint64(time.Second/time.Microsecond)/rate))
+	return uint32(min(uint64(time.Second/time.Microsecond)/1000, uint64(c.gsoMaxSize(c.effectiveMSS.Load()))*4*uint64(time.Second/time.Microsecond)/rate))
 }
 
 func (s *goCubicState) hystartUpdate(c *GoConn, delay uint32) {
@@ -291,8 +291,4 @@ var goCubicOps = goCongestionOps{
 	undoWindow:         goRenoUndoWindow,
 	windowEventTxStart: goCubicTxStart,
 	packetsAcked:       goCubicAcked,
-}
-
-func init() {
-	goRegisterCongestionControl(&goCubicOps)
 }
