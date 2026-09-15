@@ -91,22 +91,18 @@ type goBBRState struct {
 }
 
 func goBBRJiffies(c *GoConn) uint32 {
-	return uint32(c.engine.now() / int64(time.Millisecond))
+	return uint32(c.engine.coarseTime.Load() / int64(time.Millisecond))
 }
 
 func goBBRAfter(a uint32, b uint32) bool {
 	return int32(a-b) > 0
 }
 
-func (s *goBBRState) maxBandwidth() uint32 {
-	return s.bandwidth.get()
-}
-
 func (s *goBBRState) currentBandwidth() uint32 {
 	if s.longTermUseBandwidth {
 		return s.longTermBandwidth
 	}
-	return s.maxBandwidth()
+	return s.bandwidth.get()
 }
 
 func (s *goBBRState) extraAckedMax() uint32 {
@@ -114,7 +110,7 @@ func (s *goBBRState) extraAckedMax() uint32 {
 }
 
 func goBBRRateBytesPerSecond(c *GoConn, rate uint64, gain uint32) uint64 {
-	rate *= uint64(c.effectiveMSS)
+	rate *= uint64(c.effectiveMSS.Load())
 	rate *= uint64(gain)
 	rate >>= goBBRScale
 	rate *= uint64(time.Second/time.Microsecond) / 100 * (100 - goBBRPacingMarginPercent)
@@ -150,7 +146,7 @@ func goBBRMinTSOSegments(c *GoConn) uint32 {
 
 func goBBRTSOSegmentsGoal(c *GoConn) uint32 {
 	bytes := min(c.pacingRate.Load()>>goPacingShift, uint64(0xffff-1-goHeaderScratchSize))
-	segments := max(uint32(bytes/uint64(c.effectiveMSS)), goBBRMinTSOSegments(c))
+	segments := max(uint32(bytes/uint64(c.effectiveMSS.Load())), goBBRMinTSOSegments(c))
 	return min(segments, 0x7f)
 }
 
@@ -166,7 +162,7 @@ func goBBRTxStart(c *GoConn, _ int64) {
 	s := c.congestionPrivate.(*goBBRState)
 	if c.appLimited.Load() != 0 {
 		s.idleRestart = true
-		s.ackEpochStamp = c.engine.now()
+		s.ackEpochStamp = c.engine.coarseTime.Load()
 		s.ackEpochAcked = 0
 		switch s.mode {
 		case goBBRModeProbeBandwidth:
@@ -199,7 +195,7 @@ func (s *goBBRState) inflight(c *GoConn, bandwidth uint32, gain uint32) uint32 {
 }
 
 func (s *goBBRState) packetsInNetAtDeparture(c *GoConn, inflightNow uint32) uint32 {
-	now := c.engine.now()
+	now := c.engine.coarseTime.Load()
 	departure := max(c.pacingStamp.Load(), now)
 	intervalMicros := uint64(departure-now) / uint64(time.Microsecond)
 	intervalDelivered := uint32(uint64(s.currentBandwidth()) * intervalMicros >> goBBRBandwidthScale)
@@ -274,7 +270,7 @@ func (s *goBBRState) isNextCyclePhase(c *GoConn, sample *goRateSample) bool {
 		return fullLength
 	}
 	inflight := s.packetsInNetAtDeparture(c, sample.priorInFlight)
-	bandwidth := s.maxBandwidth()
+	bandwidth := s.bandwidth.get()
 	if s.pacingGain > goBBRUnit {
 		return fullLength && (sample.losses > 0 || inflight >= s.inflight(c, bandwidth, s.pacingGain))
 	}
@@ -406,7 +402,7 @@ func (s *goBBRState) updateBandwidth(c *GoConn, sample *goRateSample) {
 	}
 	s.longTermSample(c, sample)
 	bandwidth := uint64(sample.delivered) * goBBRBandwidthUnit / uint64(sample.intervalMicros)
-	if !sample.appLimited || bandwidth >= uint64(s.maxBandwidth()) {
+	if !sample.appLimited || bandwidth >= uint64(s.bandwidth.get()) {
 		s.bandwidth.runningMax(goBBRBandwidthRounds, s.roundTripCount, uint32(min(bandwidth, uint64(^uint32(0)))))
 	}
 }
@@ -446,8 +442,8 @@ func (s *goBBRState) checkFullBandwidthReached(sample *goRateSample) {
 		return
 	}
 	threshold := uint32(uint64(s.fullBandwidth) * goBBRFullBandwidthThresh >> goBBRScale)
-	if s.maxBandwidth() >= threshold {
-		s.fullBandwidth = s.maxBandwidth()
+	if s.bandwidth.get() >= threshold {
+		s.fullBandwidth = s.bandwidth.get()
 		s.fullBandwidthCount = 0
 		return
 	}
@@ -458,9 +454,9 @@ func (s *goBBRState) checkFullBandwidthReached(sample *goRateSample) {
 func (s *goBBRState) checkDrain(c *GoConn) {
 	if s.mode == goBBRModeStartup && s.fullBandwidthReached {
 		s.mode = goBBRModeDrain
-		c.slowStartThreshold = s.inflight(c, s.maxBandwidth(), goBBRUnit)
+		c.slowStartThreshold = s.inflight(c, s.bandwidth.get(), goBBRUnit)
 	}
-	if s.mode == goBBRModeDrain && s.packetsInNetAtDeparture(c, c.flight.inFlight()) <= s.inflight(c, s.maxBandwidth(), goBBRUnit) {
+	if s.mode == goBBRModeDrain && s.packetsInNetAtDeparture(c, c.flight.inFlight()) <= s.inflight(c, s.bandwidth.get(), goBBRUnit) {
 		s.resetProbeBandwidthMode(c)
 	}
 }
@@ -548,13 +544,13 @@ func goBBRInit(c *GoConn) {
 	c.slowStartThreshold = goInfiniteSlowStartThreshold
 	s.nextRoundDelivered = c.delivered
 	s.previousCAState = goCongestionOpen
-	s.minRoundTripMicros = c.minRoundTripMicros()
+	s.minRoundTripMicros = c.roundTripMin.get()
 	s.minRoundTripStamp = goBBRJiffies(c)
 	s.bandwidth.reset(s.roundTripCount, 0)
 	goBBRInitPacingRateFromRoundTrip(c, s)
 	s.resetLongTermSampling(c)
 	s.mode = goBBRModeStartup
-	s.ackEpochStamp = c.engine.now()
+	s.ackEpochStamp = c.engine.coarseTime.Load()
 }
 
 func goBBRUndoWindow(c *GoConn) uint32 {
@@ -591,8 +587,4 @@ var goBBROps = goCongestionOps{
 	minTSOSegments:     goBBRMinTSOSegments,
 	setState:           goBBRSetState,
 	pacing:             true,
-}
-
-func init() {
-	goRegisterCongestionControl(&goBBROps)
 }

@@ -193,7 +193,7 @@ func (e *goEngine) processAck(conn *GoConn, tcpHdr header.TCP, segOffset int64, 
 		}
 		sample.ackDelayed = ackFlags&goAckMaybeDelayed != 0
 		delivered := conn.delivered - priorDelivered
-		e.rateGenerate(conn, sample, delivered, conn.lost-priorLost, e.now())
+		e.rateGenerate(conn, sample, delivered, conn.lost-priorLost, e.coarseTime.Load())
 		e.validateWindow(conn)
 		e.congestionControl(conn, delivered, ackFlags, sample)
 		e.updateFrameLimit(conn)
@@ -245,13 +245,13 @@ func (e *goEngine) applyDuplicateSack(conn *GoConn, block goRawSackBlock, priorU
 	if end-start > conn.maxPeerWindow {
 		return
 	}
-	packets := (end - start + uint64(conn.effectiveMSS) - 1) / uint64(conn.effectiveMSS)
+	packets := (end - start + uint64(conn.effectiveMSS.Load()) - 1) / uint64(conn.effectiveMSS.Load())
 	conn.duplicateSegments += packets
 	if conn.duplicateSegments > conn.totalRetransmits {
 		return
 	}
 	*flags |= goAckDSACK
-	if end-start <= uint64(conn.effectiveMSS) && conn.probeHighSeq != 0 && conn.probeRetransmitted && end == conn.probeHighSeq {
+	if end-start <= uint64(conn.effectiveMSS.Load()) && conn.probeHighSeq != 0 && conn.probeRetransmitted && end == conn.probeHighSeq {
 		*flags |= goAckDSACKProbe
 	}
 	if conn.reorderingSeen != 0 && *flags&goAckDSACKProbe == 0 {
@@ -392,8 +392,9 @@ func (e *goEngine) cleanRetransmitQueue(conn *GoConn, ackOffset uint64, priorFac
 		flags |= goAckDataAcked
 		start = descriptor.endOffset
 	}
-	if conn.finSent && ackOffset > conn.finOffset {
+	if conn.finSent && !conn.finAcked && ackOffset > conn.finOffset {
 		conn.finAcked = true
+		close(conn.finAckedSignal)
 	}
 	if newUnacked > priorUnacked {
 		conn.scoreboard.advance(newUnacked)
@@ -404,7 +405,7 @@ func (e *goEngine) cleanRetransmitQueue(conn *GoConn, ackOffset uint64, priorFac
 		}
 	}
 	e.refreshPacketsOut(conn)
-	now := e.now()
+	now := e.coarseTime.Load()
 	nowStamp := conn.stamp(now)
 	sequenceRoundTrip := int64(-1)
 	sackRoundTrip := int64(-1)
@@ -412,7 +413,7 @@ func (e *goEngine) cleanRetransmitQueue(conn *GoConn, ackOffset uint64, priorFac
 	if sampled && !unsampled && flags&goAckRetransmittedAcked == 0 {
 		sequenceRoundTrip = goStampMicros(nowStamp - firstStamp)
 		controlRoundTrip = goStampMicros(nowStamp - lastStamp)
-		if packetsAcked == 1 && priorSacked == 0 && newUnacked-priorUnacked < uint64(conn.effectiveMSS) &&
+		if packetsAcked == 1 && priorSacked == 0 && newUnacked-priorUnacked < uint64(conn.effectiveMSS.Load()) &&
 			sample.priorDelivered+1 == conn.delivered && flags&goAckAlert == 0 {
 			flags |= goAckMaybeDelayed
 		}
@@ -438,7 +439,7 @@ func (e *goEngine) cleanRetransmitQueue(conn *GoConn, ackOffset uint64, priorFac
 		*ackSample = goAckSample{
 			packetsAcked:    packetsAcked,
 			roundTripMicros: sample.roundTripMicros,
-			inFlightBytes:   uint64(conn.effectiveMSS) * uint64(conn.delivered-sample.priorDelivered),
+			inFlightBytes:   uint64(conn.effectiveMSS.Load()) * uint64(conn.delivered-sample.priorDelivered),
 		}
 		conn.congestion.packetsAcked(conn, ackSample)
 	}
@@ -583,26 +584,22 @@ func (e *goEngine) accountSplit(conn *GoConn, flags uint16) {
 }
 
 func (c *GoConn) descriptorSentTime(descriptor *goSentDescriptor) int64 {
-	now := c.engine.now()
+	now := c.engine.coarseTime.Load()
 	units := (now - c.epoch) / goTimeUnit
 	age := int64(int32(units) - descriptor.sentAt)
 	return c.epoch + (units-age)*goTimeUnit
 }
 
-func (c *GoConn) descriptorTimestamp(descriptor *goSentDescriptor) uint32 {
-	return goTimestampAt(c.descriptorSentTime(descriptor))
-}
-
 func (c *GoConn) spuriousRetransmit(descriptor *goSentDescriptor) bool {
-	return descriptor.flags&goDescriptorRetransmitted != 0 && c.echoedTimestampBefore(c.descriptorTimestamp(descriptor))
+	return descriptor.flags&goDescriptorRetransmitted != 0 && c.echoedTimestampBefore(goTimestampAt(c.descriptorSentTime(descriptor)))
 }
 
 func (e *goEngine) rackAdvance(conn *GoConn, descriptor *goSentDescriptor, endOffset uint64) {
 	if descriptor.flags&(goDescriptorNoSample|goDescriptorDropped) != 0 {
 		return
 	}
-	roundTrip := goStampMicros(conn.stamp(e.now()) - descriptor.sentAt)
-	if roundTrip < int64(conn.minRoundTripMicros()) && descriptor.flags&goDescriptorRetransmitted != 0 {
+	roundTrip := goStampMicros(conn.stamp(e.coarseTime.Load()) - descriptor.sentAt)
+	if roundTrip < int64(conn.roundTripMin.get()) && descriptor.flags&goDescriptorRetransmitted != 0 {
 		return
 	}
 	conn.rackAdvanced = true
@@ -622,7 +619,7 @@ func (e *goEngine) rackReorderWindow(conn *GoConn) int64 {
 			return 0
 		}
 	}
-	return min(int64(conn.minRoundTripMicros()>>2)*int64(conn.reorderWindowSteps), int64(conn.smoothedRoundTrip))
+	return min(int64(conn.roundTripMin.get()>>2)*int64(conn.reorderWindowSteps), int64(conn.smoothedRoundTrip))
 }
 
 func (e *goEngine) rackDescriptorTimeout(conn *GoConn, descriptor *goSentDescriptor, reorderWindow int64, now int64) int64 {
@@ -633,7 +630,7 @@ func (e *goEngine) rackDetectLoss(conn *GoConn) int64 {
 	if conn.rackEndOffset == 0 {
 		return 0
 	}
-	now := e.now()
+	now := e.coarseTime.Load()
 	reorderWindow := e.rackReorderWindow(conn)
 	timeout := int64(0)
 	ordered := conn.flight.retransmitted == 0
@@ -670,7 +667,7 @@ func (e *goEngine) rackMarkLost(conn *GoConn) bool {
 	if timeout == 0 {
 		return false
 	}
-	conn.reorderDeadline = e.now() + (timeout+goRackTimeoutMinMicros)*int64(time.Microsecond)
+	conn.reorderDeadline = e.coarseTime.Load() + (timeout+goRackTimeoutMinMicros)*int64(time.Microsecond)
 	e.rearmTimer(conn)
 	return true
 }
@@ -787,7 +784,7 @@ func (e *goEngine) fastretransAlert(conn *GoConn, priorUnacked uint64, numDupack
 	}
 	if *flags&goAckReneging != 0 && *flags&goAckUnackedAdvanced != 0 {
 		delay := max(int64(conn.smoothedRoundTrip)/2, int64(10*time.Millisecond/time.Microsecond))
-		conn.retransmitDeadline = e.now() + delay*int64(time.Microsecond)
+		conn.retransmitDeadline = e.coarseTime.Load() + delay*int64(time.Microsecond)
 		e.rearmTimer(conn)
 		*flags |= goAckKeepTimer
 		return goRexmitNone
@@ -883,7 +880,7 @@ func (e *goEngine) xmitRetransmitQueue(conn *GoConn) {
 		}
 		if conn.congestion.pacing {
 			stamp := conn.pacingStamp.Load()
-			if stamp > e.now()+goWheelTick {
+			if stamp > e.coarseTime.Load()+goWheelTick {
 				conn.pacingDeadline = stamp - goWheelTick
 				e.rearmTimer(conn)
 				return
@@ -906,7 +903,7 @@ func (e *goEngine) transmitRetransmit(conn *GoConn, offset uint64, length int, p
 	if conn.peerWindow == 0 || offset >= limit {
 		return 0
 	}
-	length = int(min(uint64(length), uint64(conn.effectiveMSS), limit-offset))
+	length = int(min(uint64(length), uint64(conn.effectiveMSS.Load()), limit-offset))
 	for _, descriptor := range conn.scoreboard.entries {
 		if descriptor.endOffset > offset {
 			length = min(length, int(descriptor.endOffset-offset))
@@ -918,7 +915,7 @@ func (e *goEngine) transmitRetransmit(conn *GoConn, offset uint64, length int, p
 		return 0
 	}
 	conn.totalRetransmits++
-	conn.advancePacing(e.now(), length)
+	conn.advancePacing(e.coarseTime.Load(), length)
 	end := offset + uint64(length)
 	marked := e.markRetransmitted(conn, offset, end, probe)
 	if !probe && marked > 0 {
@@ -932,14 +929,14 @@ func (e *goEngine) transmitRetransmit(conn *GoConn, offset uint64, length int, p
 		conn.undoRetransmits += int32(marked)
 	}
 	if conn.retransmitStamp == 0 {
-		conn.retransmitStamp = goTimestampAt(e.now())
+		conn.retransmitStamp = goTimestampAt(e.coarseTime.Load())
 	}
 	return length
 }
 
 func (e *goEngine) markRetransmitted(conn *GoConn, start uint64, end uint64, probe bool) uint32 {
 	previous := conn.sendUnacked.Load()
-	stamp := conn.stamp(e.now())
+	stamp := conn.stamp(e.coarseTime.Load())
 	marked := uint32(0)
 	appLimited := conn.appLimited.Load() != 0
 	scoreboard := &conn.scoreboard
@@ -996,7 +993,7 @@ func (c *GoConn) publishPermit(ackOffset uint64) {
 	limit := max(c.flight.packetsEnd, unacked)
 	inFlight := c.flight.inFlight()
 	if c.congestionWindow > inFlight {
-		limit += uint64(c.congestionWindow-inFlight) * uint64(c.effectiveMSS)
+		limit += uint64(c.congestionWindow-inFlight) * uint64(c.effectiveMSS.Load())
 	}
 	windowEnd := ackOffset + c.peerWindow
 	permit := max(min(limit, windowEnd), unacked)
@@ -1009,8 +1006,7 @@ func (c *GoConn) publishPermit(ackOffset uint64) {
 	c.wakeWriter()
 }
 
-func (c *GoConn) gsoMaxSize() uint32 {
-	mss := uint32(c.effectiveMSS)
+func (c *GoConn) gsoMaxSize(mss uint32) uint32 {
 	if c.engine.platformIO.transmitSegmentOffload() {
 		return max(goGSOMaxPayload/mss*mss, mss)
 	}
@@ -1024,8 +1020,8 @@ func (e *goEngine) updateFrameLimit(conn *GoConn) {
 		return
 	}
 	bytes := rate >> goPacingShift
-	shift := conn.minRoundTripMicros() >> goTSORoundTripShift
-	gsoMax := uint64(conn.gsoMaxSize())
+	shift := conn.roundTripMin.get() >> goTSORoundTripShift
+	gsoMax := uint64(conn.gsoMaxSize(conn.effectiveMSS.Load()))
 	if shift < 64 {
 		bytes += gsoMax >> shift
 	}
@@ -1034,7 +1030,7 @@ func (e *goEngine) updateFrameLimit(conn *GoConn) {
 	if conn.congestion.minTSOSegments != nil {
 		minSegments = conn.congestion.minTSOSegments(conn)
 	}
-	mss := uint64(conn.effectiveMSS)
+	mss := uint64(conn.effectiveMSS.Load())
 	segments := max(uint32(bytes/mss), minSegments)
 	conn.frameLimit.Store(uint32(min(uint64(segments)*mss, gsoMax)))
 }
@@ -1067,14 +1063,14 @@ func (e *goEngine) armProbe(conn *GoConn) {
 	if conn.smoothedRoundTrip > 0 {
 		timeout = max(2*conn.smoothedRoundTrip, goProbeFloorMicros)
 	}
-	if conn.sentTail.Load()-conn.sendUnacked.Load() <= 2*uint64(conn.effectiveMSS) {
+	if conn.sentTail.Load()-conn.sendUnacked.Load() <= 2*uint64(conn.effectiveMSS.Load()) {
 		timeout += goProbeDelayedAck
 	}
 	if timeout >= conn.retransmitTimeout {
 		conn.probeDeadline = 0
 		return
 	}
-	conn.probeDeadline = e.now() + int64(timeout)*int64(time.Microsecond)
+	conn.probeDeadline = e.coarseTime.Load() + int64(timeout)*int64(time.Microsecond)
 }
 
 func (e *goEngine) expireProbe(conn *GoConn, now int64) {
@@ -1097,6 +1093,11 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 		e.rearmTimer(conn)
 		return
 	}
+	if conn.flightHeadQueued() {
+		conn.retransmitDeadline = now + int64(conn.retransmitTimeout)*int64(time.Microsecond)
+		e.rearmTimer(conn)
+		return
+	}
 	conn.probeAttempts++
 	e.summarizeFlight(conn)
 	sent := conn.sentTail.Load()
@@ -1109,7 +1110,7 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 	conn.access.Unlock()
 	switch {
 	case pending > 0 && committed == sent && windowEnd > sent && !writing:
-		length := min(pending, uint64(conn.effectiveMSS), windowEnd-sent)
+		length := min(pending, uint64(conn.effectiveMSS.Load()), windowEnd-sent)
 		conn.probeRetransmitted = false
 		conn.probeHighSeq = sent + length
 		permit := conn.sendPermit.Load()
@@ -1136,8 +1137,8 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 				end = committed
 			}
 		}
-		if end-start > uint64(conn.effectiveMSS) {
-			start = end - uint64(conn.effectiveMSS)
+		if end-start > uint64(conn.effectiveMSS.Load()) {
+			start = end - uint64(conn.effectiveMSS.Load())
 		}
 		if e.transmitRetransmit(conn, start, int(end-start), true) > 0 {
 			conn.probeRetransmitted = true
@@ -1168,7 +1169,7 @@ func (e *goEngine) expireRetransmit(conn *GoConn, now int64) {
 	conn.probeDeadline = 0
 	conn.probeAttempts = 0
 	conn.reorderDeadline = 0
-	if conn.hasOutstandingData() && conn.sendUnacked.Load() >= conn.transmittedTail.Load() {
+	if conn.hasOutstandingData() && conn.sendUnacked.Load() >= conn.transmittedTail.Load() || conn.flightHeadQueued() {
 		conn.retransmitDeadline = now + int64(conn.retransmitTimeout)*int64(time.Microsecond)
 		e.rearmTimer(conn)
 		return
@@ -1184,7 +1185,7 @@ func (e *goEngine) expireRetransmit(conn *GoConn, now int64) {
 	conn.retransmitAttempts++
 	unacked := conn.sendUnacked.Load()
 	if conn.hasOutstandingData() {
-		length := int(min(conn.sentTail.Load()-unacked, uint64(conn.effectiveMSS)))
+		length := int(min(conn.sentTail.Load()-unacked, uint64(conn.effectiveMSS.Load())))
 		e.transmitRetransmit(conn, unacked, length, false)
 	} else {
 		e.retransmitFrom(conn, unacked)
