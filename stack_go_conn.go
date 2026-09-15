@@ -25,6 +25,7 @@ const (
 
 const (
 	goTCPSynReceived uint8 = iota
+	goTCPSynSent
 	goTCPEstablished
 	goTCPFinWait1
 	goTCPFinWait2
@@ -64,12 +65,11 @@ var (
 type GoConn struct {
 	engine                *goEngine
 	key                   flowKey
-	source                M.Socksaddr
-	destination           M.Socksaddr
+	peer                  M.Socksaddr
+	local                 M.Socksaddr
 	epoch                 int64
 	receiveNext           uint64
 	receiveCapacity       uint64
-	receiveCapacityMax    uint64
 	publishedEdge         uint64
 	sentEdge              uint64
 	receiveRoundTripMark  uint64
@@ -104,6 +104,7 @@ type GoConn struct {
 	persistDeadline       int64
 	lingerDeadline        int64
 	handshakeDeadline     int64
+	handshakeStamp        int64
 	idleDeadline          int64
 	pacingDeadline        int64
 	reorderDeadline       int64
@@ -167,10 +168,11 @@ type GoConn struct {
 	peerWindowShift         uint8
 	localWindowShift        uint8
 	peerMSS                 uint16
-	effectiveMSS            uint16
+	effectiveMSS            atomic.Uint32
 	lastPeerWindow          uint16
-	synAckLength            uint8
+	handshakeLength         uint8
 	keyed                   bool
+	socket                  bool
 	finPending              bool
 	sackPermitted           bool
 	timestampsEnabled       bool
@@ -189,7 +191,8 @@ type GoConn struct {
 	blockedNext             *GoConn
 	dyingNext               *GoConn
 	splice                  *goSpliceStream
-	synAckImage             [96]byte
+	listener                *GoListener
+	handshakeImage          [96]byte
 	_                       [64]byte
 
 	sendPermit       atomic.Uint64
@@ -204,6 +207,9 @@ type GoConn struct {
 	deliveryState    atomic.Uint64
 	pacingRate       atomic.Uint64
 	pacingStamp      atomic.Int64
+	queuedBytes      atomic.Int64
+	departedTail     atomic.Uint64
+	queueThrottled   atomic.Bool
 	firstSentStamp   atomic.Int32
 	appLimited       atomic.Uint32
 	frameLimit       atomic.Uint32
@@ -248,6 +254,14 @@ type GoConn struct {
 
 	access             sync.Mutex
 	phase              uint8
+	receiveCapacityMax uint64
+	transmitCapacity   uint64
+	keepaliveIdle      time.Duration
+	keepaliveInterval  time.Duration
+	keepaliveCount     uint8
+	keepaliveEnabled   bool
+	nagle              bool
+	linger             int
 	dead               bool
 	finReceived        bool
 	drainable          bool
@@ -263,8 +277,10 @@ type GoConn struct {
 	err                error
 	splicePending      *goSpliceStream
 	establishedSignal  chan struct{}
+	finAckedSignal     chan struct{}
 	closeSignal        chan struct{}
 	transmitSignal     goSignal
+	dialMessage        goMessage
 	engageMessage      goMessage
 	closeMessage       goMessage
 	readShutMessage    goMessage
@@ -274,16 +290,17 @@ type GoConn struct {
 	blockedMessage     goMessage
 	droppedMessage     goMessage
 	pacingMessage      goMessage
+	throttleMessage    goMessage
 	spliceMessage      goMessage
 	slabHolder         goSlabHolder
 }
 
-func (c *GoConn) initialize(engine *goEngine, key flowKey, source M.Socksaddr, destination M.Socksaddr) {
+func (c *GoConn) initialize(engine *goEngine, key flowKey, peer M.Socksaddr, local M.Socksaddr) {
 	c.engine = engine
 	c.key = key
-	c.source = source
-	c.destination = destination
-	c.epoch = engine.now()
+	c.peer = peer
+	c.local = local
+	c.epoch = engine.coarseTime.Load()
 	c.lastSendStamp = -1
 	c.readDeadline = pipe.MakeDeadline()
 	c.writeDeadline = pipe.MakeDeadline()
@@ -291,11 +308,19 @@ func (c *GoConn) initialize(engine *goEngine, key flowKey, source M.Socksaddr, d
 	c.writeSignal = make(goSignal, 1)
 	c.transmitSignal = make(goSignal, 1)
 	c.establishedSignal = make(chan struct{})
+	c.finAckedSignal = make(chan struct{})
 	c.closeSignal = make(chan struct{})
+	c.receiveCapacityMax = goReceiveCapacityMax
+	c.transmitCapacity = goTransmitCapacityMax
+	c.keepaliveIdle = tcpEstablishedTimeout
+	c.keepaliveInterval = goKeepaliveInterval
+	c.keepaliveCount = goKeepaliveCount
+	c.keepaliveEnabled = true
+	c.linger = -1
 	c.receiveChain = goSlabChain{maxSlots: goReceiveCapacityMax/goSlabSize + 1, pool: engine.slabPool, holder: &c.slabHolder}
 	c.transmitStore.chain = goSlabChain{maxSlots: goTransmitCapacityMax/goSlabSize + 1, pool: engine.slabPool, holder: &c.slabHolder}
 	c.descriptors.pool = &engine.descriptorPool
-	c.timerNode.expire = c.expireTimer
+	c.timerNode.expire = func(now int64) { engine.fireConnTimer(c, now) }
 	c.engageMessage = goMessage{kind: goMessageConnEngage, conn: c}
 	c.closeMessage = goMessage{kind: goMessageConnClose, conn: c}
 	c.readShutMessage = goMessage{kind: goMessageConnReadShut, conn: c}
@@ -305,7 +330,19 @@ func (c *GoConn) initialize(engine *goEngine, key flowKey, source M.Socksaddr, d
 	c.blockedMessage = goMessage{kind: goMessageConnBlocked, conn: c}
 	c.droppedMessage = goMessage{kind: goMessageConnDropped, conn: c}
 	c.pacingMessage = goMessage{kind: goMessageConnPacing, conn: c}
+	c.throttleMessage = goMessage{kind: goMessageConnThrottle, conn: c}
 	c.spliceMessage = goMessage{kind: goMessageConnSplice, conn: c}
+}
+
+func (c *GoConn) handshaking() bool {
+	return c.state == goTCPSynReceived || c.state == goTCPSynSent
+}
+
+func (c *GoConn) receiveWindowBound() uint64 {
+	c.access.Lock()
+	capacityMax := c.receiveCapacityMax
+	c.access.Unlock()
+	return min(capacityMax, uint64(0xffff)<<c.localWindowShift)
 }
 
 func (c *GoConn) sendNext() uint64 {
@@ -316,7 +353,7 @@ func (c *GoConn) sendNext() uint64 {
 }
 
 func (c *GoConn) ackThreshold() uint64 {
-	threshold := min(2*uint64(c.effectiveMSS), c.receiveCapacity/2)
+	threshold := min(2*uint64(c.effectiveMSS.Load()), c.receiveCapacity/2)
 	if c.engine.ackCoalescing {
 		threshold = min(max(threshold, min(c.receiveCapacity/4, goAckCoalesceBytes)), c.receiveCapacity/2)
 	}
@@ -639,7 +676,8 @@ func (c *GoConn) Close() error {
 	c.userClosed = true
 	c.writeShut = true
 	c.readShut = true
-	graceful := !c.dead && !c.abort && c.phase == goPhaseEstablished && !c.spliced && c.splicePending == nil &&
+	linger := c.linger
+	graceful := !c.dead && !c.abort && linger != 0 && c.phase == goPhaseEstablished && !c.spliced && c.splicePending == nil &&
 		c.receiveAvailable.Load() <= c.consumedTail.Load()
 	if graceful {
 		c.finRequested = true
@@ -655,6 +693,15 @@ func (c *GoConn) Close() error {
 	}
 	c.engine.postMessage(&c.closeMessage)
 	c.wakeUser()
+	if graceful && linger > 0 {
+		timer := time.NewTimer(time.Duration(linger) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-c.finAckedSignal:
+		case <-c.closeSignal:
+		case <-timer.C:
+		}
+	}
 	return nil
 }
 
@@ -686,11 +733,17 @@ func (c *GoConn) CloseWrite() error {
 }
 
 func (c *GoConn) LocalAddr() net.Addr {
-	return c.source.TCPAddr()
+	if c.socket {
+		return c.local.TCPAddr()
+	}
+	return c.peer.TCPAddr()
 }
 
 func (c *GoConn) RemoteAddr() net.Addr {
-	return c.destination.TCPAddr()
+	if c.socket {
+		return c.peer.TCPAddr()
+	}
+	return c.local.TCPAddr()
 }
 
 func (c *GoConn) SetDeadline(t time.Time) error {
@@ -728,7 +781,6 @@ func (s goSignal) drain() {
 }
 
 var (
-	_ net.Conn           = (*GoConn)(nil)
 	_ N.ReadWaiter       = (*GoConn)(nil)
 	_ N.ExtendedWriter   = (*GoConn)(nil)
 	_ N.FrontHeadroom    = (*GoConn)(nil)

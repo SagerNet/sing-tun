@@ -26,8 +26,11 @@ func TestGoKernelPacketFragments(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		configs = append(configs, kernelStackConfig{mtu: 1500, multiQueue: true}, kernelStackConfig{mtu: 1500, gso: true, multiQueue: true})
 	}
+	if runtime.GOOS != "windows" {
+		configs = append(configs, kernelStackConfig{mtu: 1500, memoryLink: true})
+	}
 	for _, config := range configs {
-		t.Run(fmt.Sprintf("gso=%v/mq=%v", config.gso, config.multiQueue), func(configTest *testing.T) {
+		t.Run(fmt.Sprintf("gso=%v/mq=%v/memory=%v", config.gso, config.multiQueue, config.memoryLink), func(configTest *testing.T) {
 			fixture := newKernelStackFixture(configTest, config)
 			for _, ipv6 := range []bool{false, true} {
 				configTest.Run(fmt.Sprintf("ipv6=%v", ipv6), func(test *testing.T) {
@@ -204,10 +207,7 @@ func TestGoKernelPacketMapping(t *testing.T) {
 					for _, ipv6 := range []bool{false, true} {
 						configTest.Run(fmt.Sprintf("ipv6=%v", ipv6), func(test *testing.T) {
 							test.Parallel()
-							address := fixture.options.Inet4Address[0].Addr()
-							if ipv6 {
-								address = fixture.options.Inet6Address[0].Addr()
-							}
+							address := fixture.kernelAddress(ipv6)
 							client, err := net.ListenUDP("udp", &net.UDPAddr{IP: address.AsSlice()})
 							if err != nil {
 								test.Fatal(err)
