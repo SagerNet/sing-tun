@@ -266,7 +266,7 @@ func (h *kernelTCPHarness) inspectLocked(platform *kernelTCPIO) {
 			continue
 		}
 		flow.processed = conn.sendUnacked.Load()
-		flow.closed = conn.connState.Load() >= goConnStateDead
+		flow.closed = conn.closed()
 		if flow.closed || flow.failure != "" {
 			continue
 		}
@@ -307,7 +307,7 @@ func (h *kernelTCPHarness) await(t *testing.T, conn *GoConn, description string,
 		case <-h.changed:
 		case <-tick.C:
 		case <-timer.C:
-			t.Fatalf("%s timed out: sent=%d ACK=%d processed=%d FIN=%d peerFIN=%v connection=%d; recent TCP events: %+v", description, flow.sent, flow.acked, flow.processed, flow.fin, flow.peerFIN, conn.connState.Load(), flow.events[max(0, len(flow.events)-16):])
+			t.Fatalf("%s timed out: sent=%d ACK=%d processed=%d FIN=%d peerFIN=%v closed=%v; recent TCP events: %+v", description, flow.sent, flow.acked, flow.processed, flow.fin, flow.peerFIN, conn.closed(), flow.events[max(0, len(flow.events)-16):])
 		}
 	}
 }
@@ -462,7 +462,7 @@ func (p *kernelTCPIO) delayLocked(flow *kernelTCPFlow, event kernelTCPEvent, pac
 		}
 		p.harness.access.Lock()
 		defer p.harness.access.Unlock()
-		if p.harness.stopped || flow.conn.connState.Load() >= goConnStateDead {
+		if p.harness.stopped || flow.conn.closed() {
 			return
 		}
 		event.at = time.Since(p.harness.epoch)
