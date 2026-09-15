@@ -842,8 +842,6 @@ func isICMPProtocol(protocol uint8) bool {
 	return protocol == uint8(header.ICMPv4ProtocolNumber) || protocol == uint8(header.ICMPv6ProtocolNumber)
 }
 
-var _ Return = (*forwardReturn)(nil)
-
 type forwardReturn struct {
 	dispatcher *ForwardDispatcher
 	closed     atomic.Bool

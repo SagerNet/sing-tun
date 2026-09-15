@@ -78,7 +78,7 @@ func (e *goEngine) rateGenerate(conn *GoConn, sample *goRateSample, delivered ui
 	receiveMicros := goStampMicros(stamp - sample.priorStamp)
 	sample.intervalMicros = max(sendMicros, receiveMicros)
 	sample.receiveIntervalMicros = receiveMicros
-	if sample.intervalMicros < int64(conn.minRoundTripMicros()) {
+	if sample.intervalMicros < int64(conn.roundTripMin.get()) {
 		sample.intervalMicros = -1
 		return
 	}
@@ -91,7 +91,7 @@ func (e *goEngine) rateGenerate(conn *GoConn, sample *goRateSample, delivered ui
 
 func (c *GoConn) countDelivered(packets uint32) {
 	c.delivered += packets
-	c.deliveredTime = c.engine.now()
+	c.deliveredTime = c.engine.coarseTime.Load()
 	c.deliveredStamp = c.stamp(c.deliveredTime)
 	c.publishDelivery()
 }
@@ -111,7 +111,7 @@ func (c *GoConn) publishDelivery() {
 
 func (c *GoConn) checkAppLimited(pending uint64, permit uint64, sent uint64) {
 	segments := c.dataSegmentsOut.Load()
-	if pending >= uint64(c.effectiveMSS) || permit <= sent || int32(c.sendPacketPermit.Load()-segments) <= 0 || c.writerWaiting.Load() != 0 {
+	if pending >= uint64(c.effectiveMSS.Load()) || permit <= sent || int32(c.sendPacketPermit.Load()-segments) <= 0 || c.writerWaiting.Load() != 0 {
 		return
 	}
 	c.access.Lock()

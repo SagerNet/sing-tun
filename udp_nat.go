@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/canceler"
 	"github.com/sagernet/sing/common/control"
 	M "github.com/sagernet/sing/common/metadata"
@@ -51,8 +52,7 @@ type UDPNatOptions struct {
 	Filtering NATFiltering
 	MaxSize   uint32
 
-	InterfaceFinder  control.InterfaceFinder
-	ExcludeInterface []string
+	InterfaceFinder control.InterfaceFinder
 }
 
 type udpNatSessionKey struct {
@@ -95,7 +95,6 @@ type UDPNat struct {
 	filterCache         *freelru.Cache[udpNatFilterKey, *UDPNatConn]
 	nextFilterSessionID atomic.Uint64
 	interfaceFinder     control.InterfaceFinder
-	excludeInterface    []string
 	interfaceElement    *list.Element[control.InterfaceUpdateCallback]
 	egress              atomic.Pointer[udpNatEgressTable]
 	classAccess         sync.Mutex
@@ -128,17 +127,16 @@ func NewUDPNat(options UDPNatOptions) *UDPNat {
 		filterCache = common.Must1(freelru.New[udpNatFilterKey, *UDPNatConn](maxSize, filterHasher.Hash32, options.Shared))
 	}
 	service := &UDPNat{
-		handler:          options.Handler,
-		prepare:          options.Prepare,
-		timeout:          options.Timeout,
-		mapping:          options.Mapping,
-		filtering:        options.Filtering,
-		cache:            cache,
-		filterCache:      filterCache,
-		interfaceFinder:  options.InterfaceFinder,
-		excludeInterface: options.ExcludeInterface,
-		classConns:       make(map[uint32]map[*UDPNatConn]struct{}),
-		cleanupDone:      make(chan struct{}),
+		handler:         options.Handler,
+		prepare:         options.Prepare,
+		timeout:         options.Timeout,
+		mapping:         options.Mapping,
+		filtering:       options.Filtering,
+		cache:           cache,
+		filterCache:     filterCache,
+		interfaceFinder: options.InterfaceFinder,
+		classConns:      make(map[uint32]map[*UDPNatConn]struct{}),
+		cleanupDone:     make(chan struct{}),
 	}
 	service.cleanup = newUDPNatCleanupQueue(service)
 	cache.SetLifetime(options.Timeout)
@@ -196,9 +194,6 @@ func (s *UDPNat) updateInterfaces(interfaces []control.Interface) {
 			networkInterface.Flags&net.FlagLoopback != 0 ||
 			networkInterface.Flags&net.FlagPointToPoint != 0 ||
 			networkInterface.Flags&net.FlagBroadcast == 0 {
-			continue
-		}
-		if slices.Contains(s.excludeInterface, networkInterface.Name) {
 			continue
 		}
 		for _, prefix := range networkInterface.Addresses {
@@ -316,7 +311,7 @@ func (s *UDPNat) unregisterClass(conn *UDPNatConn) {
 }
 
 func (s *UDPNat) NewPacket(bufferSlices [][]byte, source M.Socksaddr, destination M.Socksaddr, userData any) {
-	conn, ok := s.getOrCreate(s.sessionKey(source, destination), source, destination, userData)
+	conn, ok := s.getOrCreate(s.sessionKey(source, destination), source, destination, userData, nil)
 	if !ok {
 		return
 	}
@@ -350,7 +345,7 @@ func (s *UDPNat) sessionKey(source M.Socksaddr, destination M.Socksaddr) udpNatS
 	return key
 }
 
-func (s *UDPNat) getOrCreate(key udpNatSessionKey, source M.Socksaddr, destination M.Socksaddr, userData any) (*UDPNatConn, bool) {
+func (s *UDPNat) getOrCreate(key udpNatSessionKey, source M.Socksaddr, destination M.Socksaddr, userData any, initialize func(*UDPNatConn)) (*UDPNatConn, bool) {
 	if s.state.Load() != udpNatStateStarted {
 		return nil, false
 	}
@@ -364,13 +359,14 @@ func (s *UDPNat) getOrCreate(key udpNatSessionKey, source M.Socksaddr, destinati
 			return nil, false
 		}
 		newConn := &UDPNatConn{
-			service:      s,
-			key:          key,
-			writer:       writer,
-			localAddr:    source,
-			packetChan:   make(chan *N.PacketBuffer, 64),
-			doneChan:     make(chan struct{}),
-			readDeadline: pipe.MakeDeadline(),
+			service:       s,
+			key:           key,
+			writer:        writer,
+			localAddr:     source,
+			packetChan:    make(chan *N.PacketBuffer, 64),
+			doneChan:      make(chan struct{}),
+			readDeadline:  pipe.MakeDeadline(),
+			writeDeadline: pipe.MakeDeadline(),
 		}
 		newConn.cleanupEntry = &udpNatCleanupEntry{
 			conn:  newConn,
@@ -411,7 +407,13 @@ func (s *UDPNat) getOrCreate(key udpNatSessionKey, source M.Socksaddr, destinati
 	}
 	if !loaded {
 		s.cleanup.addOrUpdate(conn.cleanupEntry, time.Now().Add(s.timeout))
+		if initialize != nil {
+			initialize(conn)
+		}
 		if conn.isClosed() {
+			if newOnClose != nil {
+				newOnClose(io.ErrClosedPipe)
+			}
 			return nil, false
 		}
 		go s.handler.NewPacketConnectionEx(newContext, conn, source, destination, newOnClose)
@@ -449,7 +451,7 @@ func (s *UDPNat) NewPacketBatch(buffers []*buf.Buffer, sources []M.Socksaddr, de
 		return
 	}
 	for index, buffer := range buffers {
-		conn, ok := s.getOrCreate(s.sessionKey(sources[index], destination), sources[index], destination, userData)
+		conn, ok := s.getOrCreate(s.sessionKey(sources[index], destination), sources[index], destination, userData, nil)
 		if !ok {
 			buffer.Release()
 			continue
@@ -478,7 +480,6 @@ func (s *UDPNat) PurgeExpired() {
 }
 
 var (
-	_ N.PacketConn                 = (*UDPNatConn)(nil)
 	_ canceler.PacketConn          = (*UDPNatConn)(nil)
 	_ N.PacketBatchReadWaitCreator = (*UDPNatConn)(nil)
 	_ N.PacketBatchWriteCreator    = (*UDPNatConn)(nil)
@@ -495,6 +496,7 @@ type UDPNatConn struct {
 	closeOnce       sync.Once
 	doneChan        chan struct{}
 	readDeadline    pipe.Deadline
+	writeDeadline   pipe.Deadline
 	readWaitOptions atomic.Pointer[N.ReadWaitOptions]
 	readBatch       *udpNatReadBatch
 	cleanupEntry    *udpNatCleanupEntry
@@ -596,6 +598,11 @@ func (c *UDPNatConn) allowPeer(destination M.Socksaddr) bool {
 
 func (c *UDPNatConn) ReadPacket(buffer *buf.Buffer) (addr M.Socksaddr, err error) {
 	select {
+	case <-c.readDeadline.Wait():
+		return M.Socksaddr{}, os.ErrDeadlineExceeded
+	default:
+	}
+	select {
 	case p := <-c.packetChan:
 		if buffer.IsFull() {
 			err = io.ErrShortBuffer
@@ -614,6 +621,11 @@ func (c *UDPNatConn) ReadPacket(buffer *buf.Buffer) (addr M.Socksaddr, err error
 }
 
 func (c *UDPNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	err := c.writeError()
+	if err != nil {
+		buffer.Release()
+		return err
+	}
 	if !c.allowPeer(destination) {
 		buffer.Release()
 		return nil
@@ -625,13 +637,41 @@ func (c *UDPNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	if c.service.filtering != NATFilteringEndpointIndependent {
 		return nil, false
 	}
-	if creator, isCreator := c.writer.(N.PacketBatchWriteCreator); isCreator {
-		return creator.CreatePacketBatchWriter()
+	writer, created := bufio.CreatePacketBatchWriter(c.writer)
+	if !created {
+		return nil, false
 	}
-	if writer, isWriter := c.writer.(N.PacketBatchWriter); isWriter {
-		return writer, true
+	return &udpNatPacketBatchWriter{conn: c, writer: writer}, true
+}
+
+type udpNatPacketBatchWriter struct {
+	conn   *UDPNatConn
+	writer N.PacketBatchWriter
+}
+
+func (w *udpNatPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destinations []M.Socksaddr) error {
+	err := w.conn.writeError()
+	if err != nil {
+		buf.ReleaseMulti(buffers)
+		return err
 	}
-	return nil, false
+	return w.writer.WritePacketBatch(buffers, destinations)
+}
+
+func (w *udpNatPacketBatchWriter) Upstream() any {
+	return w.conn
+}
+
+func (c *UDPNatConn) writeError() error {
+	if c.isClosed() {
+		return os.ErrClosed
+	}
+	select {
+	case <-c.writeDeadline.Wait():
+		return os.ErrDeadlineExceeded
+	default:
+		return nil
+	}
 }
 
 func (c *UDPNatConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
@@ -644,6 +684,11 @@ func (c *UDPNatConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksad
 }
 
 func (c *UDPNatConn) waitReadPacket(options N.ReadWaitOptions) (buffer *buf.Buffer, destination M.Socksaddr, err error) {
+	select {
+	case <-c.readDeadline.Wait():
+		return nil, M.Socksaddr{}, os.ErrDeadlineExceeded
+	default:
+	}
 	select {
 	case packet := <-c.packetChan:
 		buffer = options.Copy(packet.Buffer)
@@ -779,16 +824,28 @@ func (c *UDPNatConn) RemoteAddr() net.Addr {
 }
 
 func (c *UDPNatConn) SetDeadline(t time.Time) error {
-	return os.ErrInvalid
+	if c.isClosed() {
+		return io.ErrClosedPipe
+	}
+	c.readDeadline.Set(t)
+	c.writeDeadline.Set(t)
+	return nil
 }
 
 func (c *UDPNatConn) SetReadDeadline(t time.Time) error {
+	if c.isClosed() {
+		return io.ErrClosedPipe
+	}
 	c.readDeadline.Set(t)
 	return nil
 }
 
 func (c *UDPNatConn) SetWriteDeadline(t time.Time) error {
-	return os.ErrInvalid
+	if c.isClosed() {
+		return io.ErrClosedPipe
+	}
+	c.writeDeadline.Set(t)
+	return nil
 }
 
 func (c *UDPNatConn) Upstream() any {

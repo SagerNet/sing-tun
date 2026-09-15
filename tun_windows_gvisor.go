@@ -21,8 +21,6 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) 
 	return &WintunEndpoint{tun: t}, stack.NICOptions{}, nil
 }
 
-var _ stack.LinkEndpoint = (*WintunEndpoint)(nil)
-
 type WintunEndpoint struct {
 	tun        *NativeTun
 	access     sync.RWMutex

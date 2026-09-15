@@ -58,7 +58,8 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		return
 	}
 	count := (len(packet) - headerLength + int(meta.gsoSize) - 1) / int(meta.gsoSize)
-	if count == 0 || count > goGSOMaxSegments || headerLength+int(meta.gsoSize) > e.stack.mtu {
+	mtu := e.platformIO.mtu()
+	if count == 0 || count > goGSOMaxSegments || headerLength+int(meta.gsoSize) > mtu {
 		return
 	}
 	options := *e.packetReadOptions.Load()
@@ -70,7 +71,7 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 	for index := range count {
 		buffer := e.gsoBuffers[index]
 		if buffer == nil {
-			buffer = options.NewBufferSize(e.stack.mtu)
+			buffer = options.NewBufferSize(mtu)
 			e.gsoBuffers[index] = buffer
 		}
 		buffer.Reset()
@@ -99,6 +100,17 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, parsed *forwardPacket) {
 	packet := packetBuffer.Bytes()
 	if len(parsed.transport) < header.UDPMinimumSize {
+		return
+	}
+	if e.udpNat == nil {
+		meta.completeChecksum(packet)
+		reply, ok := buildReject(parsed, 0)
+		if ok {
+			err := e.platformIO.writeFrame(e.singleFrame(reply), ForwardFrameMeta{})
+			if err != nil {
+				e.stack.logger.Trace(E.Cause(err, "go: write port unreachable"))
+			}
+		}
 		return
 	}
 	switch parsed.verdict.Action {
@@ -130,16 +142,15 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 		meta:      meta,
 		ipVersion: parsed.ipVersion,
 	}
-	conn, ok := e.udpNat.getOrCreate(key, source, destination, userData)
+	conn, ok := e.udpNat.getOrCreate(key, source, destination, userData, func(conn *UDPNatConn) {
+		e.attachUDPSession(conn, userData.created, &parsed.verdict)
+		userData.created = nil
+	})
 	if !ok {
 		if userData.owner != nil {
 			userData.owner.inject(packet, meta)
 		}
 		return
-	}
-	if userData.created != nil {
-		e.attachUDPSession(conn, userData.created, &parsed.verdict)
-		userData.created = nil
 	}
 	if writer, isGoPacketConn := conn.writer.(*GoPacketConn); isGoPacketConn {
 		if writer.engine != e {
@@ -213,7 +224,6 @@ func (s *Go) prepareUDPConnection(source M.Socksaddr, destination M.Socksaddr, u
 		engine:          data.engine,
 		key:             data.key,
 		platformIO:      data.engine.platformIO,
-		mtu:             s.mtu,
 		checksumOffload: data.engine.platformIO.transmitChecksumOffload(),
 		snapshot:        slices.Clone(data.packet),
 		snapshotMeta:    data.meta,
@@ -242,7 +252,6 @@ type GoPacketConn struct {
 	spliceCloseError atomic.Pointer[goPacketCloseError]
 	spliceMessage    goMessage
 	closeMessage     goMessage
-	mtu              int
 	ipVersion        uint8
 	templateLength   int
 	checksumOffload  bool
@@ -347,10 +356,6 @@ func (w *GoPacketConn) FrontHeadroom() int {
 }
 
 func (w *GoPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	if !destination.IsIP() {
-		buffer.Release()
-		return E.Cause(os.ErrInvalid, "invalid destination")
-	}
 	defer buffer.Release()
 	return w.transmit(buffer, destination)
 }
@@ -373,11 +378,9 @@ func (w *GoPacketConn) WritePacketBatch(buffers []*buf.Buffer, destinations []M.
 		clear(frames[:count])
 		goUDPFramePool.Put(frames)
 	}()
+	mtu := w.platformIO.mtu()
 	for index, buffer := range buffers {
-		if !destinations[index].IsIP() {
-			return os.ErrInvalid
-		}
-		if buffer.Len()+w.templateLength > w.mtu {
+		if buffer.Len()+w.templateLength > mtu {
 			if count > 0 {
 				err := goIgnoreDropped(w.platformIO.writePacketBatch(frames[:count]))
 				if err != nil {
@@ -420,7 +423,8 @@ func (w *GoPacketConn) WritePacketBatch(buffers []*buf.Buffer, destinations []M.
 
 func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) error {
 	payload := buffer.Bytes()
-	fragmented := w.templateLength+len(payload) > w.mtu
+	mtu := w.platformIO.mtu()
+	fragmented := w.templateLength+len(payload) > mtu
 	meta, err := w.preparePacketHeader(buffer.ExtendHeader(w.templateLength), payload, destination, w.checksumOffload && !fragmented)
 	if err != nil {
 		if w.ipVersion == 4 && destination.IsIPv6() {
@@ -430,32 +434,30 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	}
 	packet := buffer.Bytes()
 	if !fragmented {
-		return goIgnoreDropped(w.platformIO.writePacket(packet, meta))
+		return goIgnoreDropped(w.platformIO.writeDatagram(packet, meta))
 	}
-	var (
-		fragments      [][]byte
-		fragmentsBuilt bool
-	)
-	if w.ipVersion == 4 {
-		ipHdr := header.IPv4(packet)
-		ipHdr.SetID(uint16(w.engine.stack.udpIdentification.Add(1)))
-		ipHdr.SetChecksum(0)
-		ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
-		fragments, fragmentsBuilt = fragmentIPv4Packet(ipHdr, uint32(w.mtu))
-	} else {
-		fragments, fragmentsBuilt = fragmentIPv6Packet(header.IPv6(packet), uint32(w.mtu), w.engine.stack.udpIdentification.Add(1))
-	}
+	return goWriteFragmented(w.platformIO, &w.engine.stack.fragmentIdentification, packet, mtu)
+}
+
+func goWriteFragmented(platformIO goPlatformIO, identification *atomic.Uint32, packet []byte, mtu int) error {
+	fragments, fragmentsBuilt := goFragmentPacket(identification, packet, mtu)
 	if !fragmentsBuilt {
 		return nil
 	}
 	var writeErr error
 	for _, fragment := range fragments {
-		err = goIgnoreDropped(w.platformIO.writePacket(fragment, ForwardFrameMeta{}))
-		if err != nil {
-			writeErr = E.Errors(writeErr, err)
-		}
+		writeErr = E.Errors(writeErr, goIgnoreDropped(platformIO.writeDatagram(fragment, ForwardFrameMeta{})))
 	}
 	return writeErr
+}
+
+func goFragmentPacket(identification *atomic.Uint32, packet []byte, mtu int) ([][]byte, bool) {
+	if header.IPVersion(packet) == header.IPv4Version {
+		ipHdr := header.IPv4(packet)
+		ipHdr.SetID(uint16(identification.Add(1)))
+		return fragmentIPv4Packet(ipHdr, uint32(mtu))
+	}
+	return fragmentIPv6Packet(header.IPv6(packet), uint32(mtu), identification.Add(1))
 }
 
 func (w *GoPacketConn) HandshakeSuccess() error {
@@ -525,12 +527,8 @@ func (w *GoPacketConn) handleSessionClose(err error) {
 }
 
 var (
-	_ N.PacketWriter            = (*GoPacketConn)(nil)
 	_ N.FrontHeadroom           = (*GoPacketConn)(nil)
 	_ N.HandshakeSuccess        = (*GoPacketConn)(nil)
 	_ N.HandshakeFailure        = (*GoPacketConn)(nil)
-	_ io.Closer                 = (*GoPacketConn)(nil)
-	_ FlowHandle                = (*GoPacketConn)(nil)
 	_ N.PacketBatchWriteCreator = (*GoPacketConn)(nil)
-	_ N.PacketBatchWriter       = (*GoPacketConn)(nil)
 )
