@@ -114,7 +114,7 @@ func (e *goEngine) processAck(conn *GoConn, tcpHdr header.TCP, segOffset int64, 
 		ackOffset = int64(priorUnacked)
 	}
 	if conn.state == goTCPSynReceived {
-		if conn.connState.Load() != goConnStateEngaged {
+		if conn.phase != goPhaseEngaged {
 			return false
 		}
 		if segmentAck != int64(conn.sentTail.Load()) {
@@ -200,7 +200,7 @@ func (e *goEngine) processAck(conn *GoConn, tcpHdr header.TCP, segOffset int64, 
 	}
 	if ackFlags&goAckUnackedAdvanced != 0 {
 		e.advanceFinState(conn)
-		if conn.connState.Load() >= goConnStateAborted {
+		if conn.dead {
 			return true
 		}
 		if len(conn.scoreboard.entries) == 0 && conn.sendUnacked.Load() == conn.sentTail.Load() {
@@ -999,8 +999,10 @@ func (c *GoConn) publishPermit(ackOffset uint64) {
 		limit += uint64(c.congestionWindow-inFlight) * uint64(c.effectiveMSS)
 	}
 	windowEnd := ackOffset + c.peerWindow
-	c.permitWindowBound.Store(limit <= windowEnd)
 	permit := max(min(limit, windowEnd), unacked)
+	if limit <= windowEnd {
+		permit |= goPermitWindowBit
+	}
 	c.sendPacketPermit.Store(c.packetCreditBase.Load() + c.congestionWindow + c.flight.leftOut() - c.flight.retransmitOut)
 	c.sendPermit.Store(permit)
 	c.wakeTransmitter()
@@ -1038,7 +1040,7 @@ func (e *goEngine) updateFrameLimit(conn *GoConn) {
 }
 
 func (e *goEngine) handlePacingRequest(conn *GoConn) {
-	if conn.connState.Load() >= goConnStateAborted {
+	if conn.dead {
 		return
 	}
 	conn.pacingDeadline = conn.pacingRequest.Load()
@@ -1102,8 +1104,11 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 	unacked := conn.sendUnacked.Load()
 	pending := conn.bufferedTail.Load() - sent
 	windowEnd := uint64(max(conn.windowLeft2+int64(conn.peerWindow), 0))
+	conn.access.Lock()
+	writing := conn.writing
+	conn.access.Unlock()
 	switch {
-	case pending > 0 && committed == sent && windowEnd > sent && conn.writerActive.Load() == 0:
+	case pending > 0 && committed == sent && windowEnd > sent && !writing:
 		length := min(pending, uint64(conn.effectiveMSS), windowEnd-sent)
 		conn.probeRetransmitted = false
 		conn.probeHighSeq = sent + length
@@ -1111,8 +1116,8 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 		if packets := conn.dataSegmentsOut.Load(); int32(conn.sendPacketPermit.Load()-packets) <= 0 {
 			conn.sendPacketPermit.Store(packets + 1)
 		}
-		if permit < sent+length {
-			conn.sendPermit.Store(sent + length)
+		if permit&^goPermitWindowBit < sent+length {
+			conn.sendPermit.Store(sent + length | permit&goPermitWindowBit)
 		}
 		conn.wakeTransmitter()
 	case committed > unacked:
@@ -1153,7 +1158,6 @@ func (e *goEngine) expireProbe(conn *GoConn, now int64) {
 func (e *goEngine) expireRetransmit(conn *GoConn, now int64) {
 	if !conn.hasOutstanding() {
 		conn.retransmitDeadline = 0
-		conn.retransmitArmed.Store(false)
 		e.rearmTimer(conn)
 		return
 	}

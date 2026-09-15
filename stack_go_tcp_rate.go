@@ -111,7 +111,13 @@ func (c *GoConn) publishDelivery() {
 
 func (c *GoConn) checkAppLimited(pending uint64, permit uint64, sent uint64) {
 	segments := c.dataSegmentsOut.Load()
-	if pending >= uint64(c.effectiveMSS) || permit <= sent || int32(c.sendPacketPermit.Load()-segments) <= 0 || c.writerActive.Load() != 0 || c.writerParked.Load() {
+	if pending >= uint64(c.effectiveMSS) || permit <= sent || int32(c.sendPacketPermit.Load()-segments) <= 0 || c.writerWaiting.Load() != 0 {
+		return
+	}
+	c.access.Lock()
+	writing := c.writing
+	c.access.Unlock()
+	if writing {
 		return
 	}
 	inFlight := segments - c.packetCreditBase.Load()

@@ -228,6 +228,10 @@ func (s *Go) prepareUDPConnection(source M.Socksaddr, destination M.Socksaddr, u
 	return true, s.ctx, writer, writer.handleSessionClose
 }
 
+type goPacketCloseError struct {
+	err error
+}
+
 type GoPacketConn struct {
 	engine           *goEngine
 	key              udpNatSessionKey
@@ -235,7 +239,7 @@ type GoPacketConn struct {
 	splice           *goSplicePacket
 	splicePending    atomic.Pointer[goSplicePacket]
 	spliceActive     atomic.Bool
-	spliceCloseError atomic.Pointer[goConnError]
+	spliceCloseError atomic.Pointer[goPacketCloseError]
 	spliceMessage    goMessage
 	closeMessage     goMessage
 	mtu              int
@@ -479,7 +483,7 @@ func (w *GoPacketConn) HandshakeFailure(err error) error {
 }
 
 func (w *GoPacketConn) closeSplice(err error) {
-	w.spliceCloseError.CompareAndSwap(nil, &goConnError{err: err})
+	w.spliceCloseError.CompareAndSwap(nil, &goPacketCloseError{err: err})
 	w.engine.postMessage(&w.closeMessage)
 }
 
