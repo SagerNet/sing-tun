@@ -35,8 +35,6 @@ const (
 	goFinWait2Timeout     = 60 * time.Second
 	goAckRampBytes        = 256 << 10
 	goDelayedAckInterval  = 25 * time.Millisecond
-	goSweepInterval       = 500 * time.Millisecond
-	goReclaimInterval     = 60 * time.Second
 	goDyingLeakTimeout    = 30 * time.Second
 	goMaxCongestionSize   = 4 << 20
 	goResetBurstLimit     = 32
@@ -261,7 +259,11 @@ func (e *goEngine) inputTCP(conn *GoConn, parsed *forwardPacket) {
 		return
 	}
 	conn.lastActivity = e.coarseTime.Load()
-	conn.keepaliveProbes = 0
+	if conn.keepaliveProbes != 0 {
+		conn.keepaliveProbes = 0
+		e.armKeepalive(conn)
+		e.rearmTimer(conn)
+	}
 	if conn.state == goTCPSynSent {
 		e.inputSynSent(conn, parsed, tcpHdr, dataOffset)
 		return
@@ -409,6 +411,8 @@ func (e *goEngine) establishConn(conn *GoConn) {
 	conn.access.Lock()
 	conn.phase = goPhaseEstablished
 	conn.access.Unlock()
+	e.armKeepalive(conn)
+	e.rearmTimer(conn)
 	close(conn.establishedSignal)
 	if conn.listener != nil {
 		conn.listener.deliver(conn)
@@ -520,6 +524,7 @@ func (c *GoConn) releaseTransmitted(unacked uint64) {
 	c.transmitStore.releaseBelow(edge)
 	if edge == c.bufferedTail.Load() {
 		c.transmitStore.releaseDrained(edge)
+		c.scoreboard.trim()
 	}
 	c.sendReleased.Store(edge)
 }
@@ -654,7 +659,6 @@ func (e *goEngine) deliverInOrder(conn *GoConn, data []byte) {
 		e.spliceDeliver(conn, data)
 		return
 	}
-	conn.receiveChain.reserve(conn.receiveNext, len(data))
 	direct := 0
 	taken := false
 	if conn.receiveAvailable.Load() == conn.consumedTail.Load() {
@@ -666,6 +670,7 @@ func (e *goEngine) deliverInOrder(conn *GoConn, data []byte) {
 		}
 	}
 	if direct < len(data) {
+		conn.receiveChain.reserve(conn.receiveNext+uint64(direct), len(data)-direct)
 		conn.receiveChain.writeAt(conn.receiveNext+uint64(direct), data[direct:])
 	}
 	conn.receiveNext += uint64(len(data))
@@ -757,6 +762,8 @@ func (e *goEngine) advanceFinState(conn *GoConn) {
 		}
 		conn.state = goTCPFinWait2
 		conn.finWait2Since = e.coarseTime.Load()
+		e.armKeepalive(conn)
+		e.rearmTimer(conn)
 	case goTCPClosing, goTCPLastAck:
 		e.finishClose(conn)
 	}
@@ -995,6 +1002,11 @@ func (e *goEngine) handleCloseRequest(conn *GoConn) {
 	}
 	conn.finPending = true
 	e.maybeSendFin(conn)
+	if conn.dead {
+		return
+	}
+	e.armKeepalive(conn)
+	e.rearmTimer(conn)
 }
 
 func (e *goEngine) handleReadShut(conn *GoConn) {
@@ -1018,11 +1030,26 @@ func (e *goEngine) handleWindowUpdate(conn *GoConn) {
 	if conn.dead {
 		return
 	}
-	conn.receiveChain.releaseBelow(conn.consumedTail.Load())
+	consumed := conn.consumedTail.Load()
+	windowUpdate := consumed >= conn.windowUpdateAt.Load()
+	conn.receiveChain.releaseBelow(consumed)
+	conn.releaseDrainedSlabs()
+	if !windowUpdate {
+		return
+	}
 	conn.publishReceiveWindow()
 	if conn.publishedEdge > conn.advertisedEdge() || conn.ackPending > 0 {
 		e.markAck(conn, true)
 	}
+}
+
+func (e *goEngine) handleTransmitted(conn *GoConn) {
+	if conn.dead {
+		return
+	}
+	conn.releaseTransmitted(conn.sendUnacked.Load())
+	conn.releaseIdleDescriptors()
+	conn.wakeWriter()
 }
 
 func (e *goEngine) handleRetransmitArm(conn *GoConn) {
@@ -1157,7 +1184,7 @@ func (e *goEngine) updatePersist(conn *GoConn) {
 
 func (e *goEngine) rearmTimer(conn *GoConn) {
 	next := int64(0)
-	for _, deadline := range [8]int64{conn.retransmitDeadline, conn.probeDeadline, conn.persistDeadline, conn.lingerDeadline, conn.handshakeDeadline, conn.idleDeadline, conn.pacingDeadline, conn.reorderDeadline} {
+	for _, deadline := range [9]int64{conn.retransmitDeadline, conn.probeDeadline, conn.persistDeadline, conn.lingerDeadline, conn.handshakeDeadline, conn.idleDeadline, conn.pacingDeadline, conn.reorderDeadline, conn.keepaliveDeadline} {
 		if deadline == 0 {
 			continue
 		}
@@ -1204,6 +1231,10 @@ func (e *goEngine) fireConnTimer(conn *GoConn, now int64) {
 	}
 	if conn.retransmitDeadline != 0 && conn.retransmitDeadline <= now {
 		e.expireRetransmit(conn, now)
+		return
+	}
+	if conn.keepaliveDeadline != 0 && conn.keepaliveDeadline <= now {
+		e.expireKeepalive(conn, now)
 		return
 	}
 	e.rearmTimer(conn)
@@ -1290,6 +1321,7 @@ func (e *goEngine) detachConn(conn *GoConn, err error, class uint8) {
 	conn.idleDeadline = 0
 	conn.pacingDeadline = 0
 	conn.reorderDeadline = 0
+	conn.keepaliveDeadline = 0
 	conn.finPending = false
 	switch class {
 	case goDeathFinLinger:
@@ -1411,35 +1443,32 @@ func (e *goEngine) closeAllFlows() []*GoConn {
 	return unreset
 }
 
-func (e *goEngine) expireSweepTick(now int64) {
-	for _, conn := range e.flows {
-		if conn.dead {
-			continue
-		}
-		sent := conn.sentTail.Load()
-		if sent != conn.sweepSentTail {
-			conn.sweepSentTail = sent
-			conn.lastActivity = now
-		}
-		e.keepalive(conn, now)
-		if conn.dead {
-			continue
-		}
-		conn.receiveChain.releaseBelow(conn.consumedTail.Load())
-		conn.releaseTransmitted(conn.sendUnacked.Load())
-		conn.releaseDrainedSlabs()
-		conn.releaseIdleDescriptors()
-		conn.wakeWriter()
-		e.maybeSendFin(conn)
-		e.updatePersist(conn)
-		if conn.hasOutstanding() && conn.retransmitDeadline == 0 {
-			e.rearmRetransmit(conn)
-		}
+func (e *goEngine) handleKeepaliveUpdate(conn *GoConn) {
+	if conn.dead {
+		return
 	}
-	e.wheel.schedule(&e.sweepTickNode, now+int64(goSweepInterval))
+	e.armKeepalive(conn)
+	e.rearmTimer(conn)
 }
 
-func (e *goEngine) keepalive(conn *GoConn, now int64) {
+func (e *goEngine) armKeepalive(conn *GoConn) {
+	conn.access.Lock()
+	userClosed := conn.userClosed
+	enabled := conn.keepaliveEnabled
+	idleThreshold := conn.keepaliveIdle
+	conn.access.Unlock()
+	switch {
+	case conn.state == goTCPFinWait2 && userClosed:
+		conn.keepaliveDeadline = conn.finWait2Since + int64(goFinWait2Timeout)
+	case enabled && !conn.handshaking():
+		conn.keepaliveProbes = 0
+		conn.keepaliveDeadline = conn.lastActivity + int64(idleThreshold)
+	default:
+		conn.keepaliveDeadline = 0
+	}
+}
+
+func (e *goEngine) expireKeepalive(conn *GoConn, now int64) {
 	conn.access.Lock()
 	userClosed := conn.userClosed
 	enabled := conn.keepaliveEnabled
@@ -1447,22 +1476,32 @@ func (e *goEngine) keepalive(conn *GoConn, now int64) {
 	interval := conn.keepaliveInterval
 	count := conn.keepaliveCount
 	conn.access.Unlock()
-	if conn.state == goTCPFinWait2 && userClosed && now-conn.finWait2Since > int64(goFinWait2Timeout) {
-		e.sendReset(conn)
-		e.detachConn(conn, E.Cause(syscall.ETIMEDOUT, "go: orphaned FIN_WAIT_2"), goDeathImmediate)
+	if conn.state == goTCPFinWait2 && userClosed {
+		if now-conn.finWait2Since >= int64(goFinWait2Timeout) {
+			e.sendReset(conn)
+			e.detachConn(conn, E.Cause(syscall.ETIMEDOUT, "go: orphaned FIN_WAIT_2"), goDeathImmediate)
+			return
+		}
+		conn.keepaliveDeadline = conn.finWait2Since + int64(goFinWait2Timeout)
+		e.rearmTimer(conn)
+		return
+	}
+	if !enabled {
+		conn.keepaliveProbes = 0
+		conn.keepaliveDeadline = 0
+		e.rearmTimer(conn)
 		return
 	}
 	idle := now - conn.lastActivity
-	if !enabled || idle < int64(idleThreshold) {
+	if idle < int64(idleThreshold) {
 		conn.keepaliveProbes = 0
+		conn.keepaliveDeadline = conn.lastActivity + int64(idleThreshold)
+		e.rearmTimer(conn)
 		return
 	}
-	if conn.handshaking() || conn.hasOutstanding() {
-		return
-	}
-	sinceIdle := idle - int64(idleThreshold)
-	due := int64(conn.keepaliveProbes) * int64(interval)
-	if sinceIdle < due {
+	if conn.hasOutstanding() {
+		conn.keepaliveDeadline = now + int64(idleThreshold)
+		e.rearmTimer(conn)
 		return
 	}
 	if conn.keepaliveProbes >= count {
@@ -1473,24 +1512,13 @@ func (e *goEngine) keepalive(conn *GoConn, now int64) {
 	conn.keepaliveProbes++
 	segment := goSegment{offset: conn.sendNext() - 1, flags: header.TCPFlagAck}
 	e.writeConnControl(conn, &segment)
-}
-
-func (e *goEngine) expireReclaimTick(now int64) {
-	e.reclaim()
-	e.wheel.schedule(&e.reclaimTickNode, now+int64(goReclaimInterval))
+	conn.keepaliveDeadline = now + int64(interval)
+	e.rearmTimer(conn)
 }
 
 func (e *goEngine) reclaim() {
-	e.slabPool.trim()
-	e.descriptorPool.trim()
+	e.slabPool.purge()
 	for _, conn := range e.flows {
 		conn.scoreboard.trim()
-	}
-	for index := range e.reassemblyEntries {
-		entry := &e.reassemblyEntries[index]
-		if !entry.active {
-			entry.buffer.Release()
-			entry.buffer = nil
-		}
 	}
 }
