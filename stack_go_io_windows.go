@@ -8,7 +8,6 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/internal/afd"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 
@@ -26,19 +25,18 @@ const (
 const goAFDReadEvents = afd.POLL_RECEIVE | afd.POLL_DISCONNECT | afd.POLL_ABORT | afd.POLL_LOCAL_CLOSE | afd.POLL_CONNECT_FAIL
 
 type goWindowsIO struct {
-	stack           *Go
-	tun             *NativeTun
-	iocp            windows.Handle
-	afd             *afd.Device
-	waitPacket      *afd.WaitCompletionPacket
-	waitArmed       bool
-	bridgeArm       windows.Handle
-	bridgeClose     windows.Handle
-	bridgeDone      chan struct{}
-	entries         map[*goAFDEntry]struct{}
-	completions     [goSocketEventBatch + 2]afd.OverlappedEntry
-	receiveBuffers  []*buf.Buffer
-	readWaitOptions N.ReadWaitOptions
+	stack        *Go
+	tun          *NativeTun
+	iocp         windows.Handle
+	afd          *afd.Device
+	waitPacket   *afd.WaitCompletionPacket
+	waitArmed    bool
+	bridgeArm    windows.Handle
+	bridgeClose  windows.Handle
+	bridgeDone   chan struct{}
+	entries      map[*goAFDEntry]struct{}
+	completions  [goSocketEventBatch + 2]afd.OverlappedEntry
+	receiveSlots goReadSlots
 	// wintun's read-wait event is auto-reset and only set by the driver when it appends to
 	// the ring; WintunReceivePacket neither re-signals nor resets it (wintun api/session.c:
 	// CreateEventW(&SecurityAttributes, FALSE, FALSE, NULL)).
@@ -284,21 +282,12 @@ func (o *goWindowsIO) unregisterSocket(socket *goSocket) {
 }
 
 func (o *goWindowsIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
-	if o.receiveBuffers == nil || o.readWaitOptions != options {
-		o.releaseReadBuffers()
-		if o.receiveBuffers == nil {
-			o.receiveBuffers = make([]*buf.Buffer, goReadBatch)
-		}
-		o.readWaitOptions = options
-	}
-	limit := min(len(frames), len(o.receiveBuffers))
+	o.receiveSlots.configure(goReadBatch, o.stack.mtu+options.FrontHeadroom+options.RearHeadroom)
+	limit := min(len(frames), goReadBatch)
+	o.receiveSlots.wake(limit)
 	count := 0
 	for count < limit {
-		buffer := o.receiveBuffers[count]
-		if buffer == nil {
-			buffer = options.NewBufferSize(o.stack.mtu)
-			o.receiveBuffers[count] = buffer
-		}
+		buffer := o.receiveSlots.slot(count)
 		buffer.Reset()
 		buffer.Resize(options.FrontHeadroom, 0)
 		buffer.Reserve(options.RearHeadroom)
@@ -324,8 +313,7 @@ func goFatalReadError(err error) bool {
 }
 
 func (o *goWindowsIO) releaseReadBuffers() {
-	buf.ReleaseMulti(o.receiveBuffers)
-	clear(o.receiveBuffers)
+	o.receiveSlots.sleep()
 }
 
 func (o *goWindowsIO) writePacketBatch(frames []goUDPFrame) error {
@@ -433,6 +421,7 @@ func (o *goWindowsIO) close() error {
 	if closing {
 		return nil
 	}
+	o.receiveSlots.release()
 	var err error
 	if o.waitPacket != nil {
 		err = E.Errors(o.waitPacket.Cancel(), o.waitPacket.Close())

@@ -843,12 +843,10 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 	splice := w.splice
 	natConn := w.conn.Load()
 	batchSize := e.packetReceiveBatch
+	e.packetSlots.configure(goPacketBatchSize, 65535)
+	e.packetSlots.wake(batchSize)
 	for index := range batchSize {
-		buffer := e.packetReceiveBuffers[index]
-		if buffer == nil {
-			buffer = buf.NewSize(65535)
-			e.packetReceiveBuffers[index] = buffer
-		}
+		buffer := e.packetSlots.slot(index)
 		buffer.Reset()
 		e.packetMessages[index] = goPacketMessage{data: buffer.FreeBytes()}
 	}
@@ -870,7 +868,7 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 		if message.truncated {
 			continue
 		}
-		buffer := e.packetReceiveBuffers[index]
+		buffer := e.packetSlots.slot(index)
 		offset := 0
 		for {
 			length := len(message.data) - offset
