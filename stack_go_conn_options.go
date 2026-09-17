@@ -16,6 +16,7 @@ func (c *GoConn) SetKeepAlive(keepalive bool) error {
 	c.access.Lock()
 	c.keepaliveEnabled = keepalive
 	c.access.Unlock()
+	c.engine.postMessage(&c.keepaliveMessage)
 	return nil
 }
 
@@ -23,6 +24,7 @@ func (c *GoConn) SetKeepAlivePeriod(d time.Duration) error {
 	c.access.Lock()
 	c.setKeepaliveIdle(d)
 	c.access.Unlock()
+	c.engine.postMessage(&c.keepaliveMessage)
 	return nil
 }
 
@@ -43,6 +45,7 @@ func (c *GoConn) SetKeepAliveConfig(config net.KeepAliveConfig) error {
 		c.keepaliveCount = uint8(min(config.Count, goKeepaliveMaxCount))
 	}
 	c.access.Unlock()
+	c.engine.postMessage(&c.keepaliveMessage)
 	return nil
 }
 

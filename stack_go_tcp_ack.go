@@ -398,8 +398,8 @@ func (e *goEngine) cleanRetransmitQueue(conn *GoConn, ackOffset uint64, priorFac
 	}
 	if newUnacked > priorUnacked {
 		conn.scoreboard.advance(newUnacked)
-		conn.releaseTransmitted(newUnacked)
 		conn.sendUnacked.Store(newUnacked)
+		conn.releaseTransmitted(newUnacked)
 		if len(conn.scoreboard.entries) > 0 && conn.scoreboard.entries[0].flags&goDescriptorSacked != 0 {
 			flags |= goAckReneging
 		}
