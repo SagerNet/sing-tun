@@ -314,7 +314,7 @@ func (e *goEngine) retryBlockedOnEngine(conn *GoConn) {
 		conn.amendDescriptors(segment.offset, segment.length, goDescriptorDropped)
 		conn.blockedValid = false
 		conn.blockedFrame = nil
-		conn.transmittedTail.Store(end)
+		conn.transmitted(end)
 		conn.transmitAccess.Unlock()
 		e.handleDroppedFrames(conn)
 		return
@@ -328,7 +328,7 @@ func (e *goEngine) retryBlockedOnEngine(conn *GoConn) {
 	}
 	conn.blockedValid = false
 	conn.blockedFrame = nil
-	conn.transmittedTail.Store(end)
+	conn.transmitted(end)
 	conn.transmitAccess.Unlock()
 	if conn.splice != nil {
 		e.spliceResume(conn)
@@ -583,6 +583,9 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 		}
 		c.pushDescriptors(sent, length, mss, c.stamp(now), flags, flightEmpty)
 		c.sentTail.Store(sent + uint64(length))
+		if !armed && c.sendUnacked.Load() == sent {
+			armed = true
+		}
 		creditBase := c.packetCreditBase.Load()
 		flight := uint64(c.dataSegmentsOut.Load() - creditBase)
 		if flight > c.peakFlight.Load() {
@@ -599,7 +602,7 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 		}
 		switch err {
 		case nil:
-			c.transmittedTail.Store(sent + uint64(length))
+			c.transmitted(sent + uint64(length))
 		case errGoTransmitBlocked:
 			c.amendDescriptors(segment.offset, segment.length, goDescriptorNoSample)
 			c.blockedSegment = segment
@@ -612,7 +615,7 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 			}
 		case errGoFrameDropped:
 			c.amendDescriptors(segment.offset, segment.length, goDescriptorDropped)
-			c.transmittedTail.Store(sent + uint64(length))
+			c.transmitted(sent + uint64(length))
 			c.engine.postMessage(&c.droppedMessage)
 		default:
 			if !c.closed() {
@@ -649,7 +652,7 @@ func (c *GoConn) retryBlocked() bool {
 			c.advancePacing(int64(time.Since(c.engine.epoch)), c.blockedSegment.length)
 		}
 		c.blockedValid = false
-		c.transmittedTail.Store(end)
+		c.transmitted(end)
 		if err == errGoFrameDropped {
 			c.engine.postMessage(&c.droppedMessage)
 		}
