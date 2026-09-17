@@ -759,6 +759,19 @@ func (s *ForwardStage) Flush() {
 	}
 }
 
+func (s *ForwardStage) sweepDue() (time.Duration, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.access.Lock()
+	count := len(s.table)
+	s.access.Unlock()
+	if count == 0 {
+		return 0, false
+	}
+	return max(time.Duration(s.lastSweep+int64(flowSweepInterval)-s.dispatcher.now()), 0), true
+}
+
 func entryExpired(entry *flowEntry, now int64) bool {
 	if now <= entry.deadline {
 		return false
