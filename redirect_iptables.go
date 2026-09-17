@@ -299,7 +299,7 @@ func (r *autoRedirect) iptablesAddExcludeRules(builder *iptablesBuilder, hook ip
 	}
 	if kind == iptablesKindNAT {
 		builder.add("-m", "connmark", "--mark", outputMark, "-j", "RETURN")
-		builder.add("-m", "connmark", "--mark", iptablesMark(options.AutoRedirectInputMark, mask), "-j", "RETURN")
+		builder.add("-p", "tcp", "-m", "connmark", "--mark", iptablesMark(options.AutoRedirectInputMark, mask), "-j", "RETURN")
 	}
 	if hook == iptablesHookPrerouting {
 		builder.add("-i", options.Name, "-j", "RETURN")
