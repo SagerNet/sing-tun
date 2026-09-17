@@ -16,5 +16,4 @@ const (
 	goDescriptorRingCapacity = 2048
 	goReassemblyEntries      = 8
 	goSlabPoolLowWater       = 128
-	goDescriptorPoolLowWater = 64
 )

@@ -10,7 +10,6 @@ import (
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	rawfile "github.com/sagernet/sing-tun/internal/rawfile_darwin"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 
@@ -55,8 +54,7 @@ type goDarwinIO struct {
 	kqueueFd              int
 	pollAccess            sync.RWMutex
 	transmitAccess        *sync.Mutex
-	receiveBuffers        []*buf.Buffer
-	readWaitOptions       N.ReadWaitOptions
+	receiveSlots          goReadSlots
 	receiveIovecs         []unix.Iovec
 	messageHeaders        []rawfile.MsgHdrX
 	events                [goSocketEventBatch + 3]unix.Kevent_t
@@ -313,21 +311,12 @@ func (o *goDarwinIO) unregisterSocket(socket *goSocket) {
 }
 
 func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
-	if o.receiveBuffers == nil || o.readWaitOptions != options {
-		o.releaseReadBuffers()
-		if o.receiveBuffers == nil {
-			o.receiveBuffers = make([]*buf.Buffer, goReadBatch)
-		}
-		o.readWaitOptions = options
-	}
+	o.receiveSlots.configure(goReadBatch, o.stack.mtu+PacketOffset+options.FrontHeadroom+options.RearHeadroom)
 	// recvmsg_x walks every submitted msghdr slot, whether or not a packet is pending for it.
 	count := min(o.receiveBatch, len(frames))
+	o.receiveSlots.wake(count)
 	for index := range count {
-		buffer := o.receiveBuffers[index]
-		if buffer == nil {
-			buffer = options.NewBufferSize(o.stack.mtu + PacketOffset)
-			o.receiveBuffers[index] = buffer
-		}
+		buffer := o.receiveSlots.slot(index)
 		buffer.Reset()
 		buffer.Resize(options.FrontHeadroom, 0)
 		buffer.Reserve(options.RearHeadroom)
@@ -353,10 +342,10 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 	frameCount := 0
 	for index := range received {
 		dataLen := int(o.messageHeaders[index].DataLen)
-		if dataLen <= PacketOffset || dataLen > o.receiveBuffers[index].FreeLen() || o.messageHeaders[index].Msg.Flags&unix.MSG_TRUNC != 0 {
+		buffer := o.receiveSlots.slot(index)
+		if dataLen <= PacketOffset || dataLen > buffer.FreeLen() || o.messageHeaders[index].Msg.Flags&unix.MSG_TRUNC != 0 {
 			continue
 		}
-		buffer := o.receiveBuffers[index]
 		buffer.Reset()
 		buffer.Resize(options.FrontHeadroom+PacketOffset, dataLen-PacketOffset)
 		frames[frameCount] = goFrame{buffer: buffer}
@@ -368,8 +357,7 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 func (o *goDarwinIO) releaseReadBuffers() {
 	clear(o.receiveIovecs)
 	clear(o.messageHeaders)
-	buf.ReleaseMulti(o.receiveBuffers)
-	clear(o.receiveBuffers)
+	o.receiveSlots.sleep()
 	o.transmitAccess.Lock()
 	clear(o.transmitIovecs)
 	if o.batchCount == 0 {
@@ -803,6 +791,7 @@ func (o *goDarwinIO) close() error {
 	o.batchSpill = nil
 	o.batchCount = 0
 	o.batchStart = 0
+	o.receiveSlots.release()
 	return unix.Close(o.kqueueFd)
 }
 
