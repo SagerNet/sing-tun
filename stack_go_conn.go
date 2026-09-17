@@ -92,7 +92,6 @@ type GoConn struct {
 	ackCovered            uint64
 	lastAckSent           uint64
 	lastActivity          int64
-	sweepSentTail         uint64
 	windowLeft1           int64
 	windowLeft2           int64
 	keepaliveProbes       uint8
@@ -108,6 +107,7 @@ type GoConn struct {
 	idleDeadline          int64
 	pacingDeadline        int64
 	reorderDeadline       int64
+	keepaliveDeadline     int64
 	retransmitAttempts    uint8
 	probeAttempts         uint8
 	handshakeAttempts     uint8
@@ -292,6 +292,8 @@ type GoConn struct {
 	pacingMessage      goMessage
 	throttleMessage    goMessage
 	spliceMessage      goMessage
+	keepaliveMessage   goMessage
+	transmittedMessage goMessage
 	slabHolder         goSlabHolder
 }
 
@@ -332,6 +334,15 @@ func (c *GoConn) initialize(engine *goEngine, key flowKey, peer M.Socksaddr, loc
 	c.pacingMessage = goMessage{kind: goMessageConnPacing, conn: c}
 	c.throttleMessage = goMessage{kind: goMessageConnThrottle, conn: c}
 	c.spliceMessage = goMessage{kind: goMessageConnSplice, conn: c}
+	c.keepaliveMessage = goMessage{kind: goMessageConnKeepalive, conn: c}
+	c.transmittedMessage = goMessage{kind: goMessageConnTransmitted, conn: c}
+}
+
+func (c *GoConn) transmitted(tail uint64) {
+	c.transmittedTail.Store(tail)
+	if c.sendReleased.Load() < min(c.sendUnacked.Load(), tail) {
+		c.engine.postMessage(&c.transmittedMessage)
+	}
 }
 
 func (c *GoConn) handshaking() bool {
@@ -611,7 +622,15 @@ func (c *GoConn) copyReceived(target []byte, consumed uint64, available uint64) 
 }
 
 func (c *GoConn) advanceConsumed(n int) {
-	if c.consumedTail.Add(uint64(n)) >= c.windowUpdateAt.Load() {
+	consumed := c.consumedTail.Add(uint64(n))
+	if consumed >= c.windowUpdateAt.Load() {
+		c.engine.postMessage(&c.windowMessage)
+		return
+	}
+	if c.receiveChain.held.Load() == 0 {
+		return
+	}
+	if consumed/goSlabSize != (consumed-uint64(n))/goSlabSize || consumed == c.receiveAvailable.Load() {
 		c.engine.postMessage(&c.windowMessage)
 	}
 }

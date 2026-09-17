@@ -63,17 +63,10 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		return
 	}
 	options := *e.packetReadOptions.Load()
-	if e.gsoReadOptions != options {
-		buf.ReleaseMulti(e.gsoBuffers[:])
-		clear(e.gsoBuffers[:])
-		e.gsoReadOptions = options
-	}
+	e.gsoSlots.configure(goGSOMaxSegments, mtu+options.FrontHeadroom+options.RearHeadroom)
+	e.gsoSlots.wake(count)
 	for index := range count {
-		buffer := e.gsoBuffers[index]
-		if buffer == nil {
-			buffer = options.NewBufferSize(mtu)
-			e.gsoBuffers[index] = buffer
-		}
+		buffer := e.gsoSlots.slot(index)
 		buffer.Reset()
 		buffer.Resize(options.FrontHeadroom, 0)
 		buffer.Reserve(options.RearHeadroom)
@@ -88,7 +81,7 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		return
 	}
 	for index := range count {
-		buffer := e.gsoBuffers[index]
+		buffer := e.gsoSlots.slot(index)
 		buffer.Truncate(e.gsoSizes[index])
 		options.PostReturn(buffer)
 		e.gsoFrame = goFrame{buffer: buffer}
