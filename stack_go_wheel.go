@@ -13,11 +13,18 @@ const (
 	goWheelRotationTicks = goWheelLevel1Slots * goWheelLevel1Ticks
 )
 
+const (
+	goWheelLevel0 uint8 = iota
+	goWheelLevel1
+	goWheelOverflow
+)
+
 type goWheelNode struct {
 	prev     *goWheelNode
 	next     *goWheelNode
 	slot     **goWheelNode
 	deadline int64
+	level    uint8
 	expire   func(now int64)
 }
 
@@ -26,7 +33,10 @@ type goWheel struct {
 	level1      [goWheelLevel1Slots]*goWheelNode
 	overflow    *goWheelNode
 	currentTick int64
+	overflowMin int64
 	scheduled   int
+	level0Count int
+	level1Count int
 }
 
 func (w *goWheel) schedule(node *goWheelNode, deadline int64) {
@@ -52,10 +62,18 @@ func (w *goWheel) file(node *goWheelNode) {
 	var slot **goWheelNode
 	if tick-w.currentTick < goWheelLevel0Slots {
 		slot = &w.level0[tick%goWheelLevel0Slots]
+		node.level = goWheelLevel0
+		w.level0Count++
 	} else if tick/goWheelLevel1Ticks-w.currentTick/goWheelLevel1Ticks < goWheelLevel1Slots {
 		slot = &w.level1[(tick/goWheelLevel1Ticks)%goWheelLevel1Slots]
+		node.level = goWheelLevel1
+		w.level1Count++
 	} else {
 		slot = &w.overflow
+		node.level = goWheelOverflow
+		if w.overflow == nil || tick < w.overflowMin {
+			w.overflowMin = tick
+		}
 	}
 	node.prev = nil
 	node.next = *slot
@@ -78,6 +96,12 @@ func (w *goWheel) unlink(node *goWheelNode) {
 	node.prev = nil
 	node.next = nil
 	node.slot = nil
+	switch node.level {
+	case goWheelLevel0:
+		w.level0Count--
+	case goWheelLevel1:
+		w.level1Count--
+	}
 }
 
 func (w *goWheel) advance(now int64) {
@@ -87,7 +111,19 @@ func (w *goWheel) advance(now int64) {
 			w.currentTick = targetTick
 			return
 		}
-		w.currentTick++
+		if w.level0Count == 0 {
+			boundary := (w.currentTick/goWheelLevel1Ticks + 1) * goWheelLevel1Ticks
+			if w.level1Count == 0 {
+				boundary = (w.currentTick/goWheelRotationTicks + 1) * goWheelRotationTicks
+			}
+			if boundary > targetTick {
+				w.currentTick = targetTick
+				return
+			}
+			w.currentTick = boundary
+		} else {
+			w.currentTick++
+		}
 		if w.currentTick%goWheelLevel1Ticks == 0 {
 			if w.currentTick%goWheelRotationTicks == 0 {
 				w.refile(&w.overflow)
@@ -107,6 +143,9 @@ func (w *goWheel) refile(slot **goWheelNode) {
 		node.prev = nil
 		node.next = nil
 		node.slot = nil
+		if node.level == goWheelLevel1 {
+			w.level1Count--
+		}
 		w.file(node)
 	}
 }
@@ -125,24 +164,29 @@ func (w *goWheel) nextDeadline() (int64, bool) {
 		return 0, false
 	}
 	deadline := int64(math.MaxInt64)
-	for offset := int64(1); offset < goWheelLevel0Slots; offset++ {
-		tick := w.currentTick + offset
-		if w.level0[tick%goWheelLevel0Slots] != nil {
-			deadline = tick * goWheelTick
-			break
+	if w.level0Count > 0 {
+		for offset := int64(1); offset < goWheelLevel0Slots; offset++ {
+			tick := w.currentTick + offset
+			if w.level0[tick%goWheelLevel0Slots] != nil {
+				deadline = tick * goWheelTick
+				break
+			}
 		}
 	}
-	level1Index := w.currentTick / goWheelLevel1Ticks
-	for offset := int64(1); offset < goWheelLevel1Slots; offset++ {
-		index := level1Index + offset
-		if w.level1[index%goWheelLevel1Slots] != nil {
-			deadline = min(deadline, index*goWheelLevel1Ticks*goWheelTick)
-			break
+	if w.level1Count > 0 {
+		level1Index := w.currentTick / goWheelLevel1Ticks
+		for offset := int64(1); offset < goWheelLevel1Slots; offset++ {
+			index := level1Index + offset
+			if w.level1[index%goWheelLevel1Slots] != nil {
+				deadline = min(deadline, index*goWheelLevel1Ticks*goWheelTick)
+				break
+			}
 		}
 	}
 	if w.overflow != nil {
-		rotation := (w.currentTick/goWheelRotationTicks + 1) * goWheelRotationTicks * goWheelTick
-		deadline = min(deadline, rotation)
+		rotation := (w.currentTick/goWheelRotationTicks + 1) * goWheelRotationTicks
+		landing := (w.overflowMin / goWheelRotationTicks) * goWheelRotationTicks
+		deadline = min(deadline, max(rotation, landing)*goWheelTick)
 	}
 	return deadline, true
 }

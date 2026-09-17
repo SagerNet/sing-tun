@@ -17,82 +17,33 @@ const (
 type goSlab [goSlabSize]byte
 
 type goSlabPool struct {
-	access   sync.Mutex
-	free     []*goSlab
+	store    goSlabStore
 	inUse    atomic.Int32
 	holders  atomic.Int32
 	pressure func() MemoryPressure
-	lowWater int
-	closed   bool
 }
 
 func newGoSlabPool(pressure func() MemoryPressure, lowWater int) *goSlabPool {
-	pool := &goSlabPool{
-		free:     make([]*goSlab, 0, lowWater),
-		pressure: pressure,
-		lowWater: lowWater,
-	}
-	for range lowWater {
-		pool.free = append(pool.free, goAllocateSlab())
-	}
-	return pool
+	return &goSlabPool{store: newGoSlabStore(lowWater), pressure: pressure}
 }
 
 func (p *goSlabPool) acquire() *goSlab {
-	var slab *goSlab
-	p.access.Lock()
-	index := len(p.free) - 1
-	if index >= 0 {
-		slab = p.free[index]
-		p.free[index] = nil
-		p.free = p.free[:index]
-	}
-	p.access.Unlock()
-	if slab == nil {
-		slab = goAllocateSlab()
-	}
+	slab := p.store.acquire()
 	p.inUse.Add(1)
 	return slab
 }
 
 func (p *goSlabPool) release(slab *goSlab) {
-	p.access.Lock()
-	if !p.closed && p.pressureLevel() == MemoryPressureNone {
-		p.free = append(p.free, slab)
-		p.access.Unlock()
-	} else {
-		p.access.Unlock()
-		goFreeSlab(slab)
-	}
+	p.store.release(slab, p.pressureLevel() != MemoryPressureNone)
 	p.inUse.Add(-1)
 }
 
 func (p *goSlabPool) close() {
-	p.access.Lock()
-	p.closed = true
-	free := p.free
-	p.free = nil
-	p.access.Unlock()
-	for _, slab := range free {
-		goFreeSlab(slab)
-	}
+	p.store.close()
 }
 
-func (p *goSlabPool) trim() {
-	p.access.Lock()
-	defer p.access.Unlock()
-	if len(p.free) <= p.lowWater {
-		return
-	}
-	target := p.lowWater
-	if p.pressureLevel() == MemoryPressureNone {
-		target = max(p.lowWater, len(p.free)/2)
-	}
-	for _, slab := range p.free[target:] {
-		goFreeSlab(slab)
-	}
-	clear(p.free[target:])
-	p.free = p.free[:target]
+func (p *goSlabPool) purge() {
+	p.store.purge()
 }
 
 func (p *goSlabPool) pressureLevel() MemoryPressure {
@@ -464,40 +415,19 @@ type goDescriptorRing struct {
 }
 
 type goDescriptorPool struct {
-	access   sync.Mutex
-	free     []*goDescriptorBlock
-	lowWater int
+	blocks sync.Pool
 }
 
 func (p *goDescriptorPool) acquire() *goDescriptorBlock {
-	p.access.Lock()
-	index := len(p.free) - 1
-	if index >= 0 {
-		block := p.free[index]
-		p.free[index] = nil
-		p.free = p.free[:index]
-		p.access.Unlock()
-		return block
+	block, _ := p.blocks.Get().(*goDescriptorBlock)
+	if block == nil {
+		block = new(goDescriptorBlock)
 	}
-	p.access.Unlock()
-	return new(goDescriptorBlock)
+	return block
 }
 
 func (p *goDescriptorPool) release(block *goDescriptorBlock) {
-	p.access.Lock()
-	p.free = append(p.free, block)
-	p.access.Unlock()
-}
-
-func (p *goDescriptorPool) trim() {
-	p.access.Lock()
-	defer p.access.Unlock()
-	if len(p.free) <= p.lowWater {
-		return
-	}
-	target := max(p.lowWater, len(p.free)/2)
-	clear(p.free[target:])
-	p.free = p.free[:target]
+	p.blocks.Put(block)
 }
 
 // release requires exclusive access to both sides of the ring. For a live

@@ -12,7 +12,6 @@ import (
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 
@@ -35,16 +34,15 @@ type goLinuxDevice struct {
 }
 
 type goLinuxIO struct {
-	device          *goLinuxDevice
-	tun             *NativeTun
-	tunFd           int
-	ownsFd          bool
-	epollFd         int
-	eventFd         int
-	fdAccess        sync.RWMutex
-	receiveBuffers  []*buf.Buffer
-	readWaitOptions N.ReadWaitOptions
-	events          [goSocketEventBatch + 2]unix.EpollEvent
+	device       *goLinuxDevice
+	tun          *NativeTun
+	tunFd        int
+	ownsFd       bool
+	epollFd      int
+	eventFd      int
+	fdAccess     sync.RWMutex
+	receiveSlots goReadSlots
+	events       [goSocketEventBatch + 2]unix.EpollEvent
 }
 
 func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
@@ -272,22 +270,14 @@ func goEpollEvents(interest uint8) uint32 {
 }
 
 func (o *goLinuxIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
-	if o.receiveBuffers == nil || o.readWaitOptions != options {
-		o.releaseReadBuffers()
-		if o.receiveBuffers == nil {
-			o.receiveBuffers = make([]*buf.Buffer, goPacketBatchSize)
-		}
-		o.readWaitOptions = options
-	}
+	// Linux hands pre-segmentation TSO aggregates to the TUN fd even with IFF_VNET_HDR off
+	// (observed on 6.x kernels).
+	o.receiveSlots.configure(goPacketBatchSize, virtioNetHdrLen+gsoMaxSize+options.FrontHeadroom+options.RearHeadroom)
+	limit := min(len(frames), goPacketBatchSize)
+	o.receiveSlots.wake(limit)
 	count := 0
-	for count < min(len(frames), len(o.receiveBuffers)) {
-		buffer := o.receiveBuffers[count]
-		if buffer == nil {
-			// Linux hands pre-segmentation TSO aggregates to the TUN fd even with IFF_VNET_HDR off
-			// (observed on 6.x kernels).
-			buffer = options.NewBufferSize(virtioNetHdrLen + gsoMaxSize)
-			o.receiveBuffers[count] = buffer
-		}
+	for count < limit {
+		buffer := o.receiveSlots.slot(count)
 		buffer.Reset()
 		buffer.Resize(options.FrontHeadroom, 0)
 		buffer.Reserve(options.RearHeadroom)
@@ -352,8 +342,7 @@ func (o *goLinuxIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int,
 }
 
 func (o *goLinuxIO) releaseReadBuffers() {
-	buf.ReleaseMulti(o.receiveBuffers)
-	clear(o.receiveBuffers)
+	o.receiveSlots.sleep()
 }
 
 func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
@@ -519,6 +508,7 @@ func (o *goLinuxIO) close() error {
 	o.device.closing.Store(true)
 	o.fdAccess.Lock()
 	defer o.fdAccess.Unlock()
+	o.receiveSlots.release()
 	err := E.Errors(unix.Close(o.epollFd), unix.Close(o.eventFd))
 	if o.ownsFd {
 		err = E.Errors(err, unix.Close(o.tunFd))

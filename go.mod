@@ -11,7 +11,7 @@ require (
 	github.com/sagernet/gvisor v0.0.0-20260727.0-sing-box-mod.1
 	github.com/sagernet/netlink v0.0.0-20260814022025-64455d367bbf
 	github.com/sagernet/nftables v0.3.0-mod.4
-	github.com/sagernet/sing v0.9.4-0.20260912053229-7776850263cd
+	github.com/sagernet/sing v0.9.5-0.20260917142815-f37989cadbf0
 	github.com/stretchr/testify v1.11.1
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc
