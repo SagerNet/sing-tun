@@ -15,10 +15,6 @@ func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
 	return nil, E.New("go: unsupported platform")
 }
 
-func goFatalReadError(err error) bool {
-	return true
-}
-
 const goSpliceDuplicatesSocket = false
 
 type goIOVector struct{}
