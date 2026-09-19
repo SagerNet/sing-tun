@@ -101,11 +101,13 @@ func (m *Mixed) tunLoop() {
 		return
 	}
 	packetBuffer := make([]byte, m.mtu+PacketOffset)
+	var readRetry ReadRetry
 	for {
 		n, err := m.tun.Read(packetBuffer)
 		if err != nil {
 			if IsRecoverableReadError(err) {
 				m.logger.Debug(E.Cause(err, "read packet"))
+				readRetry.Wait(err)
 				continue
 			}
 			if !E.IsClosed(err) {
@@ -113,6 +115,7 @@ func (m *Mixed) tunLoop() {
 			}
 			return
 		}
+		readRetry.Reset()
 		if n < header.IPv4MinimumSize {
 			continue
 		}
@@ -156,6 +159,7 @@ func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	for i := range packetBuffers {
 		packetBuffers[i] = make([]byte, m.mtu+PacketOffset+m.frontHeadroom)
 	}
+	var readRetry ReadRetry
 	for {
 		n, err := linuxTUN.BatchRead(packetBuffers, m.frontHeadroom, packetSizes)
 		if err != nil {
@@ -166,6 +170,9 @@ func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 				return
 			}
 			m.logger.Debug(E.Cause(err, "batch read packet"))
+			readRetry.Wait(err)
+		} else {
+			readRetry.Reset()
 		}
 		if n == 0 {
 			continue
@@ -195,6 +202,7 @@ func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
 	var writeBuffers []*buf.Buffer
 	var releaseBuffers []*buf.Buffer
+	var readRetry ReadRetry
 	for {
 		buffers, err := darwinTUN.BatchRead()
 		if err != nil {
@@ -205,6 +213,9 @@ func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
 				return
 			}
 			m.logger.Debug(E.Cause(err, "batch read packet"))
+			readRetry.Wait(err)
+		} else {
+			readRetry.Reset()
 		}
 		if len(buffers) == 0 {
 			continue
