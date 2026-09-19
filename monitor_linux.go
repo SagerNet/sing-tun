@@ -67,9 +67,13 @@ func (m *networkUpdateMonitor) Start() error {
 	if err != nil {
 		return E.Cause(err, "create netlink socket")
 	}
+	groups := uint32(netlinkGroups)
+	if runtime.GOOS == "android" {
+		groups |= unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1)
+	}
 	err = unix.Bind(netlinkSocket, &unix.SockaddrNetlink{
 		Family: unix.AF_NETLINK,
-		Groups: netlinkGroups,
+		Groups: groups,
 	})
 	if err != nil {
 		unix.Close(netlinkSocket)

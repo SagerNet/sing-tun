@@ -174,7 +174,7 @@ func (r *autoRedirect) setupAndroidVPNServiceRules() error {
 		}
 		r.androidVPNServiceRules = append(r.androidVPNServiceRules, rule)
 	}
-	return nil
+	return r.removeAndroidIngressDiscardRulesLocked()
 }
 
 func (r *autoRedirect) updateAndroidVPNServiceRules() error {
@@ -191,6 +191,10 @@ func (r *autoRedirect) updateAndroidVPNServiceRules() error {
 		}
 		return err
 	}
+	currentRules, err := netlink.RuleListFiltered(netlink.FAMILY_ALL, &netlink.Rule{Priority: r.androidVPNServiceRulePriority()}, netlink.RT_FILTER_PRIORITY)
+	if err != nil {
+		return E.Cause(err, "list current vpn service rules")
+	}
 	var errorList []error
 	var installedRules []*netlink.Rule
 	for _, installedRule := range r.androidVPNServiceRules {
@@ -206,6 +210,12 @@ func (r *autoRedirect) updateAndroidVPNServiceRules() error {
 		}
 	}
 	for _, rule := range rules {
+		if slices.ContainsFunc(currentRules, func(it netlink.Rule) bool {
+			return androidVPNServiceRuleEquals(&it, rule)
+		}) {
+			installedRules = append(installedRules, rule)
+			continue
+		}
 		addErr := netlink.RuleAdd(rule)
 		if addErr != nil && !E.IsMulti(addErr, unix.EEXIST, os.ErrExist) {
 			errorList = append(errorList, E.Cause(addErr, "add rule ", rule))
@@ -214,6 +224,7 @@ func (r *autoRedirect) updateAndroidVPNServiceRules() error {
 		installedRules = append(installedRules, rule)
 	}
 	r.androidVPNServiceRules = installedRules
+	errorList = append(errorList, r.removeAndroidIngressDiscardRulesLocked())
 	return E.Errors(errorList...)
 }
 
@@ -221,6 +232,7 @@ func (r *autoRedirect) cleanupAndroidVPNServiceRules() {
 	r.androidVPNServiceRuleAccess.Lock()
 	defer r.androidVPNServiceRuleAccess.Unlock()
 	r.androidVPNServiceRulesActive = false
+	r.restoreAndroidIngressDiscardRulesLocked()
 	for _, rule := range r.androidVPNServiceRules {
 		_ = netlink.RuleDel(rule)
 	}
