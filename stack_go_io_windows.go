@@ -308,10 +308,6 @@ func (o *goWindowsIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (in
 	return count, false, nil
 }
 
-func goFatalReadError(err error) bool {
-	return true
-}
-
 func (o *goWindowsIO) releaseReadBuffers() {
 	o.receiveSlots.sleep()
 }

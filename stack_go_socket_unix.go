@@ -104,10 +104,6 @@ func goSocketDropped(errno syscall.Errno) bool {
 	return errno == unix.EMSGSIZE || errno == unix.EAFNOSUPPORT || errno == unix.ENOBUFS
 }
 
-func goFatalReadError(err error) bool {
-	return E.IsMulti(err, unix.EBADF, unix.ENODEV, unix.ENXIO)
-}
-
 func (s *goSocket) readVector(iovecs []unix.Iovec) (int, syscall.Errno) {
 	//nolint:staticcheck
 	n, _, errno := unix.RawSyscall(unix.SYS_READV, uintptr(s.fd), uintptr(unsafe.Pointer(&iovecs[0])), uintptr(len(iovecs)))
