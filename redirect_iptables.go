@@ -589,6 +589,14 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 				return postroutingNAT.err
 			}
 			inserts = append(inserts, iptablesInsert{iptablesTableNAT, "POSTROUTING", []string{"-j", postroutingNAT.name}})
+			postroutingMangle := r.iptablesChain(family, iptablesTableMangle, r.tableName+"-postrouting")
+			for _, prefix := range options.Inet4Address {
+				postroutingMangle.add("-s", prefix.Masked().String(), "!", "-o", options.Name, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-m", "mark", "--mark", outputMark, "-j", "TCPMSS", "--clamp-mss-to-pmtu")
+			}
+			if postroutingMangle.err != nil {
+				return postroutingMangle.err
+			}
+			inserts = append(inserts, iptablesInsert{iptablesTableMangle, "POSTROUTING", []string{"-j", postroutingMangle.name}})
 		}
 	}
 
