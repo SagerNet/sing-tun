@@ -251,6 +251,7 @@ func (e *goEngine) run() {
 	defer close(e.exitSignal)
 	defer e.exit()
 	e.loadWindowStart = e.coarseTime.Load()
+	var readRetry ReadRetry
 	for {
 		parkStart := int64(time.Since(e.epoch))
 		tunReadable, eventCount, err := e.park()
@@ -280,10 +281,14 @@ func (e *goEngine) run() {
 				if e.stack.closed.Load() || E.IsClosedOrCanceled(err) {
 					return
 				}
-				e.stack.logger.Error(E.Cause(err, "go: engine read"))
-				if goFatalReadError(err) {
+				if !IsRecoverableReadError(err) {
+					e.stack.logger.Error(E.Cause(err, "go: engine read"))
 					return
 				}
+				e.stack.logger.Debug(E.Cause(err, "go: engine read"))
+				readRetry.Wait(err)
+			} else {
+				readRetry.Reset()
 			}
 		}
 		e.dispatchSocketEvents(eventCount)
