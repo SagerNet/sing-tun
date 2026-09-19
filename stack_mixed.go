@@ -104,10 +104,14 @@ func (m *Mixed) tunLoop() {
 	for {
 		n, err := m.tun.Read(packetBuffer)
 		if err != nil {
-			if E.IsClosed(err) {
-				return
+			if IsRecoverableReadError(err) {
+				m.logger.Debug(E.Cause(err, "read packet"))
+				continue
 			}
-			m.logger.Error(E.Cause(err, "read packet"))
+			if !E.IsClosed(err) {
+				m.logger.Error(E.Cause(err, "read packet"))
+			}
+			return
 		}
 		if n < header.IPv4MinimumSize {
 			continue
@@ -155,10 +159,13 @@ func (m *Mixed) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 	for {
 		n, err := linuxTUN.BatchRead(packetBuffers, m.frontHeadroom, packetSizes)
 		if err != nil {
-			if E.IsClosed(err) {
+			if !IsRecoverableReadError(err) {
+				if !E.IsClosed(err) {
+					m.logger.Error(E.Cause(err, "batch read packet"))
+				}
 				return
 			}
-			m.logger.Error(E.Cause(err, "batch read packet"))
+			m.logger.Debug(E.Cause(err, "batch read packet"))
 		}
 		if n == 0 {
 			continue
@@ -191,10 +198,13 @@ func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
 	for {
 		buffers, err := darwinTUN.BatchRead()
 		if err != nil {
-			if E.IsClosed(err) || errors.Is(err, syscall.EBADF) {
+			if !IsRecoverableReadError(err) {
+				if !E.IsClosed(err) && !errors.Is(err, syscall.EBADF) {
+					m.logger.Error(E.Cause(err, "batch read packet"))
+				}
 				return
 			}
-			m.logger.Error(E.Cause(err, "batch read packet"))
+			m.logger.Debug(E.Cause(err, "batch read packet"))
 		}
 		if len(buffers) == 0 {
 			continue
