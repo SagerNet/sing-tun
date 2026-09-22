@@ -525,7 +525,7 @@ func TestGoMemoryPathMTU(t *testing.T) {
 		if header.IPVersion(packet) != header.IPv6Version || len(packet) <= header.IPv6MinimumMTU {
 			return true
 		}
-		reply, built := buildPacketTooBig(header.IPv6(packet), header.IPv6MinimumMTU, 0)
+		reply, built := BuildICMPError(packet, ICMPErrorPacketTooBig, netip.Addr{}, header.IPv6MinimumMTU, 0)
 		if built {
 			tooBig.Add(1)
 			fixture.memoryTun.WritePackets([][]byte{reply})
