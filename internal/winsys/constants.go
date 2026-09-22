@@ -103,6 +103,25 @@ var FWPM_CONDITION_IP_REMOTE_PORT = windows.GUID{
 	Data4: [8]byte{0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b},
 }
 
+var FWPM_CONDITION_IP_LOCAL_PORT = windows.GUID{
+	Data1: 0x0c1ba1af,
+	Data2: 0x5765,
+	Data3: 0x453f,
+	Data4: [8]byte{0xaf, 0x22, 0xa8, 0xf7, 0x91, 0xac, 0x77, 0x5b},
+}
+
+var FWPM_CONDITION_IP_REMOTE_ADDRESS = windows.GUID{
+	Data1: 0xb235ae9a,
+	Data2: 0x1d64,
+	Data3: 0x49b8,
+	Data4: [8]byte{0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45},
+}
+
+var (
+	FWPM_CONDITION_ICMP_TYPE = FWPM_CONDITION_IP_LOCAL_PORT
+	FWPM_CONDITION_ICMP_CODE = FWPM_CONDITION_IP_REMOTE_PORT
+)
+
 var FWPM_LAYER_ALE_AUTH_CONNECT_V4 = windows.GUID{
 	Data1: 0xc38d57d1,
 	Data2: 0x05a7,
@@ -132,7 +151,8 @@ var FWPM_CONDITION_ALE_APP_ID = windows.GUID{
 }
 
 const (
-	IPPROTO_UDP uint32 = 17
+	IPPROTO_UDP    uint32 = 17
+	IPPROTO_ICMPV6 uint32 = 58
 )
 
 const (
