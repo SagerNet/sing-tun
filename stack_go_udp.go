@@ -109,7 +109,7 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 	switch parsed.verdict.Action {
 	case ActionReject:
 		meta.completeChecksum(packet)
-		reply, ok := BuildUnreachable(packet, netip.Addr{}, 0)
+		reply, ok := BuildICMPError(packet, ICMPErrorNoRoute, netip.Addr{}, 0, 0)
 		if ok {
 			err := e.platformIO.writeFrame(e.singleFrame(reply), ForwardFrameMeta{})
 			if err != nil {
@@ -470,7 +470,7 @@ func (w *GoPacketConn) HandshakeFailure(err error) error {
 		return os.ErrInvalid
 	}
 	snapshotMeta.completeChecksum(snapshot)
-	reply, ok := BuildUnreachable(snapshot, netip.Addr{}, 0)
+	reply, ok := BuildICMPError(snapshot, ICMPErrorNoRoute, netip.Addr{}, 0, 0)
 	if !ok {
 		return nil
 	}

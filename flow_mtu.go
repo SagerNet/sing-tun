@@ -19,10 +19,7 @@ func (s *ForwardStage) resegmentTCP(flow *forwardFlow, packet *forwardPacket, ra
 	}
 	headerLength := len(raw) - len(packet.transport)
 	if packet.ipVersion == 6 && headerLength != header.IPv6MinimumSize {
-		reply, ok := buildPacketTooBig(header.IPv6(packet.network), effectiveMTU, s.writeback.ReturnHeadroom())
-		if ok {
-			s.writebackBatch = append(s.writebackBatch, reply)
-		}
+		s.writebackBatch = append(s.writebackBatch, buildICMPError(packet, ICMPErrorPacketTooBig, effectiveMTU, s.writeback.ReturnHeadroom()))
 		return
 	}
 	tcpHeaderLength := int(header.TCP(packet.transport).DataOffset())
@@ -141,64 +138,4 @@ func encodeIPv6FragmentHeader(target []byte, nextHeader uint8, offset int, more 
 	}
 	binary.BigEndian.PutUint16(target[2:], value)
 	binary.BigEndian.PutUint32(target[4:], ident)
-}
-
-func buildFragmentationNeeded(packet header.IPv4, effectiveMTU uint32, headroom int) ([]byte, bool) {
-	advertised := max(effectiveMTU, header.IPv4MinimumMTU)
-	originalLength := min(int(packet.TotalLength()), len(packet))
-	minPayloadLength := int(packet.HeaderLength()) + header.ICMPv4MinimumErrorPayloadSize
-	if originalLength < minPayloadLength {
-		return nil, false
-	}
-	maxPayloadLength := header.IPv4MinimumProcessableDatagramSize - header.IPv4MinimumSize - header.ICMPv4MinimumSize
-	payloadLength := min(originalLength, maxPayloadLength)
-	size := header.IPv4MinimumSize + header.ICMPv4MinimumSize + payloadLength
-	buffer := make([]byte, headroom+size)
-	response := header.IPv4(buffer[headroom:])
-	response.Encode(&header.IPv4Fields{
-		TotalLength: uint16(size),
-		TTL:         synthesizedTTL,
-		Protocol:    uint8(header.ICMPv4ProtocolNumber),
-		SrcAddr:     packet.DestinationAddr(),
-		DstAddr:     packet.SourceAddr(),
-	})
-	response.SetChecksum(^response.CalculateChecksum())
-	icmpHdr := header.ICMPv4(response.Payload())
-	icmpHdr.SetType(header.ICMPv4DstUnreachable)
-	icmpHdr.SetCode(header.ICMPv4FragmentationNeeded)
-	icmpHdr.SetMTU(uint16(min(advertised, uint32(0xffff))))
-	copy(icmpHdr.Payload(), packet[:payloadLength])
-	icmpHdr.SetChecksum(header.ICMPv4Checksum(icmpHdr, 0))
-	return buffer, true
-}
-
-func buildPacketTooBig(packet header.IPv6, effectiveMTU uint32, headroom int) ([]byte, bool) {
-	advertised := max(effectiveMTU, header.IPv6MinimumMTU)
-	originalLength := min(header.IPv6MinimumSize+int(packet.PayloadLength()), len(packet))
-	if originalLength < header.IPv6MinimumSize {
-		return nil, false
-	}
-	maxPayloadLength := header.IPv6MinimumMTU - header.IPv6MinimumSize - header.ICMPv6PacketTooBigMinimumSize
-	payloadLength := min(originalLength, maxPayloadLength)
-	size := header.IPv6MinimumSize + header.ICMPv6PacketTooBigMinimumSize + payloadLength
-	buffer := make([]byte, headroom+size)
-	response := header.IPv6(buffer[headroom:])
-	response.Encode(&header.IPv6Fields{
-		PayloadLength:     uint16(header.ICMPv6PacketTooBigMinimumSize + payloadLength),
-		TransportProtocol: header.ICMPv6ProtocolNumber,
-		HopLimit:          synthesizedTTL,
-		SrcAddr:           packet.DestinationAddr(),
-		DstAddr:           packet.SourceAddr(),
-	})
-	icmpHdr := header.ICMPv6(response.Payload())
-	icmpHdr.SetType(header.ICMPv6PacketTooBig)
-	icmpHdr.SetCode(header.ICMPv6UnusedCode)
-	icmpHdr.SetMTU(advertised)
-	copy(icmpHdr.Payload(), packet[:payloadLength])
-	icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
-		Header: icmpHdr,
-		Src:    response.SourceAddressSlice(),
-		Dst:    response.DestinationAddressSlice(),
-	}))
-	return buffer, true
 }
