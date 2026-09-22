@@ -68,6 +68,10 @@ type FWP_VALUE0 struct {
 
 type FWP_CONDITION_VALUE0 FWP_VALUE0
 
+type FWP_BYTE_ARRAY16 struct {
+	ByteArray16 [16]uint8
+}
+
 type FWPM_FILTER_CONDITION0 struct {
 	FieldKey       windows.GUID // Windows type: GUID
 	MatchType      uint32
