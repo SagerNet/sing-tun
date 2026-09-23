@@ -115,12 +115,6 @@ func NewSystem(options StackOptions) (Stack, error) {
 }
 
 func (s *System) ResetNetwork() {
-	if s.tcpNat4 != nil {
-		s.tcpNat4.Purge()
-	}
-	if s.tcpNat6 != nil {
-		s.tcpNat6.Purge()
-	}
 	if s.udpNat != nil {
 		s.udpNat.Purge()
 	}
