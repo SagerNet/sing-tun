@@ -4,10 +4,13 @@ package tun
 
 import (
 	"errors"
+	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
@@ -151,4 +154,35 @@ func (m *defaultInterfaceMonitor) MyInterfaces() []string {
 	m.access.Lock()
 	defer m.access.Unlock()
 	return m.myInterfaces
+}
+
+func defaultInterfaceChanged(oldInterface *control.Interface, newInterface *control.Interface) bool {
+	if oldInterface == nil {
+		return true
+	}
+	if oldInterface.Index != newInterface.Index ||
+		oldInterface.MTU != newInterface.MTU ||
+		oldInterface.Name != newInterface.Name ||
+		!slices.Equal(oldInterface.HardwareAddr, newInterface.HardwareAddr) ||
+		oldInterface.Flags != newInterface.Flags {
+		return true
+	}
+	oldNetworks := interfaceNetworks(oldInterface.Addresses)
+	newNetworks := interfaceNetworks(newInterface.Addresses)
+	return len(oldNetworks) != len(newNetworks) || !common.All(oldNetworks, func(it netip.Prefix) bool {
+		return slices.Contains(newNetworks, it)
+	})
+}
+
+func interfaceNetworks(addresses []netip.Prefix) []netip.Prefix {
+	networks := make([]netip.Prefix, 0, len(addresses))
+	for _, address := range addresses {
+		if address.Addr().Is6() {
+			address = netip.PrefixFrom(address.Addr(), min(address.Bits(), 64)).Masked()
+		}
+		if !slices.Contains(networks, address) {
+			networks = append(networks, address)
+		}
+	}
+	return networks
 }

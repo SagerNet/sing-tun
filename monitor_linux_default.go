@@ -30,7 +30,7 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 			return E.Cause(err, "find updated interface: ", link.Attrs().Name)
 		}
 		oldInterface := m.defaultInterface.Swap(newInterface)
-		if oldInterface != nil && oldInterface.Equals(*newInterface) {
+		if !defaultInterfaceChanged(oldInterface, newInterface) {
 			return nil
 		}
 		m.emit(newInterface, 0)
