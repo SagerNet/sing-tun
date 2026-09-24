@@ -201,6 +201,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 				},
 			},
 		})
+		r.nftablesAddBridgeIngressReturn(nft, table, chain)
 		if len(r.tunOptions.IncludeInterface) > 0 {
 			if len(r.tunOptions.IncludeInterface) > 1 {
 				includeInterface := &nftables.Set{
