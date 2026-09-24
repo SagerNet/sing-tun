@@ -230,6 +230,7 @@ func (r *autoRedirect) setupNFTables() error {
 				},
 			},
 		})
+		r.nftablesAddBridgeIngressReturn(nft, table, chainPreRoutingUDP)
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
@@ -437,6 +438,7 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 				&expr.Verdict{Kind: expr.VerdictReturn},
 			},
 		})
+		r.nftablesAddBridgeIngressReturn(nft, table, chain)
 	}
 	nft.AddRule(&nftables.Rule{
 		Table: table,
@@ -619,4 +621,18 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		})
 	}
 	return nil
+}
+
+func (r *autoRedirect) nftablesAddBridgeIngressReturn(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	for _, name := range r.tunOptions.BridgeInterface {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: nftablesIfname(name)},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			},
+		})
+	}
 }
