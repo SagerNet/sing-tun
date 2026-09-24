@@ -287,6 +287,13 @@ func (r *autoRedirect) updateIPTablesLocalAddresses() error {
 	return nil
 }
 
+func (r *autoRedirect) iptablesAddOwnIngressReturn(builder *iptablesBuilder) {
+	builder.add("-i", r.tunOptions.Name, "-j", "RETURN")
+	for _, name := range r.tunOptions.BridgeInterface {
+		builder.add("-i", name, "-j", "RETURN")
+	}
+}
+
 func (r *autoRedirect) iptablesAddExcludeRules(builder *iptablesBuilder, hook iptablesHook, kind iptablesChainKind, dnsHijack bool) {
 	options := r.tunOptions
 	mask := r.effectiveMarkMask()
@@ -302,7 +309,7 @@ func (r *autoRedirect) iptablesAddExcludeRules(builder *iptablesBuilder, hook ip
 		builder.add("-p", "tcp", "-m", "connmark", "--mark", iptablesMark(options.AutoRedirectInputMark, mask), "-j", "RETURN")
 	}
 	if hook == iptablesHookPrerouting {
-		builder.add("-i", options.Name, "-j", "RETURN")
+		r.iptablesAddOwnIngressReturn(builder)
 		builder.includeOnly(common.Map(options.IncludeInterface, func(it string) iptablesMatch {
 			return iptablesMatch{positive: []string{"-i", it}, negative: []string{"!", "-i", it}}
 		}))
@@ -357,7 +364,7 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 		}
 	} else {
 		builder.add("-i", "lo", "-j", "RETURN")
-		builder.add("-i", options.Name, "-j", "RETURN")
+		r.iptablesAddOwnIngressReturn(builder)
 	}
 	builder.add("-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN")
 	if builder.family.tproxy {
@@ -516,7 +523,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 		}
 	}
 	preroutingMarkChain := r.iptablesChain(family, iptablesTableMangle, r.tableName+"-prerouting-mark")
-	preroutingMarkChain.add("-i", options.Name, "-j", "RETURN")
+	r.iptablesAddOwnIngressReturn(preroutingMarkChain)
 	if family.isIPv6 && !family.tproxy {
 		preroutingMarkChain.add("-p", "tcp", "-m", "mark", "--mark", resetMark, "-j", "RETURN")
 	}
@@ -543,7 +550,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 		// through tcp_fwmark_accept, and netd's VPN rule then routes its replies
 		// into the tun.
 		preroutingLocal := r.iptablesChain(family, iptablesTableMangle, r.tableName+"-prerouting-local")
-		preroutingLocal.add("-i", options.Name, "-j", "RETURN")
+		r.iptablesAddOwnIngressReturn(preroutingLocal)
 		preroutingLocal.add("-m", "connmark", "!", "--mark", iptablesMark(0, mask), "-j", "RETURN")
 		preroutingLocal.add("-j", "MARK", "--set-xmark", outputMark)
 		localInclude := preroutingLocal.branch("include")
@@ -777,8 +784,33 @@ func (r *autoRedirect) cleanupIPTables() {
 	}
 }
 
+var (
+	iptablesChainSuffixes = []string{
+		"forward", "input", "output", "output-loopback", "output-mark", "output-prematch",
+		"output-protect", "output-tproxy", "postrouting", "prerouting", "prerouting-local",
+		"prerouting-loopback", "prerouting-mark", "prerouting-prematch", "prerouting-tproxy",
+		"reset", "unreachable-forward", "unreachable-output",
+	}
+	iptablesBranchPrefixes = []string{"cont", "include", "local", "redirect"}
+)
+
+func (r *autoRedirect) ownsIPTablesChain(name string) bool {
+	suffix, found := strings.CutPrefix(name, r.tableName+"-")
+	if !found {
+		return false
+	}
+	if slices.Contains(iptablesChainSuffixes, suffix) {
+		return true
+	}
+	prefix, counter, found := strings.Cut(suffix, "-")
+	if !found || !slices.Contains(iptablesBranchPrefixes, prefix) {
+		return false
+	}
+	_, err := strconv.ParseUint(counter, 10, 32)
+	return err == nil
+}
+
 func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
-	prefix := r.tableName + "-"
 	for _, table := range []string{iptablesTableNAT, iptablesTableMangle, iptablesTableFilter} {
 		output, err := iptablesRunOutput(iptablesPath, "-t", table, "-S")
 		if err != nil {
@@ -793,15 +825,15 @@ func (r *autoRedirect) cleanupIPTablesForFamily(iptablesPath string) {
 			}
 			switch fields[0] {
 			case "-N":
-				if strings.HasPrefix(fields[1], prefix) {
+				if r.ownsIPTablesChain(fields[1]) {
 					chains = append(chains, fields[1])
 				}
 			case "-A":
-				if strings.HasPrefix(fields[1], prefix) {
+				if r.ownsIPTablesChain(fields[1]) {
 					continue
 				}
 				for index := 2; index < len(fields)-1; index++ {
-					if fields[index] == "-j" && strings.HasPrefix(fields[index+1], prefix) {
+					if fields[index] == "-j" && r.ownsIPTablesChain(fields[index+1]) {
 						references = append(references, fields[1:])
 						break
 					}

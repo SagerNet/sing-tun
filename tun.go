@@ -99,6 +99,7 @@ type Options struct {
 	Inet6RouteExcludeAddress              []netip.Prefix
 	IncludeInterface                      []string
 	ExcludeInterface                      []string
+	BridgeInterface                       []string
 	IncludeUID                            []ranges.Range[uint32]
 	ExcludeUID                            []ranges.Range[uint32]
 	IncludeAndroidUser                    []int
