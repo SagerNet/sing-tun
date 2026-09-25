@@ -393,12 +393,12 @@ func (o *goWindowsIO) transmitSegmentOffload() bool {
 	return false
 }
 
-func (o *goWindowsIO) armTransmitWritable() (bool, error) {
-	return false, nil
+func (o *goWindowsIO) armTransmitWritable(conn *GoConn) (*goBlockedWriters, error) {
+	return nil, nil
 }
 
-func (o *goWindowsIO) takeTransmitWritable() bool {
-	return false
+func (o *goWindowsIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBlockedWriters {
+	return writable
 }
 
 func (o *goWindowsIO) wake() {
@@ -498,7 +498,7 @@ func (o *goWindowsIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error 
 	return o.writePacket(packet, meta)
 }
 
-func (o *goWindowsIO) transmitBacklogBelowBatch() bool {
+func (o *goWindowsIO) transmitBacklogBelowBatch(conn *GoConn) bool {
 	return true
 }
 
