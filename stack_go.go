@@ -76,7 +76,7 @@ func NewGo(options StackOptions) (*Go, error) {
 	if isMemoryTun {
 		stack.validateChecksum = true
 		stack.queueFactory = func(current *Go) ([]goPlatformIO, error) {
-			return []goPlatformIO{&goMemoryIO{stack: current, tun: memoryTun, handed: make([]*buf.Buffer, 0, goReadBatch)}}, nil
+			return []goPlatformIO{&goMemoryIO{stack: current, tun: memoryTun, handed: make([]*buf.Buffer, 0, goReadBatch), blocked: make(map[*OutboundQueue]*goBlockedWriters)}}, nil
 		}
 	}
 	return stack, nil
