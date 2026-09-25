@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -35,7 +34,6 @@ type kernelStackConfig struct {
 	gso                  bool
 	multiQueue           bool
 	memoryLink           bool
-	memoryOutbound       bool
 	noHandler            bool
 	prepare              func(*testing.T, *Options)
 	configure            func(*testing.T, Options)
@@ -123,7 +121,7 @@ func newKernelStackFixture(t *testing.T, config kernelStackConfig) *kernelStackF
 	var stackTun Tun
 	stackTun = device
 	if config.memoryLink {
-		fixture.bridge = newMemoryBridge(t, device, int(fixture.options.MTU), config.memoryOutbound)
+		fixture.bridge = newMemoryBridge(t, device, int(fixture.options.MTU))
 		fixture.memoryTun = fixture.bridge.memoryTun
 		stackTun = fixture.memoryTun
 	}
@@ -200,20 +198,13 @@ func (g *bridgeGate) pause(paused bool) {
 	g.resume.Broadcast()
 }
 
-func newMemoryBridge(t *testing.T, device Tun, mtu int, callback bool) *memoryBridge {
+func newMemoryBridge(t *testing.T, device Tun, mtu int) *memoryBridge {
 	bridge := &memoryBridge{device: device, done: make(chan struct{})}
 	bridge.inbound.resume = sync.NewCond(&bridge.inbound.access)
 	bridge.outbound.resume = sync.NewCond(&bridge.outbound.access)
-	memoryOptions := MemoryTunOptions{MTU: mtu}
-	if callback {
-		memoryOptions.Outbound = bridge.writeOutbound
-	}
-	bridge.memoryTun = NewMemoryTun(memoryOptions)
+	bridge.memoryTun = NewMemoryTun(MemoryTunOptions{MTU: mtu, Outbound: bridge.writeOutbound})
 	t.Cleanup(func() { bridge.memoryTun.Close() })
 	go bridge.pumpInbound()
-	if !callback {
-		go bridge.pumpOutbound()
-	}
 	t.Cleanup(func() {
 		close(bridge.done)
 		bridge.inbound.pause(false)
@@ -251,49 +242,22 @@ func (b *memoryBridge) pumpInbound() {
 	}
 }
 
-func (b *memoryBridge) pumpOutbound() {
-	storage := make([][]byte, 64)
-	for index := range storage {
-		storage[index] = make([]byte, 65536+PacketOffset)
-	}
-	sizes := make([]int, len(storage))
-	for {
-		count, err := b.memoryTun.ReadPackets(storage, sizes, PacketOffset)
-		if err != nil {
-			return
-		}
-		b.outbound.pass()
-		select {
-		case <-b.done:
-			return
-		default:
-		}
-		for index := range count {
-			err = b.forwardOutbound(storage[index][:PacketOffset+sizes[index]])
-			if err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (b *memoryBridge) writeOutbound(packets []*buf.Buffer) error {
+func (b *memoryBridge) writeOutbound(packets []*buf.Buffer) {
 	defer buf.ReleaseMulti(packets)
 	for _, packet := range packets {
 		b.outbound.pass()
 		select {
 		case <-b.done:
-			return os.ErrClosed
+			return
 		default:
 		}
 		frame := make([]byte, PacketOffset+packet.Len())
 		copy(frame[PacketOffset:], packet.Bytes())
 		err := b.forwardOutbound(frame)
 		if err != nil {
-			return err
+			return
 		}
 	}
-	return nil
 }
 
 func (b *memoryBridge) forwardOutbound(frame []byte) error {
