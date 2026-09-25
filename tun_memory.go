@@ -18,7 +18,8 @@ type MemoryTunOptions struct {
 	Headroom  int
 	RearSpace int
 	BatchSize int
-	Outbound  func(packets []*buf.Buffer) error
+	Outbound  func(packets []*buf.Buffer)
+	Route     func(packet []byte) *OutboundQueue
 }
 
 type MemoryTun struct {
@@ -26,23 +27,18 @@ type MemoryTun struct {
 	headroom         int
 	rearSpace        int
 	batchSize        int
-	outboundHandler  func(packets []*buf.Buffer) error
+	route            func(packet []byte) *OutboundQueue
 	attached         atomic.Bool
 	closed           atomic.Bool
 	inboundAccess    sync.Mutex
 	inbound          goPacketRing
 	inboundHeadroom  atomic.Int32
 	inboundRearSpace atomic.Int32
-	outboundAccess   sync.Mutex
-	control          goPacketRing
-	datagram         goPacketRing
-	data             goPacketRing
-	dataTurn         bool
-	dataQueued       atomic.Int32
-	transmitInterest bool
-	transmitWritable bool
+	outbound         *OutboundQueue
+	writableAccess   sync.Mutex
+	writable         []*OutboundQueue
+	writablePending  atomic.Bool
 	engineWake       goSignal
-	readerWake       goSignal
 	closeSignal      chan struct{}
 }
 
@@ -52,18 +48,19 @@ func NewMemoryTun(options MemoryTunOptions) *MemoryTun {
 		batchSize = memoryTunDefaultBatchSize
 	}
 	memoryTun := &MemoryTun{
-		headroom:        options.Headroom,
-		rearSpace:       options.RearSpace,
-		batchSize:       batchSize,
-		outboundHandler: options.Outbound,
-		inbound:         newGoPacketRing(4 * batchSize),
-		control:         newGoPacketRing(4 * batchSize),
-		datagram:        newGoPacketRing(4 * batchSize),
-		data:            newGoPacketRing(2 * batchSize),
-		engineWake:      make(goSignal, 1),
-		readerWake:      make(goSignal, 1),
-		closeSignal:     make(chan struct{}),
+		headroom:    options.Headroom,
+		rearSpace:   options.RearSpace,
+		batchSize:   batchSize,
+		route:       options.Route,
+		inbound:     newGoPacketRing(4 * batchSize),
+		engineWake:  make(goSignal, 1),
+		closeSignal: make(chan struct{}),
 	}
+	outboundHandler := options.Outbound
+	if outboundHandler == nil {
+		outboundHandler = buf.ReleaseMulti
+	}
+	memoryTun.outbound = memoryTun.NewOutboundQueue(outboundHandler)
 	memoryTun.mtu.Store(int32(options.MTU))
 	return memoryTun
 }
@@ -89,13 +86,7 @@ func (t *MemoryTun) UpdateMTU(mtu int) {
 }
 
 func (t *MemoryTun) Read(p []byte) (int, error) {
-	buffers := [1][]byte{p}
-	var sizes [1]int
-	_, err := t.ReadPackets(buffers[:], sizes[:], 0)
-	if err != nil {
-		return 0, err
-	}
-	return sizes[0], nil
+	return 0, os.ErrInvalid
 }
 
 func (t *MemoryTun) Write(p []byte) (int, error) {
@@ -141,77 +132,6 @@ func (t *MemoryTun) WritePackets(packets [][]byte) (int, error) {
 	return accepted, nil
 }
 
-func (t *MemoryTun) ReadPackets(buffers [][]byte, sizes []int, offset int) (int, error) {
-	if len(buffers) == 0 {
-		return 0, nil
-	}
-	if t.outboundHandler != nil {
-		return 0, os.ErrInvalid
-	}
-	for {
-		t.outboundAccess.Lock()
-		count := 0
-		for count < len(buffers) {
-			buffer, owner, segmentEnd := t.popOutboundLocked()
-			if buffer == nil {
-				break
-			}
-			packet := buffer.Bytes()
-			if owner != nil {
-				owner.frameDequeued(len(packet), segmentEnd)
-			}
-			target := buffers[count][offset:]
-			if len(packet) > len(target) {
-				buffer.Release()
-				continue
-			}
-			sizes[count] = copy(target, packet)
-			buffer.Release()
-			count++
-		}
-		wakeEngine := t.takeTransmitWritableLocked()
-		t.outboundAccess.Unlock()
-		if wakeEngine {
-			t.engineWake.notify()
-		}
-		if count > 0 {
-			return count, nil
-		}
-		if t.closed.Load() {
-			return 0, os.ErrClosed
-		}
-		select {
-		case <-t.readerWake:
-		case <-t.closeSignal:
-		}
-	}
-}
-
-func (t *MemoryTun) popOutboundLocked() (*buf.Buffer, *GoConn, uint64) {
-	if !t.control.empty() {
-		return t.control.pop()
-	}
-	if !t.datagram.empty() && (t.data.empty() || !t.dataTurn) {
-		t.dataTurn = true
-		return t.datagram.pop()
-	}
-	if !t.data.empty() {
-		t.dataTurn = false
-		t.dataQueued.Add(-1)
-		return t.data.pop()
-	}
-	return nil, nil, 0
-}
-
-func (t *MemoryTun) takeTransmitWritableLocked() bool {
-	if !t.transmitInterest || t.data.full() {
-		return false
-	}
-	t.transmitInterest = false
-	t.transmitWritable = true
-	return true
-}
-
 func (t *MemoryTun) Close() error {
 	if t.closed.Swap(true) {
 		return nil
@@ -219,72 +139,40 @@ func (t *MemoryTun) Close() error {
 	t.inboundAccess.Lock()
 	t.inbound.releaseAll()
 	t.inboundAccess.Unlock()
-	t.outboundAccess.Lock()
-	t.control.releaseAll()
-	t.datagram.releaseAll()
-	t.data.releaseAll()
-	t.dataQueued.Store(0)
-	t.outboundAccess.Unlock()
+	t.outbound.Close()
 	close(t.closeSignal)
 	return nil
+}
+
+func (t *MemoryTun) queueWritable(queue *OutboundQueue) {
+	t.writableAccess.Lock()
+	if queue.writableQueued {
+		t.writableAccess.Unlock()
+		return
+	}
+	queue.writableQueued = true
+	t.writable = append(t.writable, queue)
+	t.writablePending.Store(true)
+	t.writableAccess.Unlock()
+	t.engineWake.notify()
+}
+
+func (t *MemoryTun) takeWritable(spare []*OutboundQueue) []*OutboundQueue {
+	if !t.writablePending.Swap(false) {
+		return spare
+	}
+	t.writableAccess.Lock()
+	queues := t.writable
+	t.writable = spare
+	for _, queue := range queues {
+		queue.writableQueued = false
+	}
+	t.writableAccess.Unlock()
+	return queues
 }
 
 func (t *MemoryTun) newOutboundPacket(length int) *buf.Buffer {
 	packet := buf.NewSize(t.headroom + length + t.rearSpace)
 	packet.Resize(t.headroom, 0)
 	return packet
-}
-
-type goPacketRing struct {
-	packets     []*buf.Buffer
-	owners      []*GoConn
-	segmentEnds []uint64
-	head        int
-	count       int
-}
-
-func newGoPacketRing(capacity int) goPacketRing {
-	return goPacketRing{
-		packets:     make([]*buf.Buffer, capacity),
-		owners:      make([]*GoConn, capacity),
-		segmentEnds: make([]uint64, capacity),
-	}
-}
-
-func (r *goPacketRing) empty() bool {
-	return r.count == 0
-}
-
-func (r *goPacketRing) full() bool {
-	return r.count == len(r.packets)
-}
-
-func (r *goPacketRing) push(packet *buf.Buffer, owner *GoConn, segmentEnd uint64) {
-	index := (r.head + r.count) % len(r.packets)
-	r.packets[index] = packet
-	r.owners[index] = owner
-	r.segmentEnds[index] = segmentEnd
-	r.count++
-}
-
-func (r *goPacketRing) pop() (*buf.Buffer, *GoConn, uint64) {
-	packet := r.packets[r.head]
-	owner := r.owners[r.head]
-	segmentEnd := r.segmentEnds[r.head]
-	r.packets[r.head] = nil
-	r.owners[r.head] = nil
-	r.segmentEnds[r.head] = 0
-	r.head = (r.head + 1) % len(r.packets)
-	r.count--
-	return packet, owner, segmentEnd
-}
-
-func (r *goPacketRing) releaseAll() {
-	for !r.empty() {
-		packet, owner, segmentEnd := r.pop()
-		if owner != nil {
-			owner.frameDequeued(packet.Len(), segmentEnd)
-		}
-		packet.Release()
-	}
 }
