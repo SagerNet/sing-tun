@@ -721,7 +721,7 @@ const goQueueLimitShift = 8
 
 func (c *GoConn) queueThrottle(length int) bool {
 	limit := max(2*int64(length), int64(c.pacingRate.Load()>>goQueueLimitShift))
-	if c.queuedBytes.Load()+int64(length) <= limit || c.engine.platformIO.transmitBacklogBelowBatch() {
+	if c.queuedBytes.Load()+int64(length) <= limit || c.engine.platformIO.transmitBacklogBelowBatch(c) {
 		return false
 	}
 	if c.sentTail.Load() == c.sendUnacked.Load() {
