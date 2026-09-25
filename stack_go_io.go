@@ -49,7 +49,7 @@ type goPlatformIO interface {
 	writeDatagram(packet []byte, meta ForwardFrameMeta) error
 	writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoConn, segmentEnd uint64) error
 	writePacketBatch(frames []goUDPFrame) error
-	transmitBacklogBelowBatch() bool
+	transmitBacklogBelowBatch(conn *GoConn) bool
 	releaseReadBuffers()
 	flush()
 	mtu() int
@@ -57,8 +57,8 @@ type goPlatformIO interface {
 	transmitPrefix() int
 	transmitChecksumOffload() bool
 	transmitSegmentOffload() bool
-	armTransmitWritable() (bool, error)
-	takeTransmitWritable() bool
+	armTransmitWritable(conn *GoConn) (*goBlockedWriters, error)
+	takeTransmitWritable(writable []*goBlockedWriters) []*goBlockedWriters
 	wake()
 	close() error
 }

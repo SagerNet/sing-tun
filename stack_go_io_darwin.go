@@ -62,6 +62,7 @@ type goDarwinIO struct {
 	wakeEvent             [1]unix.Kevent_t
 	transmitWritableEvent [1]unix.Kevent_t
 	transmitWritable      atomic.Bool
+	blocked               goBlockedWriters
 	receiveBatch          int
 	transmitIovecs        []unix.Iovec
 	socketTokens          []uint32
@@ -456,7 +457,7 @@ func (o *goDarwinIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error {
 	return o.writePacket(packet, meta)
 }
 
-func (o *goDarwinIO) transmitBacklogBelowBatch() bool {
+func (o *goDarwinIO) transmitBacklogBelowBatch(conn *GoConn) bool {
 	return true
 }
 
@@ -751,24 +752,27 @@ func (o *goDarwinIO) transmitSegmentOffload() bool {
 	return false
 }
 
-func (o *goDarwinIO) armTransmitWritable() (bool, error) {
+func (o *goDarwinIO) armTransmitWritable(conn *GoConn) (*goBlockedWriters, error) {
 	o.pollAccess.RLock()
 	defer o.pollAccess.RUnlock()
 	if o.closing.Load() {
-		return false, os.ErrClosed
+		return nil, os.ErrClosed
 	}
 	if o.gateBlocked.Load() {
-		return true, nil
+		return &o.blocked, nil
 	}
 	_, err := unix.Kevent(o.kqueueFd, o.transmitWritableEvent[:], nil, nil)
 	if err != nil {
-		return false, E.Cause(err, "go: arm EVFILT_WRITE")
+		return nil, E.Cause(err, "go: arm EVFILT_WRITE")
 	}
-	return true, nil
+	return &o.blocked, nil
 }
 
-func (o *goDarwinIO) takeTransmitWritable() bool {
-	return o.transmitWritable.Swap(false)
+func (o *goDarwinIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBlockedWriters {
+	if !o.transmitWritable.Swap(false) {
+		return writable
+	}
+	return append(writable, &o.blocked)
 }
 
 func (o *goDarwinIO) wake() {
