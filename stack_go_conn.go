@@ -181,13 +181,14 @@ type GoConn struct {
 	finAcked                bool
 	ackForced               bool
 	ackDirty                bool
-	onBlockedList           bool
 	onDyingList             bool
 	clientISN               uint32
 	sendISN                 uint32
 	finOffset               uint64
 	dyingSince              int64
 	ackNext                 *GoConn
+	blockedOn               *goBlockedWriters
+	blockedPrev             *GoConn
 	blockedNext             *GoConn
 	dyingNext               *GoConn
 	splice                  *goSpliceStream
@@ -225,6 +226,7 @@ type GoConn struct {
 	dataSegmentsOut    atomic.Uint32
 	ident              atomic.Uint32
 	windowLimitedSince atomic.Bool
+	outboundQueue      atomic.Pointer[OutboundQueue]
 	transmitStore      goTransmitStore
 	descriptors        goDescriptorRing
 	transmitScratch    [goHeaderScratchSize]byte

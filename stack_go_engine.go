@@ -148,7 +148,7 @@ type goEngine struct {
 	exitSignal           chan struct{}
 	wokeHandlerThisBurst bool
 	tunPending           bool
-	transmitReady        bool
+	transmitWritable     []*goBlockedWriters
 	readBuffersHeld      bool
 	idleSince            int64
 	parkedNanos          int64
@@ -181,8 +181,7 @@ type goEngine struct {
 	descriptorPool  goDescriptorPool
 	sequenceSeed    maphash.Seed
 	ackList         *GoConn
-	blockedList     *GoConn
-	blockedTail     *GoConn
+	releasing       goBlockedWriters
 	dyingList       *GoConn
 	reclaimPending  bool
 	resetBurst      int
@@ -261,11 +260,12 @@ func (e *goEngine) run() {
 		if e.stack.closed.Load() {
 			return
 		}
-		transmitWritable := e.platformIO.takeTransmitWritable()
-		if e.transmitReady || transmitWritable {
-			e.transmitReady = false
-			e.releaseBlockedWriters()
+		e.transmitWritable = e.platformIO.takeTransmitWritable(e.transmitWritable)
+		for _, waiters := range e.transmitWritable {
+			e.releaseBlockedWriters(waiters)
 		}
+		clear(e.transmitWritable)
+		e.transmitWritable = e.transmitWritable[:0]
 		if err != nil {
 			if !errors.Is(err, os.ErrClosed) {
 				e.stack.logger.Error(E.Cause(err, "go: engine wait"))
@@ -371,8 +371,8 @@ func (e *goEngine) park() (bool, int, error) {
 		timeout = 0
 	}
 	tunReadable, eventCount, err := e.platformIO.wait(0, e.socketEvents)
-	e.transmitReady = e.platformIO.takeTransmitWritable()
-	if timeout != 0 && !tunReadable && eventCount == 0 && !e.transmitReady && err == nil && e.controlStack.head.Load() == nil {
+	e.transmitWritable = e.platformIO.takeTransmitWritable(e.transmitWritable)
+	if timeout != 0 && !tunReadable && eventCount == 0 && len(e.transmitWritable) == 0 && err == nil && e.controlStack.head.Load() == nil {
 		tunReadable, eventCount, err = e.platformIO.wait(e.idleTimeout(timeout), e.socketEvents)
 	}
 	if tunReadable || eventCount > 0 {
@@ -590,14 +590,17 @@ func (e *goEngine) shutdown() {
 		if remaining <= 0 {
 			break
 		}
-		armed, err := e.platformIO.armTransmitWritable()
-		if err != nil || !armed {
+		waiters, err := e.platformIO.armTransmitWritable(nil)
+		if err != nil || waiters == nil {
 			time.Sleep(time.Millisecond)
 		} else {
 			e.platformIO.wait(min(time.Duration(remaining), 10*time.Millisecond), nil)
-			if !e.platformIO.takeTransmitWritable() {
+			e.transmitWritable = e.platformIO.takeTransmitWritable(e.transmitWritable)
+			if len(e.transmitWritable) == 0 {
 				time.Sleep(time.Millisecond)
 			}
+			clear(e.transmitWritable)
+			e.transmitWritable = e.transmitWritable[:0]
 		}
 		kept := unreset[:0]
 		for _, conn := range unreset {

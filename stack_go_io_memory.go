@@ -4,26 +4,23 @@ import (
 	"os"
 	"time"
 
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 )
 
 type goMemoryIO struct {
-	stack   *Go
-	tun     *MemoryTun
-	timer   *time.Timer
-	handed  []*buf.Buffer
-	dropped goDropCounter
-	stop    chan struct{}
+	stack         *Go
+	tun           *MemoryTun
+	timer         *time.Timer
+	handed        []*buf.Buffer
+	blocked       map[*OutboundQueue]*goBlockedWriters
+	writableSpare []*OutboundQueue
 }
 
 func (o *goMemoryIO) start() error {
 	o.tun.attached.Store(true)
-	if o.tun.outboundHandler != nil {
-		o.stop = make(chan struct{})
-		go o.deliverOutbound()
-	}
 	return nil
 }
 
@@ -112,103 +109,38 @@ const (
 )
 
 func (o *goMemoryIO) enqueue(segments [][]byte, class goOutboundClass, owner *GoConn, segmentEnd uint64) error {
+	if o.tun.closed.Load() || !o.tun.attached.Load() {
+		return os.ErrClosed
+	}
 	length := 0
 	for _, segment := range segments {
 		length += len(segment)
 	}
-	o.tun.outboundAccess.Lock()
-	defer o.tun.outboundAccess.Unlock()
-	if o.tun.closed.Load() || !o.tun.attached.Load() {
-		return os.ErrClosed
-	}
-	ring := &o.tun.control
-	switch class {
-	case goOutboundDatagram:
-		ring = &o.tun.datagram
-	case goOutboundData:
-		ring = &o.tun.data
-	}
-	if ring.full() {
-		if class == goOutboundData {
-			return errGoTransmitBlocked
-		}
-		return errGoFrameDropped
-	}
-	if o.tun.control.empty() && o.tun.datagram.empty() && o.tun.data.empty() {
-		defer o.tun.readerWake.notify()
-	}
 	packet := o.tun.newOutboundPacket(length)
 	for _, segment := range segments {
-		packet.Write(segment)
+		common.Must1(packet.Write(segment))
 	}
+	queue := o.tun.outbound
+	if o.tun.route != nil {
+		routed := o.tun.route(packet.Bytes())
+		if routed != nil {
+			queue = routed
+		}
+	}
+	if owner != nil {
+		owner.outboundQueue.Store(queue)
+	}
+	var fragments [][]byte
 	mtu := o.tun.MTU()
-	if length <= mtu {
-		o.pushOutboundLocked(ring, packet, owner, segmentEnd)
-		return nil
-	}
-	defer packet.Release()
-	fragments, fragmentsBuilt := goFragmentPacket(&o.stack.fragmentIdentification, packet.Bytes(), mtu)
-	if !fragmentsBuilt {
-		return errGoFrameDropped
-	}
-	for _, fragment := range fragments {
-		if ring.full() {
+	if length > mtu {
+		var fragmentsBuilt bool
+		fragments, fragmentsBuilt = goFragmentPacket(&o.stack.fragmentIdentification, packet.Bytes(), mtu)
+		if !fragmentsBuilt {
+			packet.Release()
 			return errGoFrameDropped
 		}
-		fragmentPacket := o.tun.newOutboundPacket(len(fragment))
-		fragmentPacket.Write(fragment)
-		o.pushOutboundLocked(ring, fragmentPacket, owner, segmentEnd)
 	}
-	return nil
-}
-
-func (o *goMemoryIO) pushOutboundLocked(ring *goPacketRing, packet *buf.Buffer, owner *GoConn, segmentEnd uint64) {
-	if owner != nil {
-		owner.frameEnqueued(packet.Len())
-		o.tun.dataQueued.Add(1)
-	}
-	ring.push(packet, owner, segmentEnd)
-}
-
-func (o *goMemoryIO) deliverOutbound() {
-	batch := make([]*buf.Buffer, o.tun.batchSize)
-	for {
-		o.tun.outboundAccess.Lock()
-		count := 0
-		for count < len(batch) {
-			buffer, owner, segmentEnd := o.tun.popOutboundLocked()
-			if buffer == nil {
-				break
-			}
-			if owner != nil {
-				owner.frameDequeued(buffer.Len(), segmentEnd)
-			}
-			batch[count] = buffer
-			count++
-		}
-		wakeEngine := o.tun.takeTransmitWritableLocked()
-		o.tun.outboundAccess.Unlock()
-		if wakeEngine {
-			o.tun.engineWake.notify()
-		}
-		if count > 0 {
-			err := o.tun.outboundHandler(batch[:count])
-			if err != nil {
-				for range count {
-					o.dropped.record(o.stack.logger, "outbound frames")
-				}
-			}
-			clear(batch[:count])
-			continue
-		}
-		select {
-		case <-o.tun.readerWake:
-		case <-o.tun.closeSignal:
-			return
-		case <-o.stop:
-			return
-		}
-	}
+	return queue.enqueue(packet, fragments, class, owner, segmentEnd)
 }
 
 func (o *goMemoryIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
@@ -239,8 +171,12 @@ func (o *goMemoryIO) writePacketBatch(frames []goUDPFrame) error {
 	return writeErr
 }
 
-func (o *goMemoryIO) transmitBacklogBelowBatch() bool {
-	return int(o.tun.dataQueued.Load()) < o.tun.batchSize
+func (o *goMemoryIO) transmitBacklogBelowBatch(conn *GoConn) bool {
+	queue := conn.outboundQueue.Load()
+	if queue == nil {
+		queue = o.tun.outbound
+	}
+	return int(queue.dataQueued.Load()) < o.tun.batchSize
 }
 
 func (o *goMemoryIO) flush() {
@@ -266,21 +202,45 @@ func (o *goMemoryIO) transmitSegmentOffload() bool {
 	return false
 }
 
-func (o *goMemoryIO) armTransmitWritable() (bool, error) {
-	o.tun.outboundAccess.Lock()
-	defer o.tun.outboundAccess.Unlock()
-	if !o.tun.data.full() {
-		return false, nil
+func (o *goMemoryIO) armTransmitWritable(conn *GoConn) (*goBlockedWriters, error) {
+	queue := o.tun.outbound
+	if conn != nil {
+		routed := conn.outboundQueue.Load()
+		if routed != nil {
+			queue = routed
+		}
 	}
-	o.tun.transmitInterest = true
-	return true, nil
+	queue.access.Lock()
+	armed := !queue.closed.Load() && queue.data.full()
+	if armed {
+		queue.transmitInterest = true
+	}
+	queue.access.Unlock()
+	if !armed {
+		return nil, nil
+	}
+	waiters := o.blocked[queue]
+	if waiters == nil {
+		waiters = new(goBlockedWriters)
+		o.blocked[queue] = waiters
+	}
+	return waiters, nil
 }
 
-func (o *goMemoryIO) takeTransmitWritable() bool {
-	o.tun.outboundAccess.Lock()
-	defer o.tun.outboundAccess.Unlock()
-	writable := o.tun.transmitWritable
-	o.tun.transmitWritable = false
+func (o *goMemoryIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBlockedWriters {
+	queues := o.tun.takeWritable(o.writableSpare)
+	for _, queue := range queues {
+		waiters := o.blocked[queue]
+		if waiters == nil {
+			continue
+		}
+		if queue.closed.Load() {
+			delete(o.blocked, queue)
+		}
+		writable = append(writable, waiters)
+	}
+	clear(queues)
+	o.writableSpare = queues[:0]
 	return writable
 }
 
@@ -291,14 +251,12 @@ func (o *goMemoryIO) wake() {
 func (o *goMemoryIO) close() error {
 	o.releaseReadBuffers()
 	o.tun.attached.Store(false)
-	if o.stop != nil {
-		close(o.stop)
-	}
 	o.tun.inboundAccess.Lock()
 	o.tun.inbound.releaseAll()
 	o.tun.inboundAccess.Unlock()
 	if o.timer != nil {
 		o.timer.Stop()
 	}
+	clear(o.blocked)
 	return nil
 }

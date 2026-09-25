@@ -397,7 +397,7 @@ func TestGoMemoryNoHandler(t *testing.T) {
 }
 
 func TestGoMemoryOutboundReply(t *testing.T) {
-	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true, memoryOutbound: true})
+	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true})
 	for _, ipv6 := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ipv6=%v", ipv6), func(test *testing.T) {
 			client, conn, destination := fixture.packetPair(test, ipv6)
@@ -427,7 +427,7 @@ func TestGoMemoryOutboundReply(t *testing.T) {
 }
 
 func TestGoMemoryOutboundBound(t *testing.T) {
-	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true, memoryOutbound: true})
+	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true})
 	client, conn, destination := fixture.packetPair(t, false)
 	err := client.SetReadBuffer(4 << 20)
 	if err != nil {
@@ -442,7 +442,7 @@ func TestGoMemoryOutboundBound(t *testing.T) {
 		options.PostReturn(packet)
 		return conn.WritePacket(packet, destination)
 	}
-	capacity := len(fixture.memoryTun.datagram.packets)
+	capacity := fixture.memoryTun.outbound.datagram.capacity
 	for range 4 * capacity {
 		err = sendReply()
 		if err != nil {
@@ -479,13 +479,13 @@ func TestGoMemoryOutboundBound(t *testing.T) {
 }
 
 func TestGoMemoryControlPriority(t *testing.T) {
-	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true, memoryOutbound: true})
+	fixture := newKernelStackFixture(t, kernelStackConfig{mtu: 1500, memoryLink: true})
 	_, conn, destination := fixture.packetPair(t, false)
 	listener, address := kernelListen(t, fixture, false)
 	fixture.bridge.pauseOutbound(true)
 	options := N.NewReadWaitOptions(nil, conn)
 	payload := kernelPayload(100, 113)
-	for range 4 * len(fixture.memoryTun.datagram.packets) {
+	for range 4 * fixture.memoryTun.outbound.datagram.capacity {
 		packet := options.NewBufferSize(len(payload))
 		packet.Write(payload)
 		options.PostReturn(packet)
