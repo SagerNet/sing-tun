@@ -1084,44 +1084,80 @@ func (e *goEngine) handleDroppedFrames(conn *GoConn) {
 	conn.publishPermit(conn.sendUnacked.Load())
 }
 
+type goBlockedWriters struct {
+	head *GoConn
+	tail *GoConn
+}
+
+func (l *goBlockedWriters) push(conn *GoConn) {
+	conn.blockedOn = l
+	conn.blockedPrev = l.tail
+	conn.blockedNext = nil
+	if l.tail == nil {
+		l.head = conn
+	} else {
+		l.tail.blockedNext = conn
+	}
+	l.tail = conn
+}
+
+func (l *goBlockedWriters) remove(conn *GoConn) {
+	if conn.blockedPrev == nil {
+		l.head = conn.blockedNext
+	} else {
+		conn.blockedPrev.blockedNext = conn.blockedNext
+	}
+	if conn.blockedNext == nil {
+		l.tail = conn.blockedPrev
+	} else {
+		conn.blockedNext.blockedPrev = conn.blockedPrev
+	}
+	conn.blockedOn = nil
+	conn.blockedPrev = nil
+	conn.blockedNext = nil
+}
+
 func (e *goEngine) handleTransmitBlocked(conn *GoConn) {
 	if conn.dead {
 		conn.transmitSignal.notify()
 		return
 	}
-	if !conn.onBlockedList {
-		conn.onBlockedList = true
-		if e.blockedTail == nil {
-			e.blockedList = conn
-		} else {
-			e.blockedTail.blockedNext = conn
-		}
-		e.blockedTail = conn
-	}
-	armed, err := e.platformIO.armTransmitWritable()
+	waiters, err := e.platformIO.armTransmitWritable(conn)
 	if err != nil {
 		e.stack.logger.Trace(E.Cause(err, "go: arm transmit writable"))
 	}
-	if !armed {
-		e.releaseBlockedWriters()
+	if conn.blockedOn == waiters && waiters != nil {
+		return
+	}
+	if conn.blockedOn != nil {
+		conn.blockedOn.remove(conn)
+	}
+	if waiters == nil {
+		e.releaseBlockedWriter(conn)
+		return
+	}
+	waiters.push(conn)
+}
+
+func (e *goEngine) releaseBlockedWriters(waiters *goBlockedWriters) {
+	e.releasing = *waiters
+	*waiters = goBlockedWriters{}
+	for conn := e.releasing.head; conn != nil; conn = conn.blockedNext {
+		conn.blockedOn = &e.releasing
+	}
+	for e.releasing.head != nil {
+		conn := e.releasing.head
+		e.releasing.remove(conn)
+		e.releaseBlockedWriter(conn)
 	}
 }
 
-func (e *goEngine) releaseBlockedWriters() {
-	blocked := e.blockedList
-	e.blockedList = nil
-	e.blockedTail = nil
-	for conn := blocked; conn != nil; {
-		next := conn.blockedNext
-		conn.blockedNext = nil
-		conn.onBlockedList = false
-		if conn.splice != nil || goEngineTransmits {
-			e.retryBlockedOnEngine(conn)
-		} else {
-			conn.transmitSignal.notify()
-			e.wokeHandlerThisBurst = true
-		}
-		conn = next
+func (e *goEngine) releaseBlockedWriter(conn *GoConn) {
+	if conn.splice != nil || goEngineTransmits {
+		e.retryBlockedOnEngine(conn)
+	} else {
+		conn.transmitSignal.notify()
+		e.wokeHandlerThisBurst = true
 	}
 }
 
@@ -1341,7 +1377,8 @@ func (e *goEngine) detachConn(conn *GoConn, err error, class uint8) {
 		conn.dyingNext = e.dyingList
 		e.dyingList = conn
 	}
-	if conn.onBlockedList {
+	if conn.blockedOn != nil {
+		conn.blockedOn.remove(conn)
 		conn.transmitSignal.notify()
 	}
 	conn.wakeUser()

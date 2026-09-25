@@ -485,12 +485,12 @@ func (o *goLinuxIO) transmitSegmentOffload() bool {
 	return o.device.transmitOffload.Load()
 }
 
-func (o *goLinuxIO) armTransmitWritable() (bool, error) {
-	return false, nil
+func (o *goLinuxIO) armTransmitWritable(conn *GoConn) (*goBlockedWriters, error) {
+	return nil, nil
 }
 
-func (o *goLinuxIO) takeTransmitWritable() bool {
-	return false
+func (o *goLinuxIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBlockedWriters {
+	return writable
 }
 
 func (o *goLinuxIO) wake() {
@@ -520,7 +520,7 @@ func (o *goLinuxIO) writeDatagram(packet []byte, meta ForwardFrameMeta) error {
 	return o.writePacket(packet, meta)
 }
 
-func (o *goLinuxIO) transmitBacklogBelowBatch() bool {
+func (o *goLinuxIO) transmitBacklogBelowBatch(conn *GoConn) bool {
 	return true
 }
 
