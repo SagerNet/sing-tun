@@ -204,7 +204,7 @@ func (m *Mixed) batchLoopDarwin(darwinTUN DarwinTUN) {
 	var releaseBuffers []*buf.Buffer
 	var readRetry ReadRetry
 	for {
-		buffers, err := darwinTUN.BatchRead()
+		buffers, err := darwinTUN.BatchRead(0, 0)
 		if err != nil {
 			if !IsRecoverableReadError(err) {
 				if !E.IsClosed(err) && !errors.Is(err, syscall.EBADF) {

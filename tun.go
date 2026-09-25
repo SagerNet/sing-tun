@@ -51,7 +51,7 @@ type LinuxTUN interface {
 
 type DarwinTUN interface {
 	Tun
-	BatchRead() ([]*buf.Buffer, error)
+	BatchRead(frontHeadroom int, rearHeadroom int) ([]*buf.Buffer, error)
 	BatchWrite(buffers []*buf.Buffer) error
 }
 
