@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"math"
 	"net/netip"
 
 	"github.com/sagernet/sing-tun/gtcpip/checksum"
@@ -45,6 +46,9 @@ func (w *dnsResponseWriter) WritePacket(buffer *buf.Buffer, destination M.Socksa
 			return E.New("send IPv6 packet to IPv4 connection")
 		}
 		size := header.IPv4MinimumSize + udpLen
+		if size > math.MaxUint16 {
+			return E.New("DNS response too large: ", buffer.Len())
+		}
 		packet = make([]byte, headroom+size)
 		inet4Hdr := header.IPv4(packet[headroom:])
 		inet4Hdr.Encode(&header.IPv4Fields{
@@ -59,6 +63,9 @@ func (w *dnsResponseWriter) WritePacket(buffer *buf.Buffer, destination M.Socksa
 	} else {
 		if destinationAddr.Is4() {
 			destinationAddr = netip.AddrFrom16(destinationAddr.As16())
+		}
+		if udpLen > math.MaxUint16 {
+			return E.New("DNS response too large: ", buffer.Len())
 		}
 		size := header.IPv6MinimumSize + udpLen
 		packet = make([]byte, headroom+size)

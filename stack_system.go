@@ -237,7 +237,7 @@ func (s *System) tunLoop() {
 			return
 		}
 		readRetry.Reset()
-		if n < header.IPv4MinimumSize {
+		if n-PacketOffset < header.IPv4MinimumSize {
 			continue
 		}
 		rawPacket := packetBuffer[:n]
@@ -443,6 +443,10 @@ func (s *System) dispatchIPv6(ipHdr header.IPv6, destination netip.Addr) bool {
 }
 
 func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
+	if !ipHdr.IsValid(len(ipHdr)) {
+		return false, E.New("ipv4: invalid packet")
+	}
+	ipHdr = ipHdr[:ipHdr.TotalLength()]
 	destination := ipHdr.DestinationAddr()
 	if destination == s.broadcastAddr || !destination.IsGlobalUnicast() {
 		return
@@ -467,6 +471,10 @@ func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 }
 
 func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
+	if !ipHdr.IsValid(len(ipHdr)) {
+		return false, E.New("ipv6: invalid packet")
+	}
+	ipHdr = ipHdr[:header.IPv6MinimumSize+int(ipHdr.PayloadLength())]
 	destination := ipHdr.DestinationAddr()
 	if !destination.IsGlobalUnicast() {
 		return
@@ -493,6 +501,12 @@ func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, error) {
 	if s.tcpNat4 == nil {
 		return false, nil
+	}
+	if ipHdr.Flags()&header.IPv4FlagMoreFragments != 0 || ipHdr.FragmentOffset() != 0 {
+		return false, E.New("ipv4: tcp: fragment dropped")
+	}
+	if len(tcpHdr) < header.TCPMinimumSize || int(tcpHdr.DataOffset()) < header.TCPMinimumSize || int(tcpHdr.DataOffset()) > len(tcpHdr) {
+		return false, E.New("ipv4: tcp: invalid packet")
 	}
 	source := netip.AddrPortFrom(ipHdr.SourceAddr(), tcpHdr.SourcePort())
 	destination := netip.AddrPortFrom(ipHdr.DestinationAddr(), tcpHdr.DestinationPort())
@@ -533,6 +547,9 @@ func (s *System) processIPv4TCP(ipHdr header.IPv4, tcpHdr header.TCP) (bool, err
 func (s *System) processIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP) (bool, error) {
 	if s.tcpNat6 == nil {
 		return false, nil
+	}
+	if len(tcpHdr) < header.TCPMinimumSize || int(tcpHdr.DataOffset()) < header.TCPMinimumSize || int(tcpHdr.DataOffset()) > len(tcpHdr) {
+		return false, E.New("ipv6: tcp: invalid packet")
 	}
 	source := netip.AddrPortFrom(ipHdr.SourceAddr(), tcpHdr.SourcePort())
 	destination := netip.AddrPortFrom(ipHdr.DestinationAddr(), tcpHdr.DestinationPort())
@@ -647,11 +664,11 @@ func rewriteIPv6TCP(ipHdr header.IPv6, tcpHdr header.TCP, txChecksumOffload bool
 }
 
 func (s *System) processIPv4UDP(ipHdr header.IPv4, udpHdr header.UDP) error {
-	if ipHdr.Flags()&header.IPv4FlagMoreFragments != 0 {
+	if ipHdr.Flags()&header.IPv4FlagMoreFragments != 0 || ipHdr.FragmentOffset() != 0 {
 		return E.New("ipv4: fragment dropped")
 	}
-	if ipHdr.FragmentOffset() != 0 {
-		return E.New("ipv4: udp: fragment dropped")
+	if len(udpHdr) < header.UDPMinimumSize {
+		return E.New("ipv4: udp: invalid packet")
 	}
 	source := M.SocksaddrFrom(ipHdr.SourceAddr(), udpHdr.SourcePort())
 	destination := M.SocksaddrFrom(ipHdr.DestinationAddr(), udpHdr.DestinationPort())
@@ -663,6 +680,9 @@ func (s *System) processIPv4UDP(ipHdr header.IPv4, udpHdr header.UDP) error {
 }
 
 func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
+	if len(udpHdr) < header.UDPMinimumSize {
+		return E.New("ipv6: udp: invalid packet")
+	}
 	source := M.SocksaddrFrom(ipHdr.SourceAddr(), udpHdr.SourcePort())
 	destination := M.SocksaddrFrom(ipHdr.DestinationAddr(), udpHdr.DestinationPort())
 	if !destination.Addr.IsGlobalUnicast() {
@@ -703,6 +723,12 @@ func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socks
 }
 
 func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool, error) {
+	if ipHdr.Flags()&header.IPv4FlagMoreFragments != 0 || ipHdr.FragmentOffset() != 0 {
+		return false, E.New("ipv4: icmp: fragment dropped")
+	}
+	if len(icmpHdr) < header.ICMPv4MinimumSize {
+		return false, E.New("ipv4: icmp: invalid packet")
+	}
 	if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != 0 {
 		return false, nil
 	}
@@ -716,6 +742,9 @@ func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) (bool
 }
 
 func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) (bool, error) {
+	if len(icmpHdr) < header.ICMPv6MinimumSize {
+		return false, E.New("ipv6: icmp: invalid packet")
+	}
 	if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
 		return false, nil
 	}

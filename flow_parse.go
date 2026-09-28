@@ -111,6 +111,10 @@ func (p *forwardPacket) parseTransport(payload []byte) {
 			return
 		}
 		tcpHdr := header.TCP(payload)
+		tcpHeaderLength := int(tcpHdr.DataOffset())
+		if tcpHeaderLength < header.TCPMinimumSize || tcpHeaderLength > len(payload) {
+			return
+		}
 		p.source = netip.AddrPortFrom(p.source.Addr(), tcpHdr.SourcePort())
 		p.destination = netip.AddrPortFrom(p.destination.Addr(), tcpHdr.DestinationPort())
 		p.tcpFlags = tcpHdr.Flags()

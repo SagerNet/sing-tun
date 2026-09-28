@@ -397,6 +397,9 @@ func (d *ForwardDispatcher) createFlow(packet *forwardPacket, verdict FlowVerdic
 	serverPort := clientDestinationPort
 	if verdict.Destination.Addr().IsValid() {
 		serverAddress = verdict.Destination.Addr()
+		if serverAddress.Is4() != clientDestinationAddress.Is4() {
+			return nil, createFlowUnsupported
+		}
 	}
 	if verdict.Destination.Port() != 0 && !isICMP {
 		serverPort = verdict.Destination.Port()

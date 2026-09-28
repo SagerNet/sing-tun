@@ -139,6 +139,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 				return err
 			}
 			buffer.Truncate(n)
+			if n < header.ICMPv6MinimumSize {
+				return E.New("invalid ICMPv6 header received")
+			}
 			if oobn > 0 {
 				var controlMessage *ipv6.ControlMessage
 				controlMessage, err = parseIPv6ControlMessage(oob[:oobn])
@@ -193,6 +196,9 @@ func (c *Conn) ReadIP(buffer *buf.Buffer) error {
 			}
 			if !ipHdr.IsValid(buffer.Len()) {
 				return E.New("invalid IPv4 header received")
+			}
+			if ipHdr.PayloadLength() < header.ICMPv4MinimumSize {
+				return E.New("invalid ICMPv4 header received")
 			}
 			ipHdr.SetDestinationAddr(c.source.Load())
 			ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
