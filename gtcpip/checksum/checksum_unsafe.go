@@ -52,7 +52,7 @@ func calculateChecksum(buf []byte, odd bool, initial uint16) (uint16, bool) {
 			// buf = buf[1:] is skipped because it's unused and nogo will
 			// complain.
 		}
-		return reduce(acc), odd
+		return Fold(acc), odd
 	}
 
 	// On little-endian architectures, multi-byte loads from buf will load
@@ -147,14 +147,14 @@ func calculateChecksum(buf []byte, odd bool, initial uint16) (uint16, bool) {
 	}
 
 	// Reduce the checksum to 16 bits and undo byte swaps before returning.
-	acc16 := bswapIfLittleEndian16(reduce(acc))
+	acc16 := bswapIfLittleEndian16(Fold(acc))
 	if bswapped {
 		acc16 = bits.ReverseBytes16(acc16)
 	}
 	return acc16, odd
 }
 
-func reduce(acc uint64) uint16 {
+func Fold(acc uint64) uint16 {
 	// Ideally we would do:
 	//   return uint16(acc>>48) +' uint16(acc>>32) +' uint16(acc>>16) +' uint16(acc)
 	// for more instruction-level parallelism; however, there is no
