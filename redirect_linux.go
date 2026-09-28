@@ -48,6 +48,8 @@ type autoRedirect struct {
 	iptablesPath                 string
 	ip6tablesPath                string
 	useNFTables                  bool
+	nftablesAccess               sync.Mutex
+	nftablesActive               bool
 	androidVPNService            bool
 	nfqueueHandler               *nfqueueHandler
 	iptablesAccess               sync.Mutex
@@ -133,6 +135,10 @@ func (r *autoRedirect) Start() error {
 			r.ownedNetworkMonitor = true
 		}
 		err = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+			// From here on this instance owns the table and must clean it up on close.
+			r.nftablesAccess.Lock()
+			r.nftablesActive = true
+			r.nftablesAccess.Unlock()
 			r.cleanupNFTables()
 			setupErr := r.setupNFTables()
 			if setupErr != nil {
@@ -380,11 +386,17 @@ func (r *autoRedirect) updateIPTablesNetwork() error {
 
 func (r *autoRedirect) Close() error {
 	if r.useNFTables {
-		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
-			r.cleanupNFTables()
-			r.cleanupRedirectRoutes()
-			return nil
-		})
+		r.nftablesAccess.Lock()
+		nftablesActive := r.nftablesActive
+		r.nftablesActive = false
+		r.nftablesAccess.Unlock()
+		if nftablesActive {
+			_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+				r.cleanupNFTables()
+				r.cleanupRedirectRoutes()
+				return nil
+			})
+		}
 		if r.ownedNetworkMonitor {
 			_ = r.networkMonitor.Close()
 			r.ownedNetworkMonitor = false
