@@ -131,12 +131,12 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 }
 
 func applyRewriteRaw(packet *forwardPacket, rule *rewriteRule) {
-	networkHeader := packet.networkHeader()
+	sourceAddress, destinationAddress := packet.addressSlices()
 	if rule.sourceAddress.Len() > 0 {
-		networkHeader.SetSourceAddress(rule.sourceAddress)
+		copy(sourceAddress, rule.sourceAddress.AsSlice())
 	}
 	if rule.destinationAddress.Len() > 0 {
-		networkHeader.SetDestinationAddress(rule.destinationAddress)
+		copy(destinationAddress, rule.destinationAddress.AsSlice())
 	}
 	transport := packet.transport
 	switch packet.protocol {
@@ -186,7 +186,7 @@ func applyRewriteRaw(packet *forwardPacket, rule *rewriteRule) {
 }
 
 func recomputeChecksums(packet *forwardPacket) {
-	networkHeader := packet.networkHeader()
+	sourceAddress, destinationAddress := packet.addressSlices()
 	if packet.ipVersion == 4 {
 		ipHdr := header.IPv4(packet.network)
 		ipHdr.SetChecksum(0)
@@ -201,7 +201,7 @@ func recomputeChecksums(packet *forwardPacket) {
 		tcpHdr := header.TCP(transport)
 		tcpHdr.SetChecksum(0)
 		payloadChecksum := checksum.Checksum(tcpHdr.Payload(), 0)
-		pseudoChecksum := header.PseudoHeaderChecksum(header.TCPProtocolNumber, networkHeader.SourceAddressSlice(), networkHeader.DestinationAddressSlice(), uint16(len(transport)))
+		pseudoChecksum := header.PseudoHeaderChecksum(header.TCPProtocolNumber, sourceAddress, destinationAddress, uint16(len(transport)))
 		tcpHdr.SetChecksum(^tcpHdr.CalculateChecksum(checksum.Combine(pseudoChecksum, payloadChecksum)))
 	case uint8(header.UDPProtocolNumber):
 		if len(transport) < header.UDPMinimumSize {
@@ -213,7 +213,7 @@ func recomputeChecksums(packet *forwardPacket) {
 		}
 		udpHdr.SetChecksum(0)
 		payloadChecksum := checksum.Checksum(udpHdr.Payload(), 0)
-		pseudoChecksum := header.PseudoHeaderChecksum(header.UDPProtocolNumber, networkHeader.SourceAddressSlice(), networkHeader.DestinationAddressSlice(), udpHdr.Length())
+		pseudoChecksum := header.PseudoHeaderChecksum(header.UDPProtocolNumber, sourceAddress, destinationAddress, udpHdr.Length())
 		udpChecksum := ^udpHdr.CalculateChecksum(checksum.Combine(pseudoChecksum, payloadChecksum))
 		if udpChecksum == 0 {
 			udpChecksum = 0xffff
@@ -234,8 +234,8 @@ func recomputeChecksums(packet *forwardPacket) {
 		icmpHdr.SetChecksum(0)
 		icmpHdr.SetChecksum(header.ICMPv6Checksum(header.ICMPv6ChecksumParams{
 			Header: icmpHdr,
-			Src:    networkHeader.SourceAddressSlice(),
-			Dst:    networkHeader.DestinationAddressSlice(),
+			Src:    sourceAddress,
+			Dst:    destinationAddress,
 		}))
 	}
 }
