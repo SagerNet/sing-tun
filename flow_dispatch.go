@@ -983,10 +983,10 @@ func returnICMPError(natList []*portNAT, revMap map[netip.Addr]*portNAT, parsed 
 	if flow.dnatAddress || flow.dnatPort {
 		rewriteEmbeddedDestination(&embedded, addrToTCPIP(flow.clientDestinationAddress), flow.clientDestinationPort, flow.dnatPort)
 	}
-	networkHeader := parsed.networkHeader()
-	networkHeader.SetDestinationAddr(flow.clientAddress)
-	if networkHeader.SourceAddr() == flow.serverAddress {
-		networkHeader.SetSourceAddr(flow.clientDestinationAddress)
+	sourceAddress, destinationAddress := parsed.addressSlices()
+	copy(destinationAddress, flow.clientAddress.AsSlice())
+	if parsed.source.Addr() == flow.serverAddress {
+		copy(sourceAddress, flow.clientDestinationAddress.AsSlice())
 	}
 	recomputeChecksums(parsed)
 	return flow
