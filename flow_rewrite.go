@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"bytes"
 	"encoding/binary"
 
 	"github.com/sagernet/sing-tun/gtcpip"
@@ -18,40 +19,17 @@ type rewriteRule struct {
 }
 
 func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
-	var oldSource, oldDestination tcpip.Address
-	if packet.ipVersion == 4 {
-		ipHdr := header.IPv4(packet.network)
-		oldSource = ipHdr.SourceAddress()
-		oldDestination = ipHdr.DestinationAddress()
-	} else {
-		ipHdr := header.IPv6(packet.network)
-		oldSource = ipHdr.SourceAddress()
-		oldDestination = ipHdr.DestinationAddress()
-	}
-	newSource := oldSource
-	newDestination := oldDestination
+	sourceAddress, destinationAddress := packet.addressSlices()
+	var addressDelta uint64
 	if rule.sourceAddress.Len() > 0 {
-		newSource = rule.sourceAddress
+		addressDelta += rewriteAddress(sourceAddress, rule.sourceAddress.AsSlice())
 	}
 	if rule.destinationAddress.Len() > 0 {
-		newDestination = rule.destinationAddress
+		addressDelta += rewriteAddress(destinationAddress, rule.destinationAddress.AsSlice())
 	}
-	if packet.ipVersion == 4 {
+	if packet.ipVersion == 4 && addressDelta != 0 {
 		ipHdr := header.IPv4(packet.network)
-		if newSource != oldSource {
-			ipHdr.SetSourceAddressWithChecksumUpdate(newSource)
-		}
-		if newDestination != oldDestination {
-			ipHdr.SetDestinationAddressWithChecksumUpdate(newDestination)
-		}
-	} else {
-		ipHdr := header.IPv6(packet.network)
-		if newSource != oldSource {
-			ipHdr.SetSourceAddress(newSource)
-		}
-		if newDestination != oldDestination {
-			ipHdr.SetDestinationAddress(newDestination)
-		}
+		ipHdr.SetChecksum(updateChecksum(ipHdr.Checksum(), addressDelta))
 	}
 	transport := packet.transport
 	switch packet.protocol {
@@ -59,18 +37,10 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 		if len(transport) < header.TCPMinimumSize {
 			return
 		}
-		tcpHdr := header.TCP(transport)
-		if newSource != oldSource {
-			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldSource, newSource, true)
-		}
-		if newDestination != oldDestination {
-			tcpHdr.UpdateChecksumPseudoHeaderAddress(oldDestination, newDestination, true)
-		}
-		if rule.rewriteSourcePort {
-			tcpHdr.SetSourcePortWithChecksumUpdate(rule.sourcePort)
-		}
-		if rule.rewriteDestinationPort {
-			tcpHdr.SetDestinationPortWithChecksumUpdate(rule.destinationPort)
+		delta := addressDelta + rewritePorts(transport, rule)
+		if delta != 0 {
+			tcpHdr := header.TCP(transport)
+			tcpHdr.SetChecksum(updateChecksum(tcpHdr.Checksum(), delta))
 		}
 	case uint8(header.UDPProtocolNumber):
 		if len(transport) < header.UDPMinimumSize {
@@ -78,25 +48,12 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 		}
 		udpHdr := header.UDP(transport)
 		if packet.ipVersion == 4 && udpHdr.Checksum() == 0 {
-			if rule.rewriteSourcePort {
-				udpHdr.SetSourcePort(rule.sourcePort)
-			}
-			if rule.rewriteDestinationPort {
-				udpHdr.SetDestinationPort(rule.destinationPort)
-			}
+			rewritePorts(transport, rule)
 			return
 		}
-		if newSource != oldSource {
-			udpHdr.UpdateChecksumPseudoHeaderAddress(oldSource, newSource, true)
-		}
-		if newDestination != oldDestination {
-			udpHdr.UpdateChecksumPseudoHeaderAddress(oldDestination, newDestination, true)
-		}
-		if rule.rewriteSourcePort {
-			udpHdr.SetSourcePortWithChecksumUpdate(rule.sourcePort)
-		}
-		if rule.rewriteDestinationPort {
-			udpHdr.SetDestinationPortWithChecksumUpdate(rule.destinationPort)
+		delta := addressDelta + rewritePorts(transport, rule)
+		if delta != 0 {
+			udpHdr.SetChecksum(updateChecksum(udpHdr.Checksum(), delta))
 		}
 		if udpHdr.Checksum() == 0 {
 			udpHdr.SetChecksum(0xffff)
@@ -116,11 +73,8 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 			return
 		}
 		icmpHdr := header.ICMPv6(transport)
-		if newSource != oldSource {
-			icmpHdr.UpdateChecksumPseudoHeaderAddress(oldSource, newSource)
-		}
-		if newDestination != oldDestination {
-			icmpHdr.UpdateChecksumPseudoHeaderAddress(oldDestination, newDestination)
+		if addressDelta != 0 {
+			icmpHdr.SetChecksum(updateChecksum(icmpHdr.Checksum(), addressDelta))
 		}
 		if rule.rewriteSourcePort {
 			icmpHdr.SetIdentWithChecksumUpdate(rule.sourcePort)
@@ -128,6 +82,42 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 			icmpHdr.SetIdentWithChecksumUpdate(rule.destinationPort)
 		}
 	}
+}
+
+func rewriteAddress(field []byte, address []byte) uint64 {
+	if bytes.Equal(field, address) {
+		return 0
+	}
+	var delta uint64
+	for offset := 0; offset < len(field); offset += 4 {
+		delta += uint64(^binary.BigEndian.Uint32(field[offset:])) + uint64(binary.BigEndian.Uint32(address[offset:]))
+	}
+	copy(field, address)
+	return delta
+}
+
+func rewritePorts(transport []byte, rule *rewriteRule) uint64 {
+	var delta uint64
+	if rule.rewriteSourcePort {
+		delta += checksumDelta(binary.BigEndian.Uint16(transport), rule.sourcePort)
+		binary.BigEndian.PutUint16(transport, rule.sourcePort)
+	}
+	if rule.rewriteDestinationPort {
+		delta += checksumDelta(binary.BigEndian.Uint16(transport[2:]), rule.destinationPort)
+		binary.BigEndian.PutUint16(transport[2:], rule.destinationPort)
+	}
+	return delta
+}
+
+func checksumDelta(previous uint16, next uint16) uint64 {
+	if previous == next {
+		return 0
+	}
+	return uint64(^previous) + uint64(next)
+}
+
+func updateChecksum(current uint16, delta uint64) uint16 {
+	return ^checksum.Fold(uint64(^current) + delta)
 }
 
 func applyRewriteRaw(packet *forwardPacket, rule *rewriteRule) {
