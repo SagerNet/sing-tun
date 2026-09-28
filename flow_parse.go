@@ -35,11 +35,13 @@ func (p *forwardPacket) flowKey() flowKey {
 	return flowKey{protocol: p.protocol, source: p.source, destination: p.destination}
 }
 
-func (p *forwardPacket) networkHeader() header.Network {
+func (p *forwardPacket) addressSlices() ([]byte, []byte) {
 	if p.ipVersion == 4 {
-		return header.IPv4(p.network)
+		ipHdr := header.IPv4(p.network)
+		return ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice()
 	}
-	return header.IPv6(p.network)
+	ipHdr := header.IPv6(p.network)
+	return ipHdr.SourceAddressSlice(), ipHdr.DestinationAddressSlice()
 }
 
 func (p *forwardPacket) isTCPSyn() bool {
