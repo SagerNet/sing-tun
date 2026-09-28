@@ -116,7 +116,7 @@ func (m *Mixed) tunLoop() {
 			return
 		}
 		readRetry.Reset()
-		if n < header.IPv4MinimumSize {
+		if n-PacketOffset < header.IPv4MinimumSize {
 			continue
 		}
 		rawPacket := packetBuffer[:n]
@@ -267,6 +267,10 @@ func (m *Mixed) processPacket(packet []byte) bool {
 }
 
 func (m *Mixed) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
+	if !ipHdr.IsValid(len(ipHdr)) {
+		return false, E.New("ipv4: invalid packet")
+	}
+	ipHdr = ipHdr[:ipHdr.TotalLength()]
 	writeBack = true
 	destination := ipHdr.DestinationAddr()
 	if destination == m.broadcastAddr || !destination.IsGlobalUnicast() {
@@ -294,6 +298,10 @@ func (m *Mixed) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 }
 
 func (m *Mixed) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
+	if !ipHdr.IsValid(len(ipHdr)) {
+		return false, E.New("ipv6: invalid packet")
+	}
+	ipHdr = ipHdr[:header.IPv6MinimumSize+int(ipHdr.PayloadLength())]
 	writeBack = true
 	destination := ipHdr.DestinationAddr()
 	if !destination.IsGlobalUnicast() {
