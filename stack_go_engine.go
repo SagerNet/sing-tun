@@ -759,7 +759,8 @@ func goValidateTransportChecksum(parsed *forwardPacket) bool {
 	default:
 		return true
 	}
-	partial := header.PseudoHeaderChecksum(tcpip.TransportProtocolNumber(parsed.protocol), parsed.source.Addr().AsSlice(), parsed.destination.Addr().AsSlice(), uint16(len(transport)))
+	sourceAddress, destinationAddress := parsed.addressSlices()
+	partial := header.PseudoHeaderChecksum(tcpip.TransportProtocolNumber(parsed.protocol), sourceAddress, destinationAddress, uint16(len(transport)))
 	return checksum.Checksum(transport, partial) == 0xffff
 }
 
