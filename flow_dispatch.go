@@ -58,7 +58,11 @@ func (m *ForwardFrameMeta) completeChecksum(raw []byte) {
 	}
 	initial := binary.BigEndian.Uint16(raw[checksumAt:])
 	raw[checksumAt], raw[checksumAt+1] = 0, 0
-	binary.BigEndian.PutUint16(raw[checksumAt:], ^checksum.Checksum(raw[m.checksumStart:], initial))
+	transportChecksum := ^checksum.Checksum(raw[m.checksumStart:], initial)
+	if transportChecksum == 0 {
+		transportChecksum = 0xffff
+	}
+	binary.BigEndian.PutUint16(raw[checksumAt:], transportChecksum)
 }
 
 type flowEntry struct {
