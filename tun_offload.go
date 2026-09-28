@@ -106,7 +106,11 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 			// the checksum we compute. This is typically the pseudo-header sum.
 			initial := binary.BigEndian.Uint16(in[cSumAt:])
 			in[cSumAt], in[cSumAt+1] = 0, 0
-			binary.BigEndian.PutUint16(in[cSumAt:], ^checksum.Checksum(in[options.CsumStart:], initial))
+			transportChecksum := ^checksum.Checksum(in[options.CsumStart:], initial)
+			if transportChecksum == 0 {
+				transportChecksum = 0xffff
+			}
+			binary.BigEndian.PutUint16(in[cSumAt:], transportChecksum)
 		}
 		sizes[0] = copy(outBufs[0][outOffset:], in)
 		return 1, nil
@@ -211,6 +215,9 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 		lenForPseudo := uint16(transportHeaderLen + segmentDataLen)
 		transportCSum := checksum.Combine(pseudoSumBase, lenForPseudo)
 		transportCSum = ^checksum.Checksum(out[options.CsumStart:totalLen], transportCSum)
+		if transportCSum == 0 {
+			transportCSum = 0xffff
+		}
 		binary.BigEndian.PutUint16(out[options.CsumStart+options.CsumOffset:], transportCSum)
 
 		nextSegmentDataAt += int(options.GSOSize)

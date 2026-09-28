@@ -88,6 +88,9 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 		if rule.rewriteDestinationPort {
 			udpHdr.SetDestinationPortWithChecksumUpdate(rule.destinationPort)
 		}
+		if udpHdr.Checksum() == 0 {
+			udpHdr.SetChecksum(0xffff)
+		}
 	case uint8(header.ICMPv4ProtocolNumber):
 		if len(transport) < header.ICMPv4MinimumSize {
 			return
