@@ -201,11 +201,8 @@ func (e *goEngine) initializeSession(conn *GoConn, now int64, peerWindow uint16)
 }
 
 func (e *goEngine) localMSS(ipVersion uint8) uint16 {
-	mtu := e.platformIO.mtu()
-	if ipVersion == 4 {
-		return uint16(mtu - header.IPv4MinimumSize - header.TCPMinimumSize)
-	}
-	return uint16(mtu - header.IPv6MinimumSize - header.TCPMinimumSize)
+	mss := e.platformIO.mtu() - goNetworkHeaderLength(ipVersion) - header.TCPMinimumSize
+	return uint16(min(max(mss, header.TCPMinimumSendMSS), header.TCPMaximumMSS))
 }
 
 func (e *goEngine) evictFlow() bool {
@@ -594,6 +591,10 @@ func (c *GoConn) signalReader() {
 }
 
 func (e *goEngine) deliverSegment(conn *GoConn, segOffset int64, payload []byte, fin bool) {
+	if conn.finReceived {
+		e.markAck(conn, true)
+		return
+	}
 	conn.receiveChain.releaseBelow(conn.consumedTail.Load())
 	receiveNext := int64(conn.receiveNext)
 	edge := int64(conn.publishedEdge)
