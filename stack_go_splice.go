@@ -859,7 +859,12 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 	defer func() {
 		e.flushPacketFrames()
 		clear(e.packetMessages[:])
-		if errno != 0 && !goSocketWouldBlock(errno) && w.splice != nil {
+		if w.splice == nil {
+			return
+		}
+		if count == 0 && errno == 0 {
+			e.packetSpliceClose(w, io.EOF)
+		} else if errno != 0 && !goSocketWouldBlock(errno) {
 			e.packetSpliceClose(w, E.Cause(errno, "go: receive peer batch"))
 		}
 	}()
