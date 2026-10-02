@@ -431,12 +431,6 @@ func (r *autoRedirect) redirectPort() uint16 {
 	return r.redirectServer.Port()
 }
 
-// netd's Fwmark owns bits 0-19 (netId, explicitlySelected, protectedFromVpn,
-// permission) and bit 20 (uidBillingDone, written by the bw_* chains); bits
-// 29-30 are the vendor field and bit 31 is ingress_cpu_wakeup. The mark is also
-// mirrored into the connmark, where netd's StrictController owns bits 24-25.
-const androidReservedMarkMask = 0xE31FFFFF
-
 // netd (server/RouteController.cpp) identifies a network's route table as
 // ifindex + ROUTE_TABLE_OFFSET_FROM_INDEX, selects VPN traffic with the
 // secure (fwmark 0x0/0x20000) and bypassable (fwmark 0x0/0x30000) uid range
@@ -452,19 +446,6 @@ const (
 
 func (r *autoRedirect) effectiveMarkMask() uint32 {
 	return r.tunOptions.AutoRedirectInputMark | r.tunOptions.AutoRedirectOutputMark | r.tunOptions.AutoRedirectResetMark | r.tunOptions.AutoRedirectTProxyMark
-}
-
-func effectiveMark(value uint32, defaultValue uint32, androidDefaultValue uint32) uint32 {
-	if runtime.GOOS == "android" {
-		if value != 0 && value&androidReservedMarkMask == 0 {
-			return value
-		}
-		return androidDefaultValue
-	}
-	if value != 0 {
-		return value
-	}
-	return defaultValue
 }
 
 func (r *autoRedirect) effectiveNFQueue() uint16 {

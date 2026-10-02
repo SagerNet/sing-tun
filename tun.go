@@ -138,6 +138,10 @@ func (o *Options) DNSModeOrDefault() string {
 	return o.DNSMode
 }
 
+func (o *Options) AutoRedirectOutputMarkOrDefault() uint32 {
+	return effectiveMark(o.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark, DefaultAutoRedirectOutputMarkAndroid)
+}
+
 func (o *Options) DNSServerAddress() ([]netip.Addr, error) {
 	inet4DNS, err := o.Inet4DNSAddress()
 	if err != nil {
