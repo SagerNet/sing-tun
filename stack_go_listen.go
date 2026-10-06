@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/pipe"
 )
@@ -84,29 +85,33 @@ func (e *goEngine) handleListenOpen(listener *GoListener) {
 		close(listener.openSignal)
 		return
 	}
+	directory := &e.stack.directory
+	directory.access.Lock()
 	available := func(port uint16) bool {
-		return e.lookupListener(netip.AddrPortFrom(listener.local.Addr(), port)) == nil
+		local := netip.AddrPortFrom(listener.local.Addr(), port)
+		return directory.listeners[local] == nil && !directory.reservedLocked(uint8(header.TCPProtocolNumber), local)
 	}
+	var openErr error
 	port := listener.local.Port()
 	if port == 0 {
 		allocated := false
 		port, allocated = goAllocatePort(available)
 		if !allocated {
-			listener.access.Lock()
-			listener.openErr = E.Cause(syscall.EADDRINUSE, "go: ephemeral ports exhausted")
-			listener.access.Unlock()
-			close(listener.openSignal)
-			return
+			openErr = E.Cause(syscall.EADDRINUSE, "go: ephemeral ports exhausted")
 		}
 	} else if !available(port) {
-		listener.access.Lock()
-		listener.openErr = E.Cause(syscall.EADDRINUSE, "go: listen ", listener.local)
-		listener.access.Unlock()
-		close(listener.openSignal)
-		return
+		openErr = E.Cause(syscall.EADDRINUSE, "go: listen ", listener.local)
 	}
-	listener.local = netip.AddrPortFrom(listener.local.Addr(), port)
-	e.stack.directory.insertListener(listener)
+	if openErr == nil {
+		listener.local = netip.AddrPortFrom(listener.local.Addr(), port)
+		directory.insertListenerLocked(listener)
+	}
+	directory.access.Unlock()
+	if openErr != nil {
+		listener.access.Lock()
+		listener.openErr = openErr
+		listener.access.Unlock()
+	}
 	close(listener.openSignal)
 }
 

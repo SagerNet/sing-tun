@@ -122,30 +122,33 @@ func (e *goEngine) handleUDPOpen(socket *GoUDPConn) {
 		close(socket.openSignal)
 		return
 	}
+	directory := &e.stack.directory
+	directory.access.Lock()
 	available := func(port uint16) bool {
 		local := netip.AddrPortFrom(socket.local.Addr(), port)
-		return e.udpSockets[local] == nil && (len(e.stack.engines) == 1 || e.stack.directory.lookupUDPSocket(local) == nil)
+		return directory.udpSockets[local] == nil && !directory.reservedLocked(uint8(header.UDPProtocolNumber), local)
 	}
+	var openErr error
 	port := socket.local.Port()
 	if port == 0 {
 		allocated := false
 		port, allocated = goAllocatePort(available)
 		if !allocated {
-			socket.access.Lock()
-			socket.openErr = E.Cause(syscall.EADDRINUSE, "go: ephemeral ports exhausted")
-			socket.access.Unlock()
-			close(socket.openSignal)
-			return
+			openErr = E.Cause(syscall.EADDRINUSE, "go: ephemeral ports exhausted")
 		}
 	} else if !available(port) {
-		socket.access.Lock()
-		socket.openErr = E.Cause(syscall.EADDRINUSE, "go: bind ", socket.local)
-		socket.access.Unlock()
-		close(socket.openSignal)
-		return
+		openErr = E.Cause(syscall.EADDRINUSE, "go: bind ", socket.local)
 	}
-	socket.local = netip.AddrPortFrom(socket.local.Addr(), port)
-	e.stack.directory.insertUDPSocket(socket)
+	if openErr == nil {
+		socket.local = netip.AddrPortFrom(socket.local.Addr(), port)
+		directory.insertUDPSocketLocked(socket)
+	}
+	directory.access.Unlock()
+	if openErr != nil {
+		socket.access.Lock()
+		socket.openErr = openErr
+		socket.access.Unlock()
+	}
 	close(socket.openSignal)
 }
 
