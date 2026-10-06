@@ -63,9 +63,39 @@ type Port interface {
 	WritePackets(packets [][]byte) error
 }
 
+type SelectorRange struct {
+	Start uint16
+	Count uint16
+}
+
 type PortWithSelectorRange interface {
-	Port
-	PortSelectorRange() (start uint16, count uint16)
+	PortSelectorRanges(protocol uint8) []SelectorRange
+	ExpandSelectorRanges(protocol uint8) bool
+}
+
+type PortWithSelectorReservation interface {
+	ReserveSelector(protocol uint8, address netip.AddrPort) bool
+	ReleaseSelector(protocol uint8, address netip.AddrPort)
+}
+
+type PortWithUpstream interface {
+	UpstreamPort() any
+}
+
+func portCapability[T any](port any) (T, bool) {
+	for port != nil {
+		capability, matched := port.(T)
+		if matched {
+			return capability, true
+		}
+		wrapper, isWrapper := port.(PortWithUpstream)
+		if !isWrapper {
+			break
+		}
+		port = wrapper.UpstreamPort()
+	}
+	var zero T
+	return zero, false
 }
 
 type Return interface {

@@ -200,7 +200,7 @@ func (s *System) start() error {
 		s.txChecksumOffload = linuxTUN.TXChecksumOffload()
 	}
 	if s.handler != nil {
-		s.dispatcher = NewForwardDispatcher(s.handler, newSystemWriteback(s.tun, s.frontHeadroom), s.logger, s.udpTimeout, s.icmpTimeout)
+		s.dispatcher = NewForwardDispatcher(s.handler, newSystemWriteback(s.tun, s.frontHeadroom), s.logger, s.udpNATOptions, s.icmpTimeout)
 		s.dispatchStage = s.dispatcher.NewStage(nil)
 	}
 	return nil
