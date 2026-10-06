@@ -289,7 +289,9 @@ func (f *ICMPForwarder) installFlow(key icmpFlowKey, verdict FlowVerdict, pkt *s
 	if flow.tracker != nil {
 		flow.tracker.AttachFlow(flow)
 	}
-	f.writeToPort(flow, pkt)
+	if !flow.closed.Load() {
+		f.writeToPort(flow, pkt)
+	}
 	return true
 }
 

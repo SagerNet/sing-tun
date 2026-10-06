@@ -403,7 +403,9 @@ func (s *ForwardStage) judgeAndInstall(key flowKey, packet *forwardPacket, raw [
 				entry := &flowEntry{action: ActionFlow, flow: flow, idle: d.flowIdle(flow)}
 				entry.deadline = now + int64(entry.idle)
 				s.insertEntry(key, entry, now)
-				s.forwardToPort(flow, packet, raw, meta)
+				if !flow.closed.Load() {
+					s.forwardToPort(flow, packet, raw, meta)
+				}
 				return true
 			}
 			if result == createFlowExhausted {
