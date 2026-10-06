@@ -88,23 +88,28 @@ func (e *goEngine) handleDial(conn *GoConn) {
 		e.detachConn(conn, E.Cause(syscall.ENOBUFS, "go: flow table full"), goDeathImmediate)
 		return
 	}
+	directory := &e.stack.directory
 	key := flowKey{protocol: uint8(header.TCPProtocolNumber), source: conn.peer.AddrPort()}
+	directory.access.Lock()
 	port, allocated := goAllocatePort(func(port uint16) bool {
 		key.destination = netip.AddrPortFrom(conn.local.Addr, port)
-		return e.flows[key] == nil && (len(e.stack.engines) == 1 || e.stack.directory.lookup(key) == nil) && e.lookupListener(key.destination) == nil
+		return directory.flows[key] == nil && directory.listeners[key.destination] == nil && !directory.reservedLocked(uint8(header.TCPProtocolNumber), key.destination)
 	})
+	if allocated {
+		conn.key = key
+		conn.keyed = true
+		directory.insertLocked(key, conn)
+	}
+	directory.access.Unlock()
 	if !allocated {
 		e.detachConn(conn, E.Cause(syscall.EADDRINUSE, "go: ephemeral ports exhausted"), goDeathImmediate)
 		return
 	}
 	now := e.coarseTime.Load()
-	conn.key = key
 	conn.local.Port = port
 	conn.sendISN = e.initialSequence(key, now)
 	conn.lastActivity = now
 	conn.buildHandshake(e.localMSS(conn.ipVersion), true, true, header.TCPFlagSyn, 0)
-	conn.keyed = true
-	e.stack.directory.insert(key, conn)
 	err := goIgnoreDropped(conn.engine.platformIO.writePacket(conn.handshakeImage[:conn.handshakeLength], ForwardFrameMeta{}))
 	if err != nil {
 		e.detachConn(conn, E.Cause(err, "go: send SYN"), goDeathImmediate)
