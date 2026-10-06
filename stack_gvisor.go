@@ -100,7 +100,7 @@ func (t *GVisor) Start() error {
 		return err
 	}
 	if t.handler != nil {
-		t.dispatcher = NewForwardDispatcher(t.handler, &gvisorWriteback{tun: t.tun}, t.logger, t.udpNATOptions.Timeout, t.icmpTimeout)
+		t.dispatcher = NewForwardDispatcher(t.handler, &gvisorWriteback{tun: t.tun}, t.logger, t.udpNATOptions, t.icmpTimeout)
 	}
 	linkEndpoint = &LinkEndpointFilter{
 		LinkEndpoint:         linkEndpoint,
