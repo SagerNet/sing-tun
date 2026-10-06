@@ -18,7 +18,7 @@ type rewriteRule struct {
 	rewriteDestinationPort bool
 }
 
-func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
+func applyRewriteAddresses(packet *forwardPacket, rule *rewriteRule) uint64 {
 	sourceAddress, destinationAddress := packet.addressSlices()
 	var addressDelta uint64
 	if rule.sourceAddress.Len() > 0 {
@@ -31,6 +31,11 @@ func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
 		ipHdr := header.IPv4(packet.network)
 		ipHdr.SetChecksum(updateChecksum(ipHdr.Checksum(), addressDelta))
 	}
+	return addressDelta
+}
+
+func applyRewrite(packet *forwardPacket, rule *rewriteRule) {
+	addressDelta := applyRewriteAddresses(packet, rule)
 	transport := packet.transport
 	switch packet.protocol {
 	case uint8(header.TCPProtocolNumber):
