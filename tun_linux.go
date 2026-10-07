@@ -357,7 +357,7 @@ func (t *NativeTun) start() error {
 		return E.Cause(err, "set rules")
 	}
 
-	if t.options.DNSMode != DNSModeDisabled && t.options.NetNs == "" {
+	if t.options.DNSModeOrDefault() != DNSModeDisabled && t.options.NetNs == "" {
 		err = t.setSearchDomainForSystemdResolved()
 		if err != nil {
 			return E.Cause(err, "set search domain")
@@ -377,7 +377,7 @@ func (t *NativeTun) Close() error {
 	if t.options.EXP_ExternalConfiguration {
 		return common.Close(common.PtrOrNil(t.tunFile))
 	}
-	if t.options.DNSMode != DNSModeDisabled && t.options.NetNs == "" {
+	if t.options.DNSModeOrDefault() != DNSModeDisabled && t.options.NetNs == "" {
 		t.unsetSearchDomainForSystemdResolved()
 	}
 	return E.Errors(runInNetworkNamespace(t.options.NetNs, func() error {

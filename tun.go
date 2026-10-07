@@ -126,7 +126,10 @@ type Options struct {
 
 func (o *Options) DNSModeOrDefault() string {
 	if o.DNSMode == "" {
-		return DNSModeHijack
+		if o.AutoRoute {
+			return DNSModeHijack
+		}
+		return DNSModeDisabled
 	}
 	return o.DNSMode
 }
