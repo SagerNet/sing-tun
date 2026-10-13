@@ -312,6 +312,7 @@ func (o *goDarwinIO) unregisterSocket(socket *goSocket) {
 }
 
 func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
+	o.flush()
 	o.receiveSlots.configure(goReadBatch, o.stack.mtu+PacketOffset+options.FrontHeadroom+options.RearHeadroom)
 	// recvmsg_x walks every submitted msghdr slot, whether or not a packet is pending for it.
 	count := min(o.receiveBatch, len(frames))
@@ -356,10 +357,8 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 }
 
 func (o *goDarwinIO) releaseReadBuffers() {
-	clear(o.receiveIovecs)
-	clear(o.messageHeaders)
-	o.receiveSlots.sleep()
 	o.transmitAccess.Lock()
+	o.flushLocked()
 	clear(o.transmitIovecs)
 	if o.batchCount == 0 {
 		clear(o.batchIovecs)
@@ -367,6 +366,9 @@ func (o *goDarwinIO) releaseReadBuffers() {
 		o.batchSpill = nil
 	}
 	o.transmitAccess.Unlock()
+	clear(o.receiveIovecs)
+	clear(o.messageHeaders)
+	o.receiveSlots.sleep()
 }
 
 func receiveMessageBatch(fd int, headers []rawfile.MsgHdrX) (int, unix.Errno) {
