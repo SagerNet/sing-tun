@@ -130,6 +130,7 @@ type goEngine struct {
 	injectCount          atomic.Int32
 	injectMessage        goMessage
 	droppedInjectFrames  goDropCounter
+	droppedHairpinFrames goDropCounter
 	engineState          atomic.Uint32
 	exitReapPending      atomic.Bool
 	exitReapAccess       sync.Mutex
@@ -536,6 +537,7 @@ func (e *goEngine) processInjected() {
 		frame.buffer = e.packetReadOptions.Load().Copy(frame.buffer)
 		e.processFrame(&goFrame{buffer: frame.buffer, meta: frame.meta})
 		e.flushPacketUploads()
+		e.platformIO.flush()
 		frame.buffer.Release()
 		frame = next
 	}
@@ -788,31 +790,33 @@ func (e *goEngine) dropNonUnicast(parsed *forwardPacket) bool {
 }
 
 func (e *goEngine) handleLoopbackHairpin(packet []byte, meta ForwardFrameMeta, parsed *forwardPacket) bool {
-	if parsed.protocol != uint8(header.TCPProtocolNumber) || len(parsed.transport) < header.TCPMinimumSize {
+	if parsed.protocol != uint8(header.TCPProtocolNumber) {
 		return false
 	}
-	destination := parsed.destination.Addr()
 	var loopbackAddresses []netip.Addr
 	if parsed.ipVersion == 4 {
 		loopbackAddresses = e.stack.inet4LoopbackAddress
 	} else {
 		loopbackAddresses = e.stack.inet6LoopbackAddress
 	}
-	if !slices.Contains(loopbackAddresses, destination) {
+	if !slices.Contains(loopbackAddresses, parsed.destination.Addr()) {
 		return false
 	}
-	tcpHdr := header.TCP(parsed.transport)
 	if parsed.ipVersion == 4 {
-		rewriteIPv4TCP(header.IPv4(parsed.network), tcpHdr, false,
-			destination, 0, false,
-			parsed.source.Addr(), 0, false)
+		ipHdr := header.IPv4(parsed.network)
+		source := ipHdr.SourceAddress()
+		ipHdr.SetSourceAddress(ipHdr.DestinationAddress())
+		ipHdr.SetDestinationAddress(source)
 	} else {
-		rewriteIPv6TCP(header.IPv6(parsed.network), tcpHdr, false,
-			destination, 0, false,
-			parsed.source.Addr(), 0, false)
+		ipHdr := header.IPv6(parsed.network)
+		source := ipHdr.SourceAddress()
+		ipHdr.SetSourceAddress(ipHdr.DestinationAddress())
+		ipHdr.SetDestinationAddress(source)
 	}
-	err := e.platformIO.writeFrame(e.singleFrame(packet), meta)
-	if err != nil {
+	err := e.platformIO.writeData(e.singleFrame(packet), meta, nil, 0)
+	if err == errGoTransmitBlocked {
+		e.droppedHairpinFrames.record(e.stack.logger, "loopback frames")
+	} else if err != nil {
 		e.stack.logger.Trace(E.Cause(err, "go: hairpin write"))
 	}
 	return true
@@ -1032,6 +1036,7 @@ func (e *goEngine) completeReassembly(entry *goReassemblyEntry) {
 	}
 	e.processParsed(buffer, ForwardFrameMeta{}, &parsed)
 	e.flushPacketUploads()
+	e.platformIO.flush()
 }
 
 func (e *goEngine) expireReassemblyTick(now int64) {
