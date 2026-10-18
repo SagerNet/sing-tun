@@ -1,6 +1,7 @@
 package tun
 
 import (
+	"bytes"
 	"encoding/binary"
 	"maps"
 	"net/netip"
@@ -32,6 +33,9 @@ const (
 
 	flowSweepInterval = 30 * time.Second
 	flowSweepLimit    = flowTableCapacity / int(flowTombstoneTimeout/flowSweepInterval)
+
+	flowHoldCapacity = 512
+	flowHoldPerFlow  = 16
 )
 
 type ForwardWriteback interface {
@@ -165,11 +169,27 @@ type stagedPort struct {
 	packets [][]byte
 }
 
+type heldPacket struct {
+	packet          []byte
+	transportLength int
+	meta            ForwardFrameMeta
+}
+
+type flowJudgement struct {
+	key     flowKey
+	packets []heldPacket
+	verdict FlowVerdict
+}
+
 type ForwardStage struct {
 	dispatcher *ForwardDispatcher
 	writeback  ForwardWriteback
+	resume     func()
 	access     sync.Mutex
 	table      map[flowKey]*flowEntry
+	judging    map[flowKey]*flowJudgement
+	judged     []*flowJudgement
+	held       int
 	lastSweep  int64
 	resetSeen  uint32
 
@@ -209,7 +229,7 @@ func NewForwardDispatcher(handler Handler, writeback ForwardWriteback, logger lo
 	return dispatcher
 }
 
-func (d *ForwardDispatcher) NewStage(writeback ForwardWriteback) *ForwardStage {
+func (d *ForwardDispatcher) NewStage(writeback ForwardWriteback, resume func()) *ForwardStage {
 	if d == nil {
 		return nil
 	}
@@ -219,7 +239,9 @@ func (d *ForwardDispatcher) NewStage(writeback ForwardWriteback) *ForwardStage {
 	stage := &ForwardStage{
 		dispatcher: d,
 		writeback:  writeback,
+		resume:     resume,
 		table:      make(map[flowKey]*flowEntry),
+		judging:    make(map[flowKey]*flowJudgement),
 		resetSeen:  d.resetGeneration.Load(),
 	}
 	d.stagesAccess.Lock()
@@ -246,6 +268,9 @@ func (d *ForwardDispatcher) Close() {
 		for key, entry := range stage.table {
 			stage.removeEntry(key, entry, FlowCloseReset)
 		}
+		clear(stage.judging)
+		stage.judged = nil
+		stage.held = 0
 		stage.access.Unlock()
 	}
 	d.portsAccess.Lock()
@@ -282,6 +307,7 @@ func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *Forw
 	key := parsed.flowKey()
 	now := s.dispatcher.now()
 	s.access.Lock()
+	defer s.access.Unlock()
 	entry, loaded := s.table[key]
 	if loaded {
 		if entryExpired(entry, now) {
@@ -291,16 +317,92 @@ func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *Forw
 			if remove {
 				s.removeEntry(key, entry, FlowCloseReset)
 			}
-			s.access.Unlock()
 			return handled
 		}
 	}
-	s.access.Unlock()
+	judgement, judging := s.judging[key]
+	if judging {
+		if len(judgement.packets) < flowHoldPerFlow {
+			s.hold(judgement, packet, parsed, meta)
+		}
+		return true
+	}
 	if parsed.protocol == uint8(header.TCPProtocolNumber) &&
 		(parsed.tcpFlags&header.TCPFlagSyn == 0 || parsed.tcpFlags&header.TCPFlagAck != 0) {
 		return false
 	}
-	return s.judgeAndInstall(key, parsed, packet, meta)
+	judgement = &flowJudgement{key: key}
+	if !s.hold(judgement, packet, parsed, meta) {
+		return true
+	}
+	s.judging[key] = judgement
+	var firstPacket []byte
+	if parsed.protocol == uint8(header.UDPProtocolNumber) {
+		firstPacket = bytes.Clone(header.UDP(parsed.transport).Payload())
+	}
+	go s.judge(judgement, firstPacket)
+	return true
+}
+
+func (s *ForwardStage) hold(judgement *flowJudgement, packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
+	if s.held >= flowHoldCapacity {
+		return false
+	}
+	held := heldPacket{
+		packet:          bytes.Clone(packet),
+		transportLength: len(parsed.transport),
+	}
+	if meta != nil {
+		held.meta = *meta
+	}
+	judgement.packets = append(judgement.packets, held)
+	s.held++
+	return true
+}
+
+func (s *ForwardStage) judge(judgement *flowJudgement, firstPacket []byte) {
+	key := judgement.key
+	verdict := s.dispatcher.handler.JudgeFlow(key.protocol, key.source, key.destination, firstPacket)
+	if verdict.Action == ActionBypass && verdict.Port != nil {
+		verdict.Action = ActionFlow
+	}
+	s.access.Lock()
+	if s.judging[key] != judgement {
+		s.access.Unlock()
+		return
+	}
+	judgement.verdict = verdict
+	s.judged = append(s.judged, judgement)
+	s.access.Unlock()
+	s.resume()
+}
+
+func (s *ForwardStage) ResumeJudged(process func(packet []byte, meta ForwardFrameMeta)) {
+	var unhandled []heldPacket
+	s.access.Lock()
+	if s.dispatcher.closed.Load() {
+		s.access.Unlock()
+		return
+	}
+	now := s.dispatcher.now()
+	for _, judgement := range s.judged {
+		delete(s.judging, judgement.key)
+		s.held -= len(judgement.packets)
+		for index := range judgement.packets {
+			held := &judgement.packets[index]
+			parsed, _ := parseForwardPacket(held.packet)
+			parsed.transport = parsed.transport[:held.transportLength]
+			if !s.install(judgement.key, &parsed, held.packet, &held.meta, judgement.verdict, now) {
+				unhandled = append(unhandled, *held)
+			}
+		}
+	}
+	clear(s.judged)
+	s.judged = s.judged[:0]
+	s.access.Unlock()
+	for _, held := range unhandled {
+		process(held.packet, held.meta)
+	}
 }
 
 func (s *ForwardStage) teardownFlow(key flowKey, reason FlowCloseReason) {
@@ -364,22 +466,8 @@ func (s *ForwardStage) handleHit(entry *flowEntry, packet *forwardPacket, raw []
 	}
 }
 
-func (s *ForwardStage) judgeAndInstall(key flowKey, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) bool {
+func (s *ForwardStage) install(key flowKey, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta, verdict FlowVerdict, now int64) bool {
 	d := s.dispatcher
-	var firstPacket []byte
-	if packet.protocol == uint8(header.UDPProtocolNumber) {
-		firstPacket = header.UDP(packet.transport).Payload()
-	}
-	verdict := d.handler.JudgeFlow(packet.protocol, packet.source, packet.destination, firstPacket)
-	if verdict.Action == ActionBypass && verdict.Port != nil {
-		verdict.Action = ActionFlow
-	}
-	s.access.Lock()
-	defer s.access.Unlock()
-	if d.closed.Load() {
-		return false
-	}
-	now := d.now()
 	existing, loaded := s.table[key]
 	if loaded {
 		if entryExpired(existing, now) {
@@ -444,10 +532,32 @@ func (s *ForwardStage) installSimple(key flowKey, action FlowAction, protocol ui
 
 func (s *ForwardStage) installAccept(key flowKey, packet *forwardPacket, verdict FlowVerdict, now int64) {
 	entry := s.installSimple(key, ActionAccept, packet.protocol, now)
+	entry.verdict = verdict
 	if packet.protocol == uint8(header.UDPProtocolNumber) {
-		entry.verdict = verdict
 		packet.verdict = verdict
 	}
+}
+
+func (d *ForwardDispatcher) acceptedVerdict(protocol uint8, source netip.AddrPort, destination netip.AddrPort) (FlowVerdict, bool) {
+	if d == nil || d.closed.Load() {
+		return FlowVerdict{}, false
+	}
+	key := flowKey{protocol: protocol, source: source, destination: destination}
+	now := d.now()
+	d.stagesAccess.Lock()
+	stages := d.stages
+	d.stagesAccess.Unlock()
+	for _, stage := range stages {
+		stage.access.Lock()
+		entry, loaded := stage.table[key]
+		if loaded && entry.action == ActionAccept && !entryExpired(entry, now) {
+			verdict := entry.verdict
+			stage.access.Unlock()
+			return verdict, true
+		}
+		stage.access.Unlock()
+	}
+	return FlowVerdict{}, false
 }
 
 func (d *ForwardDispatcher) idleTimeout(protocol uint8, established bool) time.Duration {
@@ -711,6 +821,10 @@ func (s *ForwardStage) Flush() {
 		for key, entry := range s.table {
 			s.removeEntry(key, entry, FlowCloseReset)
 		}
+		clear(s.judging)
+		clear(s.judged)
+		s.judged = s.judged[:0]
+		s.held = 0
 		s.access.Unlock()
 	}
 	for index := range s.ports {
