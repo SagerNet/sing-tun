@@ -19,6 +19,7 @@ type TCPForwarder struct {
 	ctx                  context.Context
 	stack                *stack.Stack
 	handler              Handler
+	dispatcher           *ForwardDispatcher
 	inet4LoopbackAddress []tcpip.Address
 	inet6LoopbackAddress []tcpip.Address
 	tun                  GVisorTun
@@ -26,14 +27,15 @@ type TCPForwarder struct {
 }
 
 func NewTCPForwarder(ctx context.Context, stack *stack.Stack, handler Handler) *TCPForwarder {
-	return NewTCPForwarderWithLoopback(ctx, stack, handler, nil, nil, nil)
+	return NewTCPForwarderWithLoopback(ctx, stack, handler, nil, nil, nil, nil)
 }
 
-func NewTCPForwarderWithLoopback(ctx context.Context, stack *stack.Stack, handler Handler, inet4LoopbackAddress []netip.Addr, inet6LoopbackAddress []netip.Addr, tun GVisorTun) *TCPForwarder {
+func NewTCPForwarderWithLoopback(ctx context.Context, stack *stack.Stack, handler Handler, dispatcher *ForwardDispatcher, inet4LoopbackAddress []netip.Addr, inet6LoopbackAddress []netip.Addr, tun GVisorTun) *TCPForwarder {
 	forwarder := &TCPForwarder{
 		ctx:                  ctx,
 		stack:                stack,
 		handler:              handler,
+		dispatcher:           dispatcher,
 		inet4LoopbackAddress: common.Map(inet4LoopbackAddress, AddressFromAddr),
 		inet6LoopbackAddress: common.Map(inet6LoopbackAddress, AddressFromAddr),
 		tun:                  tun,
@@ -77,7 +79,11 @@ func (f *TCPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pac
 func (f *TCPForwarder) Forward(r *tcp.ForwarderRequest) {
 	source := M.SocksaddrFrom(AddrFromAddress(r.ID().RemoteAddress), r.ID().RemotePort)
 	destination := M.SocksaddrFrom(AddrFromAddress(r.ID().LocalAddress), r.ID().LocalPort)
-	switch f.handler.JudgeFlow(uint8(header.TCPProtocolNumber), source.AddrPort(), destination.AddrPort(), nil).Action {
+	verdict, loaded := f.dispatcher.acceptedVerdict(uint8(header.TCPProtocolNumber), source.AddrPort(), destination.AddrPort())
+	if !loaded {
+		verdict = f.handler.JudgeFlow(uint8(header.TCPProtocolNumber), source.AddrPort(), destination.AddrPort(), nil)
+	}
+	switch verdict.Action {
 	case ActionReject:
 		r.Complete(true)
 		return
