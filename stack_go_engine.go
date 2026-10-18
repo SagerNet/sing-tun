@@ -53,6 +53,7 @@ const (
 	goMessageListenOpen
 	goMessageListenClose
 	goMessageInject
+	goMessageJudged
 )
 
 const goInjectQueueLimit = 512
@@ -129,6 +130,7 @@ type goEngine struct {
 	injectStack          goInjectStack
 	injectCount          atomic.Int32
 	injectMessage        goMessage
+	judgedMessage        goMessage
 	droppedInjectFrames  goDropCounter
 	droppedHairpinFrames goDropCounter
 	engineState          atomic.Uint32
@@ -233,11 +235,12 @@ func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine 
 		engine.tcpListeners = make(map[netip.AddrPort]*GoListener)
 	}
 	if stack.dispatcher != nil {
-		engine.dispatchStage = stack.dispatcher.NewStage(&goWriteback{platformIO: platformIO})
+		engine.dispatchStage = stack.dispatcher.NewStage(&goWriteback{platformIO: platformIO}, func() { engine.postMessage(&engine.judgedMessage) })
 	}
 	engine.closeMessage.kind = goMessageStackClose
 	engine.resetMessage.kind = goMessageStackReset
 	engine.injectMessage.kind = goMessageInject
+	engine.judgedMessage.kind = goMessageJudged
 	engine.packetReadOptions.Store(new(N.ReadWaitOptions))
 	engine.delayedAckTickNode.expire = func(now int64) { engine.drainAckList(now, false) }
 	engine.reassemblyTickNode.expire = engine.expireReassemblyTick
@@ -513,7 +516,24 @@ func (e *goEngine) handleMessage(message *goMessage) {
 		e.handleListenClose(message.listener)
 	case goMessageInject:
 		e.processInjected()
+	case goMessageJudged:
+		e.dispatchStage.ResumeJudged(e.processResumed)
 	}
+}
+
+func (e *goEngine) processResumed(packet []byte, meta ForwardFrameMeta) {
+	options := e.packetReadOptions.Load()
+	buffer := options.NewBufferSize(len(packet))
+	common.Must1(buffer.Write(packet))
+	options.PostReturn(buffer)
+	e.processSingleFrame(buffer, meta)
+}
+
+func (e *goEngine) processSingleFrame(buffer *buf.Buffer, meta ForwardFrameMeta) {
+	e.processFrame(&goFrame{buffer: buffer, meta: meta})
+	e.flushPacketUploads()
+	e.platformIO.flush()
+	buffer.Release()
 }
 
 func (e *goEngine) inject(packet []byte, meta ForwardFrameMeta) {
@@ -534,11 +554,7 @@ func (e *goEngine) processInjected() {
 	for frame := e.injectStack.popAll(); frame != nil; {
 		next := frame.next
 		e.injectCount.Add(-1)
-		frame.buffer = e.packetReadOptions.Load().Copy(frame.buffer)
-		e.processFrame(&goFrame{buffer: frame.buffer, meta: frame.meta})
-		e.flushPacketUploads()
-		e.platformIO.flush()
-		frame.buffer.Release()
+		e.processSingleFrame(e.packetReadOptions.Load().Copy(frame.buffer), frame.meta)
 		frame = next
 	}
 }

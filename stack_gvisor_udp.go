@@ -23,17 +23,19 @@ import (
 )
 
 type UDPForwarder struct {
-	ctx     context.Context
-	stack   *stack.Stack
-	handler Handler
-	udpNat  *UDPNat
+	ctx        context.Context
+	stack      *stack.Stack
+	handler    Handler
+	dispatcher *ForwardDispatcher
+	udpNat     *UDPNat
 }
 
-func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, options UDPNatOptions) *UDPForwarder {
+func NewUDPForwarder(ctx context.Context, stack *stack.Stack, handler Handler, dispatcher *ForwardDispatcher, options UDPNatOptions) *UDPForwarder {
 	forwarder := &UDPForwarder{
-		ctx:     ctx,
-		stack:   stack,
-		handler: handler,
+		ctx:        ctx,
+		stack:      stack,
+		handler:    handler,
+		dispatcher: dispatcher,
 	}
 	options.Handler = handler
 	options.Prepare = forwarder.PreparePacketConnection
@@ -77,7 +79,11 @@ func (f *UDPForwarder) PreparePacketConnection(source M.Socksaddr, destination M
 	} else {
 		sourceNetwork = header.IPv6ProtocolNumber
 	}
-	switch f.handler.JudgeFlow(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort(), firstPacket).Action {
+	verdict, loaded := f.dispatcher.acceptedVerdict(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort())
+	if !loaded {
+		verdict = f.handler.JudgeFlow(uint8(header.UDPProtocolNumber), source.AddrPort(), destination.AddrPort(), firstPacket)
+	}
+	switch verdict.Action {
 	case ActionReject:
 		gWriteUnreachable(f.stack, userData.(*stack.PacketBuffer))
 		return false, nil, nil, nil

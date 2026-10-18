@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -54,6 +55,7 @@ type System struct {
 	udpNATOptions        UDPNatOptions
 	dispatcher           *ForwardDispatcher
 	dispatchStage        *ForwardStage
+	processAccess        sync.Mutex
 	bindInterface        bool
 	interfaceFinder      control.InterfaceFinder
 	frontHeadroom        int
@@ -139,6 +141,7 @@ func (s *System) Start() error {
 	if err != nil {
 		return err
 	}
+	s.dispatchStage = s.dispatcher.NewStage(nil, func() { s.resumeJudged(s.processPacket) })
 	go s.tunLoop()
 	return nil
 }
@@ -203,9 +206,30 @@ func (s *System) start() error {
 	}
 	if s.handler != nil {
 		s.dispatcher = NewForwardDispatcher(s.handler, newSystemWriteback(s.tun, s.frontHeadroom), s.logger, s.udpNATOptions, s.icmpTimeout)
-		s.dispatchStage = s.dispatcher.NewStage(nil)
 	}
 	return nil
+}
+
+func (s *System) resumeJudged(process func(packet []byte) bool) {
+	s.processAccess.Lock()
+	defer s.processAccess.Unlock()
+	writeback := s.dispatchStage.writeback
+	headroom := writeback.ReturnHeadroom()
+	var writeBuffers [][]byte
+	s.dispatchStage.ResumeJudged(func(packet []byte, _ ForwardFrameMeta) {
+		buffer := make([]byte, headroom+len(packet))
+		copy(buffer[headroom:], packet)
+		if process(buffer[headroom:]) {
+			writeBuffers = append(writeBuffers, buffer)
+		}
+	})
+	if len(writeBuffers) > 0 {
+		err := writeback.WriteReturnPackets(writeBuffers)
+		if err != nil {
+			s.logger.Trace(E.Cause(err, "write packet"))
+		}
+	}
+	s.dispatchStage.Flush()
 }
 
 func (s *System) tunLoop() {
@@ -245,6 +269,7 @@ func (s *System) tunLoop() {
 		}
 		rawPacket := packetBuffer[:n]
 		packet := packetBuffer[PacketOffset:n]
+		s.processAccess.Lock()
 		if s.processPacket(packet) {
 			_, err = s.tun.Write(rawPacket)
 			if err != nil {
@@ -252,6 +277,7 @@ func (s *System) tunLoop() {
 			}
 		}
 		s.dispatchStage.Flush()
+		s.processAccess.Unlock()
 	}
 }
 
@@ -265,6 +291,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 			release()
 			continue
 		}
+		s.processAccess.Lock()
 		if s.processPacket(packet) {
 			_, err = winTun.Write(packet)
 			if err != nil {
@@ -272,6 +299,7 @@ func (s *System) wintunLoop(winTun WinTun) {
 			}
 		}
 		s.dispatchStage.Flush()
+		s.processAccess.Unlock()
 		release()
 	}
 }
@@ -301,6 +329,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 		if n == 0 {
 			continue
 		}
+		s.processAccess.Lock()
 		for i := range n {
 			packetSize := packetSizes[i]
 			if packetSize < header.IPv4MinimumSize {
@@ -320,6 +349,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 			writeBuffers = writeBuffers[:0]
 		}
 		s.dispatchStage.Flush()
+		s.processAccess.Unlock()
 	}
 }
 
@@ -346,6 +376,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 		}
 		writeBuffers = writeBuffers[:0]
 		releaseBuffers = releaseBuffers[:0]
+		s.processAccess.Lock()
 		for _, buffer := range buffers {
 			packetSize := buffer.Len()
 			if packetSize < header.IPv4MinimumSize {
@@ -366,6 +397,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 			buf.ReleaseMulti(writeBuffers)
 		}
 		s.dispatchStage.Flush()
+		s.processAccess.Unlock()
 		buf.ReleaseMulti(releaseBuffers)
 	}
 }
