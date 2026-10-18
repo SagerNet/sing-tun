@@ -5,6 +5,7 @@ package tun
 import (
 	"context"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
@@ -30,6 +31,18 @@ type nfqueueHandler struct {
 	markMask       uint32
 	repeatOnAccept bool
 	closed         atomic.Bool
+	judgingAccess  sync.Mutex
+	judging        map[flowKey]*nfqueueJudgement
+}
+
+type nfqueueJudgement struct {
+	packet preMatchPacket
+	queued []queuedPacket
+}
+
+type queuedPacket struct {
+	id   uint32
+	mark uint32
 }
 
 func (h *nfqueueHandler) acceptVerdict(packet preMatchPacket) (verdict int, mark uint32) {
@@ -48,20 +61,15 @@ func (h *nfqueueHandler) acceptVerdict(packet preMatchPacket) (verdict int, mark
 	return nfqueue.NfAccept, 0
 }
 
-func (h *nfqueueHandler) setVerdict(attr nfqueue.Attribute, verdict int, mark uint32) {
-	packetID := *attr.PacketID
+func (h *nfqueueHandler) setVerdict(queued queuedPacket, verdict int, mark uint32) {
 	var err error
 	if mark != 0 {
 		if h.markMask != 0 {
-			var originalMark uint32
-			if attr.Mark != nil {
-				originalMark = *attr.Mark
-			}
-			mark = originalMark&^h.markMask | mark
+			mark = queued.mark&^h.markMask | mark
 		}
-		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(mark))
+		err = h.nfq.SetVerdictWithOption(queued.id, verdict, nfqueue.WithMark(mark))
 	} else {
-		err = h.nfq.SetVerdict(packetID, verdict)
+		err = h.nfq.SetVerdict(queued.id, verdict)
 	}
 	if err != nil && !h.closed.Load() && h.ctx.Err() == nil {
 		h.logger.Trace(E.Cause(err, "set verdict"))
@@ -72,6 +80,7 @@ func (h *nfqueueHandler) setVerdict(attr nfqueue.Attribute, verdict int, mark ui
 // dropped, so the queue is unbound in Close rather than with the caller's context.
 func (h *nfqueueHandler) Start() error {
 	h.ctx, h.cancel = context.WithCancel(context.Background())
+	h.judging = make(map[flowKey]*nfqueueJudgement)
 	config := nfqueue.Config{
 		NfQueue:      h.queue,
 		MaxPacketLen: 0xFFFF,
@@ -91,6 +100,7 @@ func (h *nfqueueHandler) Start() error {
 		return E.Cause(err, "set nfqueue option")
 	}
 
+	h.nfq = nfq
 	err = nfq.RegisterWithErrorFunc(h.ctx, h.handlePacket, func(e error) int {
 		if h.ctx.Err() != nil {
 			return 1
@@ -100,10 +110,9 @@ func (h *nfqueueHandler) Start() error {
 	})
 	if err != nil {
 		nfq.Close()
+		h.nfq = nil
 		return E.Cause(err, "register nfqueue")
 	}
-
-	h.nfq = nfq
 	return nil
 }
 
@@ -265,44 +274,78 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 		return 0
 	}
 
-	payload := *attr.Payload
+	queued := queuedPacket{id: *attr.PacketID}
+	if attr.Mark != nil {
+		queued.mark = *attr.Mark
+	}
 
-	packet, loaded := parsePreMatchPacket(payload)
+	packet, loaded := parsePreMatchPacket(*attr.Payload)
 	if !loaded {
-		h.setVerdict(attr, nfqueue.NfAccept, 0)
+		h.setVerdict(queued, nfqueue.NfAccept, 0)
 		return 0
 	}
 
+	key := flowKey{protocol: packet.protocol, source: packet.source, destination: packet.destination}
+	h.judgingAccess.Lock()
+	judgement, judging := h.judging[key]
+	if judging {
+		judgement.queued = append(judgement.queued, queued)
+		h.judgingAccess.Unlock()
+		return 0
+	}
+	judgement = &nfqueueJudgement{packet: packet, queued: []queuedPacket{queued}}
+	h.judging[key] = judgement
+	h.judgingAccess.Unlock()
+	go h.judge(key, judgement)
+	return 0
+}
+
+func (h *nfqueueHandler) judge(key flowKey, judgement *nfqueueJudgement) {
+	packet := judgement.packet
 	verdict := h.handler.JudgeFlow(
 		packet.protocol,
 		packet.source,
 		packet.destination,
 		packet.firstPacket,
 	)
+	for {
+		h.judgingAccess.Lock()
+		queuedPackets := judgement.queued
+		judgement.queued = nil
+		if len(queuedPackets) == 0 {
+			delete(h.judging, key)
+			h.judgingAccess.Unlock()
+			return
+		}
+		h.judgingAccess.Unlock()
+		for _, queued := range queuedPackets {
+			h.applyVerdict(queued, packet, verdict)
+		}
+	}
+}
 
+func (h *nfqueueHandler) applyVerdict(queued queuedPacket, packet preMatchPacket, verdict FlowVerdict) {
 	switch verdict.Action {
 	case ActionBypass:
-		h.setVerdict(attr, nfqueue.NfRepeat, h.outputMark)
+		h.setVerdict(queued, nfqueue.NfRepeat, h.outputMark)
 	case ActionReject:
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
-			h.setVerdict(attr, nfqueue.NfRepeat, h.resetMark)
+			h.setVerdict(queued, nfqueue.NfRepeat, h.resetMark)
 		} else {
-			h.setVerdict(attr, nfqueue.NfRepeat, h.inputMark)
+			h.setVerdict(queued, nfqueue.NfRepeat, h.inputMark)
 		}
 	case ActionDrop:
-		h.setVerdict(attr, nfqueue.NfDrop, 0)
+		h.setVerdict(queued, nfqueue.NfDrop, 0)
 	case ActionFlow, ActionHijackDNS:
-		h.setVerdict(attr, nfqueue.NfRepeat, h.inputMark)
+		h.setVerdict(queued, nfqueue.NfRepeat, h.inputMark)
 	default:
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
 			acceptVerdict, acceptMark := h.acceptVerdict(packet)
-			h.setVerdict(attr, acceptVerdict, acceptMark)
+			h.setVerdict(queued, acceptVerdict, acceptMark)
 		} else {
-			h.setVerdict(attr, nfqueue.NfRepeat, h.inputMark)
+			h.setVerdict(queued, nfqueue.NfRepeat, h.inputMark)
 		}
 	}
-
-	return 0
 }
 
 func (h *nfqueueHandler) Close() error {
