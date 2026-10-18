@@ -116,15 +116,15 @@ func (t *GVisor) Start() error {
 	if err != nil {
 		return err
 	}
-	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
-	udpForwarder := NewUDPForwarder(t.ctx, ipStack, t.handler, t.udpNATOptions)
+	ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, NewTCPForwarderWithLoopback(t.ctx, ipStack, t.handler, t.dispatcher, t.inet4LoopbackAddress, t.inet6LoopbackAddress, t.tun).HandlePacket)
+	udpForwarder := NewUDPForwarder(t.ctx, ipStack, t.handler, t.dispatcher, t.udpNATOptions)
 	err = udpForwarder.Start()
 	if err != nil {
 		return err
 	}
 	ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
 	t.udpForwarder = udpForwarder
-	icmpForwarder := NewICMPForwarder(ipStack, t.handler, t.logger)
+	icmpForwarder := NewICMPForwarder(ipStack, t.handler, t.dispatcher, t.logger)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
 	ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
 	t.icmpForwarder = icmpForwarder

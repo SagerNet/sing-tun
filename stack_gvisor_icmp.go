@@ -21,9 +21,10 @@ import (
 )
 
 type ICMPForwarder struct {
-	stack   *stack.Stack
-	handler Handler
-	logger  logger.Logger
+	stack      *stack.Stack
+	handler    Handler
+	dispatcher *ForwardDispatcher
+	logger     logger.Logger
 
 	returnPath icmpForwarderReturn
 
@@ -60,10 +61,11 @@ func (f *icmpFlow) CloseFlow() {
 	f.close(FlowCloseReset)
 }
 
-func NewICMPForwarder(stack *stack.Stack, handler Handler, logger logger.Logger) *ICMPForwarder {
+func NewICMPForwarder(stack *stack.Stack, handler Handler, dispatcher *ForwardDispatcher, logger logger.Logger) *ICMPForwarder {
 	forwarder := &ICMPForwarder{
 		stack:         stack,
 		handler:       handler,
+		dispatcher:    dispatcher,
 		logger:        logger,
 		flows:         make(map[icmpFlowKey]*icmpFlow),
 		attachedPorts: make(map[Port]bool),
@@ -112,12 +114,12 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		if f.forwardCached(key, pkt) {
 			return true
 		}
-		verdict := f.handler.JudgeFlow(
-			uint8(header.ICMPv4ProtocolNumber),
-			netip.AddrPortFrom(key.source, identifier),
-			netip.AddrPortFrom(key.destination, identifier),
-			nil,
-		)
+		source := netip.AddrPortFrom(key.source, identifier)
+		destination := netip.AddrPortFrom(key.destination, identifier)
+		verdict, loaded := f.dispatcher.acceptedVerdict(uint8(header.ICMPv4ProtocolNumber), source, destination)
+		if !loaded {
+			verdict = f.handler.JudgeFlow(uint8(header.ICMPv4ProtocolNumber), source, destination, nil)
+		}
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
@@ -174,12 +176,12 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 		if f.forwardCached(key, pkt) {
 			return true
 		}
-		verdict := f.handler.JudgeFlow(
-			uint8(header.ICMPv6ProtocolNumber),
-			netip.AddrPortFrom(key.source, identifier),
-			netip.AddrPortFrom(key.destination, identifier),
-			nil,
-		)
+		source := netip.AddrPortFrom(key.source, identifier)
+		destination := netip.AddrPortFrom(key.destination, identifier)
+		verdict, loaded := f.dispatcher.acceptedVerdict(uint8(header.ICMPv6ProtocolNumber), source, destination)
+		if !loaded {
+			verdict = f.handler.JudgeFlow(uint8(header.ICMPv6ProtocolNumber), source, destination, nil)
+		}
 		switch verdict.Action {
 		case ActionReject, ActionDrop:
 			return true
