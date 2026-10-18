@@ -92,6 +92,9 @@ func (o *goMemoryIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 		frames[count] = goFrame{buffer: buffer}
 		count++
 	}
+	for range count {
+		o.tun.inboundWritable.Signal()
+	}
 	return count, o.tun.inbound.empty(), nil
 }
 
@@ -253,6 +256,7 @@ func (o *goMemoryIO) close() error {
 	o.tun.attached.Store(false)
 	o.tun.inboundAccess.Lock()
 	o.tun.inbound.releaseAll()
+	o.tun.inboundWritable.Broadcast()
 	o.tun.inboundAccess.Unlock()
 	if o.timer != nil {
 		o.timer.Stop()
