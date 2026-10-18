@@ -32,6 +32,7 @@ type MemoryTun struct {
 	closed           atomic.Bool
 	inboundAccess    sync.Mutex
 	inbound          goPacketRing
+	inboundWritable  *sync.Cond
 	inboundHeadroom  atomic.Int32
 	inboundRearSpace atomic.Int32
 	outbound         *OutboundQueue
@@ -60,6 +61,7 @@ func NewMemoryTun(options MemoryTunOptions) *MemoryTun {
 	if outboundHandler == nil {
 		outboundHandler = buf.ReleaseMulti
 	}
+	memoryTun.inboundWritable = sync.NewCond(&memoryTun.inboundAccess)
 	memoryTun.outbound = memoryTun.NewOutboundQueue(outboundHandler)
 	memoryTun.mtu.Store(int32(options.MTU))
 	return memoryTun
@@ -99,6 +101,15 @@ func (t *MemoryTun) Write(p []byte) (int, error) {
 }
 
 func (t *MemoryTun) WritePackets(packets [][]byte) (int, error) {
+	return t.writePackets(packets, false)
+}
+
+func (t *MemoryTun) WaitWritePackets(packets [][]byte) error {
+	_, err := t.writePackets(packets, true)
+	return err
+}
+
+func (t *MemoryTun) writePackets(packets [][]byte, wait bool) (int, error) {
 	t.inboundAccess.Lock()
 	if t.closed.Load() {
 		t.inboundAccess.Unlock()
@@ -110,14 +121,34 @@ func (t *MemoryTun) WritePackets(packets [][]byte) (int, error) {
 	}
 	headroom := int(t.inboundHeadroom.Load())
 	rearSpace := int(t.inboundRearSpace.Load())
-	wasEmpty := t.inbound.empty()
 	accepted := 0
+	notify := false
 	for _, packet := range packets {
 		if len(packet) == 0 || len(packet) > memoryTunMaxPacketSize {
 			continue
 		}
+		for wait && t.inbound.full() {
+			if notify {
+				notify = false
+				t.engineWake.notify()
+			}
+			t.inboundWritable.Wait()
+			if t.closed.Load() {
+				t.inboundAccess.Unlock()
+				return accepted, os.ErrClosed
+			}
+			if !t.attached.Load() {
+				t.inboundAccess.Unlock()
+				return accepted, nil
+			}
+			headroom = int(t.inboundHeadroom.Load())
+			rearSpace = int(t.inboundRearSpace.Load())
+		}
 		if t.inbound.full() {
 			continue
+		}
+		if t.inbound.empty() {
+			notify = true
 		}
 		buffer := buf.NewSize(headroom + len(packet) + rearSpace)
 		buffer.Resize(headroom, 0)
@@ -126,7 +157,7 @@ func (t *MemoryTun) WritePackets(packets [][]byte) (int, error) {
 		accepted++
 	}
 	t.inboundAccess.Unlock()
-	if wasEmpty && accepted > 0 {
+	if notify {
 		t.engineWake.notify()
 	}
 	return accepted, nil
@@ -138,6 +169,7 @@ func (t *MemoryTun) Close() error {
 	}
 	t.inboundAccess.Lock()
 	t.inbound.releaseAll()
+	t.inboundWritable.Broadcast()
 	t.inboundAccess.Unlock()
 	t.outbound.Close()
 	close(t.closeSignal)
