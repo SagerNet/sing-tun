@@ -65,6 +65,7 @@ type forwardFlow struct {
 	finReverse  atomic.Bool
 	reported    atomic.Bool
 	closed      atomic.Bool
+	aborted     atomic.Bool
 	lastReverse atomic.Int64
 }
 
@@ -85,6 +86,7 @@ func (f *forwardFlow) close(reason FlowCloseReason) {
 }
 
 func (f *forwardFlow) CloseFlow() {
+	f.aborted.Store(true)
 	f.close(FlowCloseReset)
 }
 
@@ -614,6 +616,9 @@ func (d *ForwardDispatcher) Flush() {
 }
 
 func (d *ForwardDispatcher) entryExpired(entry *flowEntry, now int64) bool {
+	if entry.flow != nil && entry.flow.aborted.Load() {
+		return true
+	}
 	if now <= entry.deadline {
 		return false
 	}
@@ -684,10 +689,10 @@ func (d *ForwardDispatcher) maybeSweep(now int64) {
 	d.lastSweep = now
 	visited := 0
 	for key, entry := range d.table {
-		if entry.action == ActionFlow && entry.flow.closed.Load() {
-			d.tombstoneEntry(entry, now)
-		} else if d.entryExpired(entry, now) {
+		if d.entryExpired(entry, now) {
 			d.removeEntry(key, entry, FlowCloseTimeout)
+		} else if entry.action == ActionFlow && entry.flow.closed.Load() {
+			d.tombstoneEntry(entry, now)
 		}
 		visited++
 		if visited >= flowSweepLimit {
