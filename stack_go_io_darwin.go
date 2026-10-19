@@ -27,7 +27,7 @@ const (
 	// takes a 16 KB cluster for a packet above MBIGCLBYTES (4096 bytes, prefix included) from a
 	// pool of a few hundred; a batch of large frames exhausts it and fails with ENOBUFS, so only
 	// frames that fit a 4 KB cluster are batched and larger ones keep the per-frame writev.
-	goDarwinBatchFrameLimit = 4096 - PacketOffset
+	goDarwinBatchFrameLimit = 4096
 
 	// utun_pkt_input in netif mode returns ENOSPC once utun_input_chain_count exceeds
 	// net.utun.max_pending_input (512) and does not free the mbuf, and neither does ctl_send:
@@ -99,6 +99,11 @@ type goDarwinIO struct {
 
 func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
 	return []goPlatformIO{&goDarwinIO{stack: stack, epoch: time.Now()}}, nil
+}
+
+func (o *goDarwinIO) nativeTun() *NativeTun {
+	// start rejects other implementations before any I/O is performed.
+	return o.stack.tun.(*NativeTun)
 }
 
 func (o *goDarwinIO) start() error {
@@ -313,7 +318,8 @@ func (o *goDarwinIO) unregisterSocket(socket *goSocket) {
 
 func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
 	o.flush()
-	o.receiveSlots.configure(goReadBatch, o.stack.mtu+PacketOffset+options.FrontHeadroom+options.RearHeadroom)
+	headerSize := o.nativeTun().packetHeaderSize
+	o.receiveSlots.configure(goReadBatch, o.stack.mtu+headerSize+options.FrontHeadroom+options.RearHeadroom)
 	// recvmsg_x walks every submitted msghdr slot, whether or not a packet is pending for it.
 	count := min(o.receiveBatch, len(frames))
 	o.receiveSlots.wake(count)
@@ -345,11 +351,11 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 	for index := range received {
 		dataLen := int(o.messageHeaders[index].DataLen)
 		buffer := o.receiveSlots.slot(index)
-		if dataLen <= PacketOffset || dataLen > buffer.FreeLen() || o.messageHeaders[index].Msg.Flags&unix.MSG_TRUNC != 0 {
+		if dataLen <= headerSize || dataLen > buffer.FreeLen() || o.messageHeaders[index].Msg.Flags&unix.MSG_TRUNC != 0 {
 			continue
 		}
 		buffer.Reset()
-		buffer.Resize(options.FrontHeadroom+PacketOffset, dataLen-PacketOffset)
+		buffer.Resize(options.FrontHeadroom+headerSize, dataLen-headerSize)
 		frames[frameCount] = goFrame{buffer: buffer}
 		frameCount++
 	}
@@ -403,7 +409,8 @@ func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoC
 	for _, segment := range frame {
 		frameLength += len(segment)
 	}
-	if frameLength > goDarwinBatchFrameLimit {
+	nativeTun := o.nativeTun()
+	if frameLength+nativeTun.packetHeaderSize > goDarwinBatchFrameLimit {
 		return o.writeUnbatchedLocked(frame)
 	}
 	if o.batchCount == goDarwinTransmitBatch {
@@ -418,9 +425,9 @@ func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoC
 	slot := o.batchCount
 	iovecs := o.batchIovecs[slot*goDarwinBatchIovecs : slot*goDarwinBatchIovecs : (slot+1)*goDarwinBatchIovecs]
 	if header.IPVersion(frame[0]) == header.IPv4Version {
-		iovecs = append(iovecs, packetHeaderVec4)
+		iovecs = append(iovecs, nativeTun.packetHeaderVec4)
 	} else {
-		iovecs = append(iovecs, packetHeaderVec6)
+		iovecs = append(iovecs, nativeTun.packetHeaderVec6)
 	}
 	for index, segment := range frame {
 		if len(segment) == 0 {
@@ -693,9 +700,10 @@ func (o *goDarwinIO) writePacketLocked(frame [][]byte) error {
 		o.gateBlockLocked()
 		return errGoTransmitBlocked
 	}
-	headerVec := packetHeaderVec6
+	nativeTun := o.nativeTun()
+	headerVec := nativeTun.packetHeaderVec6
 	if header.IPVersion(frame[0]) == header.IPv4Version {
-		headerVec = packetHeaderVec4
+		headerVec = nativeTun.packetHeaderVec4
 	}
 	iovecs := append(o.transmitIovecs[:0], headerVec)
 	for _, segment := range frame {
@@ -735,7 +743,7 @@ func (o *goDarwinIO) writePacketLocked(frame [][]byte) error {
 }
 
 func (o *goDarwinIO) transmitPrefix() int {
-	return PacketOffset
+	return o.nativeTun().packetHeaderSize
 }
 
 func (o *goDarwinIO) transmitChecksumOffload() bool {
@@ -812,6 +820,7 @@ func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {
 		clear(o.packetIovecs[:])
 	}()
 	o.flushLocked()
+	nativeTun := o.nativeTun()
 	limit := len(frames)
 	for index := 0; index < len(frames); {
 		room := o.gateRoom(min(len(frames)-index, limit))
@@ -821,7 +830,7 @@ func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {
 			return errGoFrameDropped
 		}
 		frame := &frames[index]
-		if frame.length+len(frame.payload) > goDarwinBatchFrameLimit {
+		if frame.length+len(frame.payload)+nativeTun.packetHeaderSize > goDarwinBatchFrameLimit {
 			segments := [2][]byte{frame.header[:frame.length], frame.payload}
 			err := o.writePacketLocked(segments[:])
 			if err == errGoTransmitBlocked {
@@ -836,13 +845,13 @@ func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {
 		count := 0
 		for count < room {
 			next := &frames[index+count]
-			if next.length+len(next.payload) > goDarwinBatchFrameLimit {
+			if next.length+len(next.payload)+nativeTun.packetHeaderSize > goDarwinBatchFrameLimit {
 				break
 			}
 			iovecs := o.packetIovecs[count*3 : (count+1)*3]
-			iovecs[0] = packetHeaderVec6
+			iovecs[0] = nativeTun.packetHeaderVec6
 			if next.length == header.IPv4MinimumSize+header.UDPMinimumSize {
-				iovecs[0] = packetHeaderVec4
+				iovecs[0] = nativeTun.packetHeaderVec4
 			}
 			iovecs[1] = rawfile.IovecFromBytes(next.header[:next.length])
 			iovecCount := 2

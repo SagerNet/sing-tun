@@ -17,9 +17,9 @@ var _ GVisorTun = (*NativeTun)(nil)
 func (t *NativeTun) WritePacket(pkt *stack.PacketBuffer) (int, error) {
 	iovecs := t.iovecsOutputDefault
 	if pkt.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-		iovecs = append(iovecs, packetHeaderVec4)
+		iovecs = append(iovecs, t.packetHeaderVec4)
 	} else {
-		iovecs = append(iovecs, packetHeaderVec6)
+		iovecs = append(iovecs, t.packetHeaderVec6)
 	}
 	var dataLen int
 	for _, packetSlice := range pkt.AsSlices() {
@@ -45,6 +45,7 @@ func (t *NativeTun) NewEndpoint() (stack.LinkEndpoint, stack.NICOptions, error) 
 	ep, err := fdbased.New(&fdbased.Options{
 		FDs:                  []int{t.tunFd},
 		MTU:                  t.options.MTU,
+		PacketHeaderSize:     t.packetHeaderSize,
 		ProcessorsPerChannel: 1,
 		RXChecksumOffload:    true,
 		PacketDispatchMode:   fdbased.RecvMMsg,
