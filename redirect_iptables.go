@@ -448,6 +448,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, mask)
 	outputMark := iptablesMark(r.tunOptions.AutoRedirectOutputMark, mask)
 	resetMark := iptablesMark(r.tunOptions.AutoRedirectResetMark, mask)
+	tproxyMark := iptablesMark(r.tunOptions.AutoRedirectTProxyMark, mask)
 	loopbackAddresses := options.Inet4LoopbackAddress
 	if family.isIPv6 {
 		loopbackAddresses = options.Inet6LoopbackAddress
@@ -613,7 +614,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 		// into the tun instead of delivering them over loopback.
 		outputProtect := r.iptablesChain(family, iptablesTableMangle, r.tableName+"-output-protect")
 		if family.isIPv6 {
-			outputProtect.add("-m", "connmark", "--mark", iptablesMark(r.tunOptions.AutoRedirectTProxyMark, mask),
+			outputProtect.add("-m", "connmark", "--mark", tproxyMark,
 				"-m", "conntrack", "--ctdir", "REPLY",
 				"-j", "MARK", "--set-xmark", iptablesMark(androidSecureVPNMask, androidSecureVPNMask))
 		} else {
@@ -627,7 +628,6 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	}
 
 	if family.tproxy {
-		tproxyMark := iptablesMark(r.tunOptions.AutoRedirectTProxyMark, mask)
 		tproxyAction := []string{
 			"-p", "tcp", "-j", "TPROXY",
 			"--on-port", strconv.Itoa(int(r.redirectPort())), "--tproxy-mark", tproxyMark,
@@ -667,9 +667,11 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	}
 
 	input := r.iptablesChain(family, iptablesTableFilter, r.tableName+"-input")
-	input.add("-p", "tcp", "--dport", strconv.Itoa(int(r.redirectPort())),
-		"-m", "conntrack", "!", "--ctstate", "DNAT",
-		"-j", "REJECT", "--reject-with", "tcp-reset")
+	inputReject := []string{"-p", "tcp", "--dport", strconv.Itoa(int(r.redirectPort())), "-m", "conntrack", "!", "--ctstate", "DNAT"}
+	if family.tproxy {
+		inputReject = append(inputReject, "-m", "connmark", "!", "--mark", tproxyMark)
+	}
+	input.add(append(inputReject, "-j", "REJECT", "--reject-with", "tcp-reset")...)
 	if input.err != nil {
 		return input.err
 	}
