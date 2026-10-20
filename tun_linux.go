@@ -34,7 +34,6 @@ type NativeTun struct {
 	iovecsOutputDefault []unix.Iovec
 	interfaceCallback   *list.Element[DefaultInterfaceUpdateCallback]
 	options             Options
-	ruleIndex6          []int
 	readAccess          sync.Mutex
 	writeAccess         sync.Mutex
 	vnetHdr             bool
@@ -649,6 +648,9 @@ func (t *NativeTun) routes(tunLink netlink.Link) ([]netlink.Route, error) {
 	if err != nil {
 		return nil, E.Cause(err, "build auto route ranges")
 	}
+	if !t.options.AutoRoute && len(t.options.Inet6Address) > 0 && len(t.options.Inet6RouteAddress) == 0 {
+		routeRanges = append(routeRanges, netip.PrefixFrom(netip.IPv6Unspecified(), 0))
+	}
 	// Do not create gateway on linux by default
 	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 	return common.Map(routeRanges, func(it netip.Prefix) netlink.Route {
@@ -674,13 +676,11 @@ func (t *NativeTun) nextIndex6() int {
 	}
 	var minIndex int
 	for _, rule := range ruleList {
-		if rule.Priority > 0 && (minIndex == 0 || rule.Priority < minIndex) {
+		if rule.Priority > redirectRouteRulePriority && (minIndex == 0 || rule.Priority < minIndex) {
 			minIndex = rule.Priority
 		}
 	}
-	minIndex--
-	t.ruleIndex6 = append(t.ruleIndex6, minIndex)
-	return minIndex
+	return max(minIndex-1, redirectRouteRulePriority+1)
 }
 
 func (t *NativeTun) rules() []*netlink.Rule {
@@ -1144,17 +1144,15 @@ func (t *NativeTun) unsetRules() error {
 	if t.options.FileDescriptor > 0 {
 		return nil
 	}
-	if len(t.ruleIndex6) > 0 {
-		for _, index := range t.ruleIndex6 {
-			ruleToDel := netlink.NewRule()
-			ruleToDel.Family = unix.AF_INET6
-			ruleToDel.Priority = index
-			err := netlink.RuleDel(ruleToDel)
-			if err != nil {
-				return E.Cause(err, "unset rule6 ", index)
-			}
+	if !t.options.AutoRoute && len(t.options.Inet6Address) > 0 && t.options.IPRoute2TableIndex != 0 {
+		ruleToDel := netlink.NewRule()
+		ruleToDel.Family = unix.AF_INET6
+		ruleToDel.OifName = t.options.Name
+		ruleToDel.Table = t.options.IPRoute2TableIndex
+		err := netlink.RuleDel(ruleToDel)
+		if err != nil && !errors.Is(err, unix.ENOENT) {
+			return E.Cause(err, "unset rule6")
 		}
-		t.ruleIndex6 = nil
 	}
 	if t.options.AutoRoute {
 		ruleList, err := netlink.RuleList(netlink.FAMILY_ALL)
