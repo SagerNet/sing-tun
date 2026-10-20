@@ -73,6 +73,10 @@ func (m *networkUpdateMonitor) Start() error {
 	})
 	if err != nil {
 		unix.Close(netlinkSocket)
+		// gVisor rejects these netlink groups with EOPNOTSUPP, or EACCES in releases before 2025-11
+		if E.IsMulti(err, unix.EOPNOTSUPP, unix.EACCES) {
+			return nil
+		}
 		return E.Cause(err, "subscribe netlink groups")
 	}
 	err = unix.SetsockoptInt(netlinkSocket, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, netlinkReceiveBufferSize)
