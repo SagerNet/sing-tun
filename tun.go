@@ -46,6 +46,7 @@ type LinuxTUN interface {
 	BatchRead(buffers [][]byte, offset int, readN []int) (n int, err error)
 	BatchWrite(buffers [][]byte, offset int) (n int, err error)
 	TXChecksumOffload() bool
+	FlushDNSCache()
 }
 
 type DarwinTUN interface {

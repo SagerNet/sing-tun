@@ -1231,6 +1231,19 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() error {
 	return nil
 }
 
+func (t *NativeTun) FlushDNSCache() {
+	if t.options.FileDescriptor != 0 || t.options.EXP_ExternalConfiguration || t.options.DNSModeOrDefault() == DNSModeDisabled || t.options.NetNs != "" {
+		return
+	}
+	ctlPath, err := exec.LookPath("resolvectl")
+	if err != nil {
+		return
+	}
+	// systemd-resolved flushes the cache of a link only when the link switches its current DNS server
+	// (link_set_dns_server in resolved-link.c), which a network change never causes for the TUN link.
+	go shell.Exec(ctlPath, "flush-caches").Run()
+}
+
 func (t *NativeTun) unsetSearchDomainForSystemdResolved() {
 	ctlPath, err := exec.LookPath("resolvectl")
 	if err != nil {
