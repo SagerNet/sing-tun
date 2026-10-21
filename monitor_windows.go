@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const registryNotifyFilter = windows.REG_NOTIFY_CHANGE_NAME | windows.REG_NOTIFY_CHANGE_LAST_SET | windows.REG_NOTIFY_THREAD_AGNOSTIC
+const registryNotifyFilter = windows.REG_NOTIFY_CHANGE_NAME | windows.REG_NOTIFY_CHANGE_LAST_SET
 
 var dnsRegistryPaths = []string{
 	`SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces`,
