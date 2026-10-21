@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/sagernet/fswatch"
 	"github.com/sagernet/sing/common"
@@ -15,9 +16,13 @@ import (
 )
 
 type packageManager struct {
-	callback        PackageManagerCallback
-	logger          logger.Logger
-	watcher         *fswatch.Watcher
+	callback PackageManagerCallback
+	logger   logger.Logger
+	watcher  *fswatch.Watcher
+	packages atomic.Pointer[packageList]
+}
+
+type packageList struct {
 	idByPackage     map[string]uint32
 	sharedByPackage map[string]uint32
 	packageById     map[uint32][]string
@@ -46,7 +51,6 @@ func (m *packageManager) Start() error {
 func (m *packageManager) startWatcher() error {
 	watcher, err := fswatch.NewWatcher(fswatch.Options{
 		Path:     []string{"/data/system/packages.xml"},
-		Direct:   true,
 		Callback: m.packagesUpdated,
 		Logger:   m.logger,
 	})
@@ -73,17 +77,17 @@ func (m *packageManager) Close() error {
 }
 
 func (m *packageManager) IDByPackage(packageName string) (uint32, bool) {
-	id, loaded := m.idByPackage[packageName]
+	id, loaded := m.packages.Load().idByPackage[packageName]
 	return id, loaded
 }
 
 func (m *packageManager) IDBySharedPackage(sharedPackage string) (uint32, bool) {
-	id, loaded := m.sharedByPackage[sharedPackage]
+	id, loaded := m.packages.Load().sharedByPackage[sharedPackage]
 	return id, loaded
 }
 
 func (m *packageManager) PackageByID(id uint32) (string, bool) {
-	packageNames, loaded := m.packageById[id]
+	packageNames, loaded := m.packages.Load().packageById[id]
 	if !loaded || len(packageNames) == 0 {
 		return "", false
 	}
@@ -91,12 +95,12 @@ func (m *packageManager) PackageByID(id uint32) (string, bool) {
 }
 
 func (m *packageManager) PackagesByID(id uint32) ([]string, bool) {
-	packageNames, loaded := m.packageById[id]
+	packageNames, loaded := m.packages.Load().packageById[id]
 	return packageNames, loaded
 }
 
 func (m *packageManager) SharedPackageByID(id uint32) (string, bool) {
-	sharedPackage, loaded := m.sharedById[id]
+	sharedPackage, loaded := m.packages.Load().sharedById[id]
 	return sharedPackage, loaded
 }
 
@@ -174,10 +178,12 @@ func (m *packageManager) decodePackages(decoder *xml.Decoder) error {
 			sharedById[uint32(userID)] = name
 		}
 	}
-	m.idByPackage = idByPackage
-	m.sharedByPackage = sharedByPackage
-	m.packageById = packageById
-	m.sharedById = sharedById
+	m.packages.Store(&packageList{
+		idByPackage:     idByPackage,
+		sharedByPackage: sharedByPackage,
+		packageById:     packageById,
+		sharedById:      sharedById,
+	})
 	m.callback.OnPackagesUpdated(len(packageById), len(sharedById))
 	return nil
 }
