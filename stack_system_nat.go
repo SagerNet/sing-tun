@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/sagernet/sing-tun/gtcpip/header"
 )
 
 type TCPNat struct {
@@ -26,6 +28,9 @@ type TCPSession struct {
 	Source      netip.AddrPort
 	Destination netip.AddrPort
 	LastActive  time.Time
+	finForward  bool
+	finReverse  bool
+	closed      bool
 }
 
 func NewNat(ctx context.Context, timeout time.Duration) *TCPNat {
@@ -40,7 +45,7 @@ func NewNat(ctx context.Context, timeout time.Duration) *TCPNat {
 }
 
 func (n *TCPNat) loopCheckTimeout(ctx context.Context) {
-	ticker := time.NewTicker(n.timeout)
+	ticker := time.NewTicker(min(n.timeout, flowSweepInterval))
 	defer ticker.Stop()
 	for {
 		select {
@@ -62,7 +67,7 @@ func (n *TCPNat) checkTimeout() {
 	n.portAccess.RLock()
 	for natPort, session := range n.portMap {
 		session.Lock()
-		timedOut := now.Sub(session.LastActive) > n.timeout
+		timedOut := n.expiredLocked(session, now)
 		session.Unlock()
 		if timedOut {
 			expired = append(expired, expiredSession{port: natPort, session: session})
@@ -76,7 +81,7 @@ func (n *TCPNat) checkTimeout() {
 	n.portAccess.Lock()
 	for _, e := range expired {
 		e.session.Lock()
-		if now.Sub(e.session.LastActive) > n.timeout {
+		if n.portMap[e.port] == e.session && n.expiredLocked(e.session, now) {
 			delete(n.addrMap, tcpNatKey{Source: e.session.Source, Destination: e.session.Destination})
 			delete(n.portMap, e.port)
 		}
@@ -86,47 +91,57 @@ func (n *TCPNat) checkTimeout() {
 	n.addrAccess.Unlock()
 }
 
-func (n *TCPNat) LookupBack(port uint16) *TCPSession {
+func (n *TCPNat) expiredLocked(session *TCPSession, now time.Time) bool {
+	if session.closed {
+		return now.Sub(session.LastActive) > tcpClosingTimeout
+	}
+	return now.Sub(session.LastActive) > n.timeout
+}
+
+func (n *TCPNat) LookupBack(port uint16, flags header.TCPFlags) *TCPSession {
 	n.portAccess.RLock()
 	session := n.portMap[port]
 	n.portAccess.RUnlock()
 	if session != nil {
-		session.refresh()
+		session.observe(flags, true)
 	}
 	return session
 }
 
-func (s *TCPSession) refresh() {
+func (s *TCPSession) observe(flags header.TCPFlags, reverse bool) bool {
 	s.Lock()
-	if time.Since(s.LastActive) > time.Second {
-		s.LastActive = time.Now()
+	defer s.Unlock()
+	if s.closed && !reverse && flags&header.TCPFlagSyn != 0 && flags&header.TCPFlagAck == 0 {
+		return false
 	}
-	s.Unlock()
+	if flags&header.TCPFlagRst != 0 {
+		s.closed = true
+	} else if flags&header.TCPFlagFin != 0 {
+		if reverse {
+			s.finReverse = true
+		} else {
+			s.finForward = true
+		}
+		s.closed = s.finForward && s.finReverse
+	} else if time.Since(s.LastActive) <= time.Second {
+		return true
+	}
+	s.LastActive = time.Now()
+	return true
 }
 
-func (n *TCPNat) refresh(port uint16) {
-	n.portAccess.RLock()
-	session := n.portMap[port]
-	n.portAccess.RUnlock()
-	if session != nil {
-		session.refresh()
-	}
-}
-
-func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint16 {
+func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort, flags header.TCPFlags) uint16 {
 	key := tcpNatKey{Source: source, Destination: destination}
 	n.addrAccess.RLock()
 	port, loaded := n.addrMap[key]
 	n.addrAccess.RUnlock()
-	if loaded {
-		n.refresh(port)
+	if loaded && n.observe(port, flags) {
 		return port
 	}
 	n.addrAccess.Lock()
 	defer n.addrAccess.Unlock()
 	port, loaded = n.addrMap[key]
-	if loaded {
-		n.refresh(port)
+	if loaded && n.observe(port, flags) {
 		return port
 	}
 	n.portAccess.Lock()
@@ -135,6 +150,9 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint1
 	if !ok {
 		return 0
 	}
+	if loaded {
+		delete(n.portMap, port)
+	}
 	n.portMap[nextPort] = &TCPSession{
 		Source:      source,
 		Destination: destination,
@@ -142,6 +160,13 @@ func (n *TCPNat) Lookup(source netip.AddrPort, destination netip.AddrPort) uint1
 	}
 	n.addrMap[key] = nextPort
 	return nextPort
+}
+
+func (n *TCPNat) observe(port uint16, flags header.TCPFlags) bool {
+	n.portAccess.RLock()
+	session := n.portMap[port]
+	n.portAccess.RUnlock()
+	return session != nil && session.observe(flags, false)
 }
 
 func (n *TCPNat) allocatePortLocked() (uint16, bool) {
