@@ -255,14 +255,9 @@ func (d *ForwardDispatcher) handleHit(key flowKey, entry *flowEntry, packet *for
 		}
 		return true
 	case ActionAccept:
-		if packet.protocol == uint8(header.TCPProtocolNumber) {
-			if packet.tcpFlags&header.TCPFlagRst != 0 {
-				d.removeEntry(key, entry, FlowCloseReset)
-				return false
-			}
-			if packet.tcpFlags&header.TCPFlagSyn == 0 {
-				entry.idle = tcpEstablishedTimeout
-			}
+		if packet.protocol == uint8(header.TCPProtocolNumber) && packet.tcpFlags&header.TCPFlagSyn == 0 {
+			d.removeEntry(key, entry, FlowCloseReset)
+			return false
 		}
 		entry.deadline = now + int64(entry.idle)
 		return false
