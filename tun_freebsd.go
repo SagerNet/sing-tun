@@ -11,11 +11,11 @@
 package tun
 
 import (
-	"errors"
 	"net"
 	"net/netip"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
@@ -677,49 +677,87 @@ func findDefaultGateways() (gateway4 netip.Addr, gateway6 netip.Addr, gateway6In
 }
 
 func (t *NativeTun) UpdateRouteOptions(tunOptions Options) error {
+	previous := t.options
 	err := t.unsetRoutes()
 	if err != nil {
 		return err
 	}
 	t.options = tunOptions
-	return t.setRoutes()
+	err = t.setRoutes()
+	if err == nil {
+		return nil
+	}
+	t.options = previous
+	restoreErr := t.setRoutes()
+	if restoreErr != nil {
+		return E.Errors(err, E.Cause(restoreErr, "restore previous routes"))
+	}
+	return err
 }
 
 func (t *NativeTun) setRoutes() error {
-	if t.options.FileDescriptor == 0 {
-		routeRanges, err := t.options.BuildAutoRouteRanges(false)
-		if err != nil {
-			return err
-		}
-		if len(routeRanges) > 0 {
-			gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
-			for _, destination := range routeRanges {
-				var gateway netip.Addr
-				if destination.Addr().Is4() {
-					gateway = gateway4
-				} else {
-					gateway = gateway6
-				}
-				err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_ADD, destination, gateway, 0)
-				if err != nil {
-					if errors.Is(err, unix.EEXIST) {
-						err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, gateway, 0)
-						if err != nil {
-							return E.Cause(err, "remove existing route: ", destination)
-						}
-						err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_ADD, destination, gateway, 0)
-						if err != nil {
-							return E.Cause(err, "re-add route: ", destination)
-						}
-					} else {
-						return E.Cause(err, "add route: ", destination)
-					}
-				}
-			}
-			t.routeSet = true
-		}
+	if t.options.FileDescriptor != 0 {
+		return nil
 	}
+	includeN := len(t.options.Inet4RouteAddress) + len(t.options.Inet6RouteAddress)
+	excludeN := len(t.options.Inet4RouteExcludeAddress) + len(t.options.Inet6RouteExcludeAddress)
+	buildStart := time.Now()
+	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	buildDur := time.Since(buildStart)
+	if err != nil {
+		t.logRoutes(includeN, excludeN, 0, buildDur, 0, err)
+		return err
+	}
+	if len(routeRanges) == 0 {
+		t.logRoutes(includeN, excludeN, 0, buildDur, 0, nil)
+		return nil
+	}
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	installStart := time.Now()
+	err = installRoutePrefixes(routeRanges, func(destination netip.Prefix) error {
+		return execRoute(unix.RT_DEFAULT_FIB, unix.RTM_ADD, destination, routeGateway(destination, gateway4, gateway6), 0)
+	}, func(destination netip.Prefix) error {
+		return execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, routeGateway(destination, gateway4, gateway6), 0)
+	})
+	installDur := time.Since(installStart)
+	if err != nil {
+		t.logRoutes(includeN, excludeN, len(routeRanges), buildDur, installDur, err)
+		return err
+	}
+	t.routeSet = true
+	t.logRoutes(includeN, excludeN, len(routeRanges), buildDur, installDur, nil)
 	return nil
+}
+
+func routeGateway(destination netip.Prefix, gateway4, gateway6 netip.Addr) netip.Addr {
+	if destination.Addr().Is4() {
+		return gateway4
+	}
+	return gateway6
+}
+
+func (t *NativeTun) logRoutes(includeN, excludeN, installed int, build, install time.Duration, err error) {
+	if t.options.Logger == nil {
+		return
+	}
+	if err != nil {
+		t.options.Logger.Warn(
+			"tun routes: include ", includeN,
+			", exclude ", excludeN,
+			", computed ", installed,
+			", build ", build,
+			", install ", install,
+			": ", err,
+		)
+		return
+	}
+	t.options.Logger.Info(
+		"tun routes: include ", includeN,
+		", exclude ", excludeN,
+		", installed ", installed,
+		", build ", build,
+		", install ", install,
+	)
 }
 
 func (t *NativeTun) unsetRoutes() error {
@@ -731,19 +769,19 @@ func (t *NativeTun) unsetRoutes() error {
 		return err
 	}
 	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	var deleteErr error
 	for _, destination := range routeRanges {
-		var gateway netip.Addr
-		if destination.Addr().Is4() {
-			gateway = gateway4
-		} else {
-			gateway = gateway6
-		}
-		err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, gateway, 0)
+		err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, routeGateway(destination, gateway4, gateway6), 0)
 		if err != nil {
-			err = E.Errors(err, E.Cause(err, "delete route: ", destination))
+			deleteErr = E.Errors(deleteErr, E.Cause(err, "delete route: ", destination))
 		}
 	}
-	return err
+	if deleteErr != nil {
+		// Keep routeSet so a later Close retries the deletes.
+		return deleteErr
+	}
+	t.routeSet = false
+	return nil
 }
 
 func useSocket(domain, typ, proto int, block func(socketFd int) error) error {
