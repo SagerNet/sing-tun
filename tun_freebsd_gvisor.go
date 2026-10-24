@@ -63,7 +63,7 @@ func (e *FreeBSDEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 func (e *FreeBSDEndpoint) dispatchLoop() {
 	packetBuffer := make([]byte, e.tun.options.MTU+PacketOffset)
 	for {
-		n, err := e.tun.tunFile.Read(packetBuffer)
+		n, err := e.tun.Read(packetBuffer)
 		if err != nil {
 			break
 		}
@@ -73,7 +73,9 @@ func (e *FreeBSDEndpoint) dispatchLoop() {
 		case header.IPv4Version:
 			networkProtocol = header.IPv4ProtocolNumber
 			if header.IPv4(packet).DestinationAddress().As4() == e.tun.inet4Address {
-				e.tun.tunFile.Write(packetBuffer[:n])
+				// Inject back through the tun fd. The netmap host TX ring
+				// delivers via if_input, which an L3 tun drops.
+				_, _ = e.tun.tunFile.Write(packetBuffer[:n])
 				continue
 			}
 		case header.IPv6Version:

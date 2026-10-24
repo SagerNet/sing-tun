@@ -130,6 +130,12 @@ type Options struct {
 	// pushes the write rate past the netif drain rate (about 500k to 700k packets per second on an
 	// M4 Pro) and reproduces the device-wide network loss, writev stays below it by its own cost.
 	EXP_SendMsgX bool
+
+	// Netmap reads packets the host sends into a FreeBSD tun from the
+	// netmap host RX ring. Off unless set. sing-box rejects it on other
+	// platforms; the field is ignored when the FreeBSD device code is
+	// not built.
+	Netmap bool
 }
 
 func (o *Options) DNSModeOrDefault() string {

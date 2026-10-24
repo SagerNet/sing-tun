@@ -56,6 +56,7 @@ type NativeTun struct {
 	inet4Address [4]byte
 	inet6Address [16]byte
 	routeSet     bool
+	netmap       *netmapRX
 }
 
 func (t *NativeTun) Name() (string, error) {
@@ -134,7 +135,28 @@ func New(options Options) (Tun, error) {
 	if !ok {
 		panic("create vectorised writer")
 	}
+	if options.Netmap {
+		ifName, err := nativeTun.Name()
+		if err != nil {
+			return closeNewTun(nativeTun, options, err)
+		}
+		if err = nativeTun.enableNetmap(ifName); err != nil {
+			return closeNewTun(nativeTun, options, err)
+		}
+	}
 	return nativeTun, nil
+}
+
+func closeNewTun(tunDev *NativeTun, options Options, err error) (Tun, error) {
+	if tunDev.netmap != nil {
+		_ = tunDev.netmap.close()
+	}
+	name, _ := tunDev.Name()
+	closeErr := tunDev.tunFile.Close()
+	if options.FileDescriptor == 0 && name != "" {
+		_ = destroyTun(name)
+	}
+	return nil, E.Errors(err, closeErr)
 }
 
 func (t *NativeTun) Start() error {
@@ -144,15 +166,24 @@ func (t *NativeTun) Start() error {
 
 func (t *NativeTun) Close() error {
 	err := t.unsetRoutes()
+	var netmapErr error
+	if t.netmap != nil {
+		// Drop netmap before the tun fd so the kernel restores if_transmit
+		// while the interface still exists.
+		netmapErr = t.netmap.close()
+	}
 	closeErr := t.tunFile.Close()
 	// On FreeBSD 15+ with TUNSTRANSIENT the device is already destroyed by
 	// the close; on older versions the explicit destroy is what removes it.
 	// Errors are ignored since the device may already be gone.
 	_ = destroyTun(t.options.Name)
-	return E.Errors(err, closeErr)
+	return E.Errors(err, netmapErr, closeErr)
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
+	if t.netmap != nil {
+		return t.netmap.read(p)
+	}
 	return t.tunFile.Read(p)
 }
 
