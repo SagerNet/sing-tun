@@ -53,13 +53,14 @@ const (
 )
 
 type NativeTun struct {
-	tunFile      *os.File
-	tunWriter    N.VectorisedWriter
-	options      Options
-	inet4Address [4]byte
-	inet6Address [16]byte
-	routeSet     bool
-	netmap       *netmapRX
+	tunFile       *os.File
+	tunWriter     N.VectorisedWriter
+	options       Options
+	inet4Address  [4]byte
+	inet6Address  [16]byte
+	routeSet      bool
+	tunDefaultSet bool
+	netmap        *netmapRX
 }
 
 func (t *NativeTun) Name() (string, error) {
@@ -575,6 +576,13 @@ func fibIndex(options Options) int {
 	return DefaultIPRoute2TableIndex
 }
 
+// tunRouteFIB is the table whose default route points at this tun.
+// It is the outbound table plus one, not a fixed table number: using 1
+// would collide when iproute2_table_index itself is 1.
+func tunRouteFIB(options Options) int {
+	return fibIndex(options) + 1
+}
+
 // prepareFIB sets up an isolated routing table (FIB) for loop prevention:
 // the capture routes live in the default FIB while the real default
 // gateway is copied into the dedicated FIB, so traffic of the proxy
@@ -593,19 +601,9 @@ func prepareFIB(options Options) error {
 		}
 	}
 
-	fibs, err := sysctlReadUint32("net.fibs")
+	err = ensureFIBCount(tunRouteFIB(options) + 1)
 	if err != nil {
 		return err
-	}
-	if fibs < uint32(fib+1) {
-		err = sysctlWriteUint32("net.fibs", uint32(fib+1))
-		if err != nil {
-			return E.New(
-				"failed to set net.fibs=", fib+1, ": ", err,
-				". Please add `net.fibs=", fib+1,
-				"` and `net.add_addr_allfibs=1` to /boot/loader.conf and reboot",
-			)
-		}
 	}
 
 	gateway4, gateway6, gateway6Index, err := findDefaultGateways()
@@ -702,6 +700,12 @@ func (t *NativeTun) setRoutes() error {
 	if t.options.FileDescriptor != 0 {
 		return nil
 	}
+	if t.options.AutoRoute {
+		err := t.setTunDefaultRoute()
+		if err != nil {
+			return err
+		}
+	}
 	includeN := len(t.options.Inet4RouteAddress) + len(t.options.Inet6RouteAddress)
 	excludeN := len(t.options.Inet4RouteExcludeAddress) + len(t.options.Inet6RouteExcludeAddress)
 	buildStart := time.Now()
@@ -709,6 +713,7 @@ func (t *NativeTun) setRoutes() error {
 	buildDur := time.Since(buildStart)
 	if err != nil {
 		t.logRoutes(includeN, excludeN, 0, buildDur, 0, err)
+		_ = t.unsetTunDefaultRoute()
 		return err
 	}
 	if len(routeRanges) == 0 {
@@ -725,6 +730,7 @@ func (t *NativeTun) setRoutes() error {
 	installDur := time.Since(installStart)
 	if err != nil {
 		t.logRoutes(includeN, excludeN, len(routeRanges), buildDur, installDur, err)
+		_ = t.unsetTunDefaultRoute()
 		return err
 	}
 	t.routeSet = true
@@ -763,13 +769,101 @@ func (t *NativeTun) logRoutes(includeN, excludeN, installed int, build, install 
 	)
 }
 
-func (t *NativeTun) unsetRoutes() error {
-	if !t.routeSet {
+// setTunDefaultRoute installs a default route via the tun on FIB
+// iproute2_table_index+1. pf can send selected traffic, such as LAN
+// DNS, to that table without disturbing the capture routes in FIB 0.
+func (t *NativeTun) setTunDefaultRoute() error {
+	fib := tunRouteFIB(t.options)
+	err := ensureFIBCount(fib + 1)
+	if err != nil {
+		return err
+	}
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	if tunGateway(gateway4) {
+		destination := netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+		_ = execRoute(fib, unix.RTM_DELETE, destination, gateway4, 0)
+		err = execRoute(fib, unix.RTM_ADD, destination, gateway4, 0)
+		if err != nil {
+			return E.Cause(err, "add IPv4 default route via tun on FIB ", fib)
+		}
+		t.tunDefaultSet = true
+	}
+	if tunGateway(gateway6) {
+		destination := netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+		_ = execRoute(fib, unix.RTM_DELETE, destination, gateway6, 0)
+		err = execRoute(fib, unix.RTM_ADD, destination, gateway6, 0)
+		if err != nil {
+			if t.tunDefaultSet {
+				_ = execRoute(fib, unix.RTM_DELETE, netip.PrefixFrom(netip.IPv4Unspecified(), 0), gateway4, 0)
+				t.tunDefaultSet = false
+			}
+			return E.Cause(err, "add IPv6 default route via tun on FIB ", fib)
+		}
+		t.tunDefaultSet = true
+	}
+	if t.tunDefaultSet && t.options.Logger != nil {
+		t.options.Logger.Info("tun default route installed on FIB ", fib)
+	}
+	return nil
+}
+
+func tunGateway(gateway netip.Addr) bool {
+	return gateway.IsValid() && !gateway.IsUnspecified()
+}
+
+func (t *NativeTun) unsetTunDefaultRoute() error {
+	if !t.tunDefaultSet {
 		return nil
+	}
+	fib := tunRouteFIB(t.options)
+	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	var deleteErr error
+	if tunGateway(gateway4) {
+		err := execRoute(fib, unix.RTM_DELETE, netip.PrefixFrom(netip.IPv4Unspecified(), 0), gateway4, 0)
+		if err != nil {
+			deleteErr = E.Errors(deleteErr, E.Cause(err, "delete IPv4 tun default route on FIB ", fib))
+		}
+	}
+	if tunGateway(gateway6) {
+		err := execRoute(fib, unix.RTM_DELETE, netip.PrefixFrom(netip.IPv6Unspecified(), 0), gateway6, 0)
+		if err != nil {
+			deleteErr = E.Errors(deleteErr, E.Cause(err, "delete IPv6 tun default route on FIB ", fib))
+		}
+	}
+	if deleteErr != nil {
+		return deleteErr
+	}
+	t.tunDefaultSet = false
+	return nil
+}
+
+func ensureFIBCount(fibsNeeded int) error {
+	fibs, err := sysctlReadUint32("net.fibs")
+	if err != nil {
+		return err
+	}
+	if fibs >= uint32(fibsNeeded) {
+		return nil
+	}
+	err = sysctlWriteUint32("net.fibs", uint32(fibsNeeded))
+	if err != nil {
+		return E.New(
+			"failed to set net.fibs=", fibsNeeded, ": ", err,
+			". Please add `net.fibs=", fibsNeeded,
+			"` and `net.add_addr_allfibs=1` to /boot/loader.conf and reboot",
+		)
+	}
+	return nil
+}
+
+func (t *NativeTun) unsetRoutes() error {
+	tunDefaultErr := t.unsetTunDefaultRoute()
+	if !t.routeSet {
+		return tunDefaultErr
 	}
 	routeRanges, err := t.options.BuildAutoRouteRanges(false)
 	if err != nil {
-		return err
+		return E.Errors(tunDefaultErr, err)
 	}
 	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
 	var deleteErr error
@@ -781,10 +875,10 @@ func (t *NativeTun) unsetRoutes() error {
 	}
 	if deleteErr != nil {
 		// Keep routeSet so a later Close retries the deletes.
-		return deleteErr
+		return E.Errors(tunDefaultErr, deleteErr)
 	}
 	t.routeSet = false
-	return nil
+	return tunDefaultErr
 }
 
 func useSocket(domain, typ, proto int, block func(socketFd int) error) error {
