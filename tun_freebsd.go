@@ -35,11 +35,14 @@ const PacketOffset = 4
 // sys/netinet6/nd6.h. Raw values are used since they are not exported by
 // golang.org/x/sys/unix for FreeBSD.
 const (
-	TUNSIFHEAD             = 0x80047460 // sys/net/if_tun.h
-	TUNSIFMODE             = 0x8004745E // sys/net/if_tun.h
-	TUNGIFNAME             = 0x4020745D // sys/net/if_tun.h
-	TUNSIFPID              = 0x2000745F // sys/net/if_tun.h
-	TUNSTRANSIENT          = 0x80627404 // sys/net/if_tun.h, _IOW('t', 98, int), FreeBSD 15+
+	TUNSIFHEAD = 0x80047460 // sys/net/if_tun.h
+	TUNSIFMODE = 0x8004745E // sys/net/if_tun.h
+	TUNGIFNAME = 0x4020745D // sys/net/if_tun.h
+	TUNSIFPID  = 0x2000745F // sys/net/if_tun.h
+	// _IOW('t', 98, int) on FreeBSD 15.1. 0x80627404 swaps the command
+	// number and the argument size, so tunioctl returns ENOTTY and a
+	// killed process leaves the device behind.
+	TUNSTRANSIENT          = 0x80047462
 	SIOCGIFINFO_IN6        = 0xC048696C // sys/netinet6/in6_var.h
 	SIOCSIFINFO_IN6        = 0xC048696D // sys/netinet6/in6_var.h
 	SIOCAIFADDR_IN6        = 0x8088691B // sys/netinet6/in6_var.h
