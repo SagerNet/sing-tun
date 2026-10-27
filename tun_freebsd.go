@@ -11,6 +11,7 @@
 package tun
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -19,7 +20,6 @@ import (
 	"unsafe"
 
 	"github.com/sagernet/sing-tun/gtcpip/header"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -53,14 +53,19 @@ const (
 )
 
 type NativeTun struct {
-	tunFile       *os.File
-	tunWriter     N.VectorisedWriter
-	options       Options
-	inet4Address  [4]byte
-	inet6Address  [16]byte
-	routeSet      bool
-	tunDefaultSet bool
-	netmap        *netmapRX
+	tunFile         *os.File
+	tunWriter       N.VectorisedWriter
+	options         Options
+	inet4Address    [4]byte
+	inet6Address    [16]byte
+	routeSet        bool
+	tunDefaultSet   bool
+	installedTun    []netip.Prefix
+	installedBypass []netip.Prefix
+	bypass4         netip.Addr
+	bypass6         netip.Addr
+	bypass6Index    int
+	netmap          *netmapRX
 }
 
 func (t *NativeTun) Name() (string, error) {
@@ -709,33 +714,82 @@ func (t *NativeTun) setRoutes() error {
 	includeN := len(t.options.Inet4RouteAddress) + len(t.options.Inet6RouteAddress)
 	excludeN := len(t.options.Inet4RouteExcludeAddress) + len(t.options.Inet6RouteExcludeAddress)
 	buildStart := time.Now()
-	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	toTun, toBypass, gateway4, gateway6, gateway6Index, err := t.planRoutes()
 	buildDur := time.Since(buildStart)
 	if err != nil {
-		t.logRoutes(includeN, excludeN, 0, buildDur, 0, err)
+		t.logRoutes(includeN, excludeN, 0, 0, buildDur, 0, err)
 		_ = t.unsetTunDefaultRoute()
 		return err
 	}
-	if len(routeRanges) == 0 {
-		t.logRoutes(includeN, excludeN, 0, buildDur, 0, nil)
+	if len(toTun) == 0 && len(toBypass) == 0 {
+		t.logRoutes(includeN, excludeN, 0, 0, buildDur, 0, nil)
 		return nil
 	}
-	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	socket, err := openRouteSocket(unix.RT_DEFAULT_FIB)
+	if err != nil {
+		_ = t.unsetTunDefaultRoute()
+		return err
+	}
+	defer socket.Close()
 	installStart := time.Now()
-	err = installRoutePrefixes(routeRanges, func(destination netip.Prefix) error {
-		return execRoute(unix.RT_DEFAULT_FIB, unix.RTM_ADD, destination, routeGateway(destination, gateway4, gateway6), 0)
+	installedBypass, err := installBypassRoutes(socket, toBypass, gateway4, gateway6, gateway6Index)
+	if err != nil {
+		t.logRoutes(includeN, excludeN, 0, 0, buildDur, time.Since(installStart), err)
+		_ = t.unsetTunDefaultRoute()
+		return err
+	}
+	tun4, tun6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	err = installRoutePrefixes(toTun, func(destination netip.Prefix) error {
+		return socket.write(unix.RTM_ADD, destination, routeGateway(destination, tun4, tun6), 0)
 	}, func(destination netip.Prefix) error {
-		return execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, routeGateway(destination, gateway4, gateway6), 0)
+		return socket.write(unix.RTM_DELETE, destination, routeGateway(destination, tun4, tun6), 0)
 	})
 	installDur := time.Since(installStart)
 	if err != nil {
-		t.logRoutes(includeN, excludeN, len(routeRanges), buildDur, installDur, err)
+		_ = deleteInstalled(socket, installedBypass, gateway4, gateway6, gateway6Index, true)
+		t.logRoutes(includeN, excludeN, len(toTun)+len(installedBypass), len(installedBypass), buildDur, installDur, err)
 		_ = t.unsetTunDefaultRoute()
 		return err
 	}
+	t.installedTun = toTun
+	t.installedBypass = installedBypass
+	t.bypass4 = gateway4
+	t.bypass6 = gateway6
+	t.bypass6Index = gateway6Index
 	t.routeSet = true
-	t.logRoutes(includeN, excludeN, len(routeRanges), buildDur, installDur, nil)
+	t.logRoutes(includeN, excludeN, len(toTun)+len(installedBypass), len(installedBypass), buildDur, installDur, nil)
 	return nil
+}
+
+func (t *NativeTun) planRoutes() (toTun []netip.Prefix, toBypass []netip.Prefix, gateway4 netip.Addr, gateway6 netip.Addr, gateway6Index int, err error) {
+	capture4, capture6 := t.options.captureRoutePrefixes(false)
+	gateway4, gateway6, gateway6Index, gatewayErr := findDefaultGateways()
+	var tun4, bypass4, tun6, bypass6 []netip.Prefix
+	tun4, bypass4, err = planFamily(capture4, t.options.Inet4RouteExcludeAddress)
+	if err != nil {
+		return
+	}
+	if len(bypass4) > 0 && (gatewayErr != nil || !tunGateway(gateway4)) {
+		tun4, err = subtractPrefixes(capture4, t.options.Inet4RouteExcludeAddress)
+		bypass4 = nil
+		if err != nil {
+			return
+		}
+	}
+	tun6, bypass6, err = planFamily(capture6, t.options.Inet6RouteExcludeAddress)
+	if err != nil {
+		return
+	}
+	if len(bypass6) > 0 && (gatewayErr != nil || !tunGateway(gateway6)) {
+		tun6, err = subtractPrefixes(capture6, t.options.Inet6RouteExcludeAddress)
+		bypass6 = nil
+		if err != nil {
+			return
+		}
+	}
+	toTun = append(tun4, tun6...)
+	toBypass = append(bypass4, bypass6...)
+	return
 }
 
 func routeGateway(destination netip.Prefix, gateway4, gateway6 netip.Addr) netip.Addr {
@@ -745,7 +799,7 @@ func routeGateway(destination netip.Prefix, gateway4, gateway6 netip.Addr) netip
 	return gateway6
 }
 
-func (t *NativeTun) logRoutes(includeN, excludeN, installed int, build, install time.Duration, err error) {
+func (t *NativeTun) logRoutes(includeN, excludeN, installed, bypass int, build, install time.Duration, err error) {
 	if t.options.Logger == nil {
 		return
 	}
@@ -754,6 +808,7 @@ func (t *NativeTun) logRoutes(includeN, excludeN, installed int, build, install 
 			"tun routes: include ", includeN,
 			", exclude ", excludeN,
 			", computed ", installed,
+			", bypass ", bypass,
 			", build ", build,
 			", install ", install,
 			": ", err,
@@ -764,6 +819,7 @@ func (t *NativeTun) logRoutes(includeN, excludeN, installed int, build, install 
 		"tun routes: include ", includeN,
 		", exclude ", excludeN,
 		", installed ", installed,
+		", bypass ", bypass,
 		", build ", build,
 		", install ", install,
 	)
@@ -861,21 +917,24 @@ func (t *NativeTun) unsetRoutes() error {
 	if !t.routeSet {
 		return tunDefaultErr
 	}
-	routeRanges, err := t.options.BuildAutoRouteRanges(false)
+	socket, err := openRouteSocket(unix.RT_DEFAULT_FIB)
 	if err != nil {
 		return E.Errors(tunDefaultErr, err)
 	}
-	gateway4, gateway6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
-	var deleteErr error
-	for _, destination := range routeRanges {
-		err = execRoute(unix.RT_DEFAULT_FIB, unix.RTM_DELETE, destination, routeGateway(destination, gateway4, gateway6), 0)
-		if err != nil {
-			deleteErr = E.Errors(deleteErr, E.Cause(err, "delete route: ", destination))
-		}
+	defer socket.Close()
+	tun4, tun6 := t.options.Inet4GatewayAddr(), t.options.Inet6GatewayAddr()
+	// Remove the tun prefixes first. Bypass routes still point at the real
+	// gateway, so excluded addresses do not fall into the tun during teardown.
+	tunErr := deleteInstalled(socket, t.installedTun, tun4, tun6, 0, false)
+	if tunErr == nil {
+		t.installedTun = nil
 	}
-	if deleteErr != nil {
-		// Keep routeSet so a later Close retries the deletes.
-		return E.Errors(tunDefaultErr, deleteErr)
+	bypassErr := deleteInstalled(socket, t.installedBypass, t.bypass4, t.bypass6, t.bypass6Index, true)
+	if bypassErr == nil {
+		t.installedBypass = nil
+	}
+	if tunErr != nil || bypassErr != nil {
+		return E.Errors(tunDefaultErr, tunErr, bypassErr)
 	}
 	t.routeSet = false
 	return tunDefaultErr
@@ -898,9 +957,52 @@ func useFd(tunFile *os.File, block func(fd uintptr)) error {
 	return sysconn.Control(block)
 }
 
-// execRoute writes a route message into the routing socket.
-// fib selects the target routing table (SO_SETFIB).
+type routeSocket struct {
+	fd int
+}
+
+func openRouteSocket(fib int) (*routeSocket, error) {
+	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SETFIB, fib); err != nil {
+		unix.Close(fd)
+		return nil, os.NewSyscallError("SO_SETFIB", err)
+	}
+	return &routeSocket{fd: fd}, nil
+}
+
+func (s *routeSocket) Close() error {
+	return unix.Close(s.fd)
+}
+
+func (s *routeSocket) write(rtmType int, destination netip.Prefix, gateway netip.Addr, gatewayIndex int) error {
+	request, err := marshalRoute(rtmType, destination, gateway, gatewayIndex)
+	if err != nil {
+		return err
+	}
+	n, err := unix.Write(s.fd, request)
+	if err != nil {
+		return os.NewSyscallError("write route", err)
+	}
+	if n != len(request) {
+		return syscall.Errno(syscall.EIO)
+	}
+	return nil
+}
+
+// execRoute writes one route message. Bulk updates should keep a routeSocket open.
 func execRoute(fib int, rtmType int, destination netip.Prefix, gateway netip.Addr, gatewayIndex int) error {
+	socket, err := openRouteSocket(fib)
+	if err != nil {
+		return err
+	}
+	defer socket.Close()
+	return socket.write(rtmType, destination, gateway, gatewayIndex)
+}
+
+func marshalRoute(rtmType int, destination netip.Prefix, gateway netip.Addr, gatewayIndex int) ([]byte, error) {
 	routeMessage := route.RouteMessage{
 		Type:    rtmType,
 		Version: unix.RTM_VERSION,
@@ -913,7 +1015,7 @@ func execRoute(fib int, rtmType int, destination netip.Prefix, gateway netip.Add
 	if gateway.Is4() {
 		routeMessage.Addrs = []route.Addr{
 			syscall.RTAX_DST:     &route.Inet4Addr{IP: destination.Addr().As4()},
-			syscall.RTAX_NETMASK: &route.Inet4Addr{IP: netip.MustParseAddr(net.IP(net.CIDRMask(destination.Bits(), 32)).String()).As4()},
+			syscall.RTAX_NETMASK: &route.Inet4Addr{IP: ipv4Mask(destination.Bits())},
 			syscall.RTAX_GATEWAY: &route.Inet4Addr{IP: gateway.As4()},
 		}
 	} else {
@@ -921,7 +1023,7 @@ func execRoute(fib int, rtmType int, destination netip.Prefix, gateway netip.Add
 		// beyond a compact literal; nil slots are skipped by Marshal.
 		routeMessage.Addrs = make([]route.Addr, syscall.RTAX_MAX)
 		routeMessage.Addrs[syscall.RTAX_DST] = &route.Inet6Addr{IP: destination.Addr().As16()}
-		routeMessage.Addrs[syscall.RTAX_NETMASK] = &route.Inet6Addr{IP: netip.MustParseAddr(net.IP(net.CIDRMask(destination.Bits(), 128)).String()).As16()}
+		routeMessage.Addrs[syscall.RTAX_NETMASK] = &route.Inet6Addr{IP: ipv6Mask(destination.Bits())}
 		gatewayIP := gateway.As16()
 		if gateway.IsLinkLocalUnicast() && gatewayIndex != 0 {
 			// FreeBSD KAME kernel requires the interface index embedded in
@@ -937,15 +1039,56 @@ func execRoute(fib int, rtmType int, destination netip.Prefix, gateway netip.Add
 			routeMessage.Addrs[syscall.RTAX_IFP] = &route.LinkAddr{Index: gatewayIndex}
 		}
 	}
-	request, err := routeMessage.Marshal()
-	if err != nil {
-		return err
-	}
-	return useSocket(unix.AF_ROUTE, unix.SOCK_RAW, 0, func(socketFd int) error {
-		err := unix.SetsockoptInt(socketFd, unix.SOL_SOCKET, unix.SO_SETFIB, fib)
-		if err != nil {
-			return os.NewSyscallError("SO_SETFIB", err)
+	return routeMessage.Marshal()
+}
+
+func installBypassRoutes(socket *routeSocket, prefixes []netip.Prefix, gateway4, gateway6 netip.Addr, gateway6Index int) ([]netip.Prefix, error) {
+	installed := make([]netip.Prefix, 0, len(prefixes))
+	rollback := func(cause error) ([]netip.Prefix, error) {
+		delErr := deleteInstalled(socket, installed, gateway4, gateway6, gateway6Index, true)
+		if delErr != nil {
+			return nil, E.Errors(cause, delErr)
 		}
-		return common.Error(unix.Write(socketFd, request))
-	})
+		return nil, cause
+	}
+	for _, destination := range prefixes {
+		index := 0
+		if destination.Addr().Is6() {
+			index = gateway6Index
+		}
+		gateway := routeGateway(destination, gateway4, gateway6)
+		err := socket.write(unix.RTM_ADD, destination, gateway, index)
+		if err == nil {
+			installed = append(installed, destination)
+			continue
+		}
+		if !errors.Is(err, unix.EEXIST) {
+			return rollback(E.Cause(err, "add route: ", destination))
+		}
+		// A prefix that already belongs to another route, such as a connected
+		// LAN prefix, is left alone. Replacing it would override that route.
+		if delErr := socket.write(unix.RTM_DELETE, destination, gateway, index); delErr != nil {
+			continue
+		}
+		if err = socket.write(unix.RTM_ADD, destination, gateway, index); err != nil {
+			return rollback(E.Cause(err, "re-add route: ", destination))
+		}
+		installed = append(installed, destination)
+	}
+	return installed, nil
+}
+
+func deleteInstalled(socket *routeSocket, prefixes []netip.Prefix, gateway4, gateway6 netip.Addr, gateway6Index int, useV6Index bool) error {
+	var deleteErr error
+	for _, destination := range prefixes {
+		index := 0
+		if useV6Index && destination.Addr().Is6() {
+			index = gateway6Index
+		}
+		err := socket.write(unix.RTM_DELETE, destination, routeGateway(destination, gateway4, gateway6), index)
+		if err != nil {
+			deleteErr = E.Errors(deleteErr, E.Cause(err, "delete route: ", destination))
+		}
+	}
+	return deleteErr
 }

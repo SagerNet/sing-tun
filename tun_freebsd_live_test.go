@@ -158,6 +158,97 @@ func TestLiveTunIO(t *testing.T) {
 	}
 }
 
+func TestLiveRouteSocket(t *testing.T) {
+	requireLive(t)
+	const fib = 2021
+	gateway4, _, _, err := findDefaultGateways()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gateway4.IsValid() {
+		t.Fatal("no IPv4 default gateway")
+	}
+	fib0Before := routeSnapshot(t, "1.1.1.1")
+	prefixes := docPrefixes(4096)
+	clearDocRoutesIfPresent(t, fib, prefixes, gateway4)
+	t.Cleanup(func() {
+		clearDocRoutesIfPresent(t, fib, prefixes, gateway4)
+		_ = execRoute(fib, unix.RTM_DELETE, netip.MustParsePrefix("240.0.0.0/4"), netip.MustParseAddr("172.19.0.1"), 0)
+		_ = execRoute(fib, unix.RTM_DELETE, netip.MustParsePrefix("240.1.2.0/24"), gateway4, 0)
+	})
+
+	start := time.Now()
+	for _, prefix := range prefixes {
+		if err = execRoute(fib, unix.RTM_ADD, prefix, gateway4, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	perSocket := time.Since(start)
+	for i := len(prefixes) - 1; i >= 0; i-- {
+		_ = execRoute(fib, unix.RTM_DELETE, prefixes[i], gateway4, 0)
+	}
+
+	socket, err := openRouteSocket(fib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	for _, prefix := range prefixes {
+		if err = socket.write(unix.RTM_ADD, prefix, gateway4, 0); err != nil {
+			socket.Close()
+			t.Fatal(err)
+		}
+	}
+	shared := time.Since(start)
+	socket.Close()
+	for i := len(prefixes) - 1; i >= 0; i-- {
+		_ = execRoute(fib, unix.RTM_DELETE, prefixes[i], gateway4, 0)
+	}
+	t.Logf("ROUTE prefixes=%d per_socket=%s shared_socket=%s", len(prefixes), perSocket, shared)
+
+	tunGateway := netip.MustParseAddr("172.19.0.1")
+	wide := netip.MustParsePrefix("240.0.0.0/4")
+	hole := netip.MustParsePrefix("240.1.2.0/24")
+	if err = execRoute(fib, unix.RTM_ADD, wide, tunGateway, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = execRoute(fib, unix.RTM_ADD, hole, gateway4, 0); err != nil {
+		t.Fatal(err)
+	}
+	wideOut, err := routeGet(fib, "240.8.8.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	holeOut, err := routeGet(fib, "240.1.2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("wide %s", oneLine(wideOut))
+	t.Logf("hole %s", oneLine(holeOut))
+	if !strings.Contains(wideOut, "utun0") {
+		t.Fatalf("wide prefix did not use utun0:\n%s", wideOut)
+	}
+	if !strings.Contains(holeOut, "vtnet0") {
+		t.Fatalf("bypass prefix did not use vtnet0:\n%s", holeOut)
+	}
+	fib0After := routeSnapshot(t, "1.1.1.1")
+	if fib0After.iface != fib0Before.iface {
+		t.Fatalf("FIB 0 1.1.1.1 changed from %s to %s", fib0Before.iface, fib0After.iface)
+	}
+}
+
+func oneLine(text string) string {
+	lines := strings.Split(text, "\n")
+	var kept []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "destination:") || strings.HasPrefix(line, "gateway:") || strings.HasPrefix(line, "interface:") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
 func requireLive(t *testing.T) {
 	t.Helper()
 	if os.Getuid() != 0 || os.Getenv("FREEBSD_LIVE_TEST") != "1" {

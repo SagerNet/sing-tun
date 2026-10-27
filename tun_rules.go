@@ -10,8 +10,6 @@ import (
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/ranges"
-
-	"go4.org/netipx"
 )
 
 const (
@@ -108,10 +106,8 @@ func buildExcludedRanges(includeRanges []ranges.Range[uint32], excludeRanges []r
 // other GOOS values. Production stays darwin or freebsd.
 var autoRouteUseSubRanges = runtime.GOOS == "darwin" || runtime.GOOS == "freebsd"
 
-func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Prefix, error) {
-	var routeRanges []netip.Prefix
+func (o *Options) captureRoutePrefixes(underNetworkExtension bool) (inet4Ranges []netip.Prefix, inet6Ranges []netip.Prefix) {
 	if len(o.Inet4Address) > 0 {
-		var inet4Ranges []netip.Prefix
 		if len(o.Inet4RouteAddress) > 0 {
 			inet4Ranges = o.Inet4RouteAddress
 			if runtime.GOOS == "darwin" {
@@ -143,25 +139,8 @@ func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Pref
 				}
 			}
 		}
-		if len(o.Inet4RouteExcludeAddress) == 0 {
-			routeRanges = append(routeRanges, inet4Ranges...)
-		} else {
-			var builder netipx.IPSetBuilder
-			for _, inet4Range := range inet4Ranges {
-				builder.AddPrefix(inet4Range)
-			}
-			for _, prefix := range o.Inet4RouteExcludeAddress {
-				builder.RemovePrefix(prefix)
-			}
-			resultSet, err := builder.IPSet()
-			if err != nil {
-				return nil, E.Cause(err, "build IPv4 route address")
-			}
-			routeRanges = append(routeRanges, resultSet.Prefixes()...)
-		}
 	}
 	if len(o.Inet6Address) > 0 {
-		var inet6Ranges []netip.Prefix
 		if len(o.Inet6RouteAddress) > 0 {
 			inet6Ranges = o.Inet6RouteAddress
 			if runtime.GOOS == "darwin" {
@@ -193,21 +172,33 @@ func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Pref
 				}
 			}
 		}
+	}
+	return inet4Ranges, inet6Ranges
+}
+
+func (o *Options) BuildAutoRouteRanges(underNetworkExtension bool) ([]netip.Prefix, error) {
+	inet4Ranges, inet6Ranges := o.captureRoutePrefixes(underNetworkExtension)
+	var routeRanges []netip.Prefix
+	if len(o.Inet4Address) > 0 {
+		if len(o.Inet4RouteExcludeAddress) == 0 {
+			routeRanges = append(routeRanges, inet4Ranges...)
+		} else {
+			prefixes, err := subtractPrefixes(inet4Ranges, o.Inet4RouteExcludeAddress)
+			if err != nil {
+				return nil, E.Cause(err, "build IPv4 route address")
+			}
+			routeRanges = append(routeRanges, prefixes...)
+		}
+	}
+	if len(o.Inet6Address) > 0 {
 		if len(o.Inet6RouteExcludeAddress) == 0 {
 			routeRanges = append(routeRanges, inet6Ranges...)
 		} else {
-			var builder netipx.IPSetBuilder
-			for _, inet6Range := range inet6Ranges {
-				builder.AddPrefix(inet6Range)
-			}
-			for _, prefix := range o.Inet6RouteExcludeAddress {
-				builder.RemovePrefix(prefix)
-			}
-			resultSet, err := builder.IPSet()
+			prefixes, err := subtractPrefixes(inet6Ranges, o.Inet6RouteExcludeAddress)
 			if err != nil {
 				return nil, E.Cause(err, "build IPv6 route address")
 			}
-			routeRanges = append(routeRanges, resultSet.Prefixes()...)
+			routeRanges = append(routeRanges, prefixes...)
 		}
 	}
 	return routeRanges, nil
