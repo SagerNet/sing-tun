@@ -704,6 +704,9 @@ func (e *goEngine) processParsed(buffer *buf.Buffer, meta ForwardFrameMeta, pars
 	if e.handleLoopbackHairpin(packet, meta, parsed) {
 		return
 	}
+	if e.dispatchStage != nil && e.dispatchStage.ReturnParsed(packet, meta, parsed) {
+		return
+	}
 	if parsed.protocol == uint8(header.UDPProtocolNumber) && parsed.hasFlow {
 		if socket := e.udpSockets[parsed.destination]; socket != nil {
 			e.inputUDPSocket(socket, parsed)
