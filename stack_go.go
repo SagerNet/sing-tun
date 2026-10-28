@@ -21,6 +21,8 @@ type Go struct {
 	mtu                    int
 	handler                Handler
 	logger                 logger.Logger
+	inet4Address           netip.Addr
+	inet6Address           netip.Addr
 	broadcastAddr          netip.Addr
 	inet4LoopbackAddress   []netip.Addr
 	inet6LoopbackAddress   []netip.Addr
@@ -71,6 +73,12 @@ func NewGo(options StackOptions) (*Go, error) {
 			tcpLocals:  make(map[netip.AddrPort]uint32),
 			reserved:   make(map[goPortKey]struct{}),
 		},
+	}
+	if len(options.TunOptions.Inet4Address) > 0 {
+		stack.inet4Address = options.TunOptions.Inet4Address[0].Addr()
+	}
+	if len(options.TunOptions.Inet6Address) > 0 {
+		stack.inet6Address = options.TunOptions.Inet6Address[0].Addr()
 	}
 	memoryTun, isMemoryTun := options.Tun.(*MemoryTun)
 	if isMemoryTun {
@@ -135,7 +143,7 @@ func (s *Go) Start() error {
 			}
 			udpNats[index] = udpNat
 		}
-		s.dispatcher = NewForwardDispatcher(s.handler, &goWriteback{platformIO: queues[0]}, s.logger, s.udpNATOptions, s.icmpTimeout)
+		s.dispatcher = NewForwardDispatcher(s.handler, &goWriteback{platformIO: queues[0]}, s.logger, uint32(s.mtu), s.udpNATOptions, s.icmpTimeout)
 	}
 	s.udpNats = udpNats
 	if natCount > 1 {
@@ -160,6 +168,35 @@ func goCloseQueues(queues []goPlatformIO) error {
 		err = E.Errors(err, queue.close())
 	}
 	return err
+}
+
+func (s *Go) RoutedPort() {
+}
+
+func (s *Go) PortAddresses() (netip.Addr, netip.Addr) {
+	return s.inet4Address, s.inet6Address
+}
+
+func (s *Go) PortMTU() uint32 {
+	return uint32(s.mtu)
+}
+
+func (s *Go) AttachReturn(returnPath Return) error {
+	return s.dispatcher.attachReturn(returnPath)
+}
+
+func (s *Go) DetachReturn(returnPath Return) error {
+	s.dispatcher.detachReturn(returnPath)
+	return nil
+}
+
+func (s *Go) WritePackets(packets [][]byte) error {
+	platformIO := s.engines[0].platformIO
+	var writeErr error
+	for _, packet := range packets {
+		writeErr = E.Errors(writeErr, goIgnoreDropped(platformIO.writeDatagram(packet, ForwardFrameMeta{})))
+	}
+	return writeErr
 }
 
 func (s *Go) HasEndpoint(protocol uint8, local, remote netip.AddrPort) bool {
