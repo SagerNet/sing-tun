@@ -49,6 +49,7 @@ func (t *NativeTun) enforceInterfaceBinding(tunInterface winipcfg.LUID) {
 		}
 		for _, row := range rows {
 			if row.InterfaceLUID == tunInterface {
+				t.enforceTunDefaultRoute(&row, family)
 				continue
 			}
 			key := interfaceFamily{luid: row.InterfaceLUID, family: family}
@@ -85,6 +86,36 @@ func (t *NativeTun) enforceInterfaceBinding(tunInterface winipcfg.LUID) {
 				}
 			}
 		}
+	}
+}
+
+// A RAS connection (PPPoE dial-up or VPN) with "Use default gateway on remote network" sets
+// DisableDefaultRoutes on every other interface, including a TUN created after it, and redialing
+// resets their metric to automatic. Either one makes Windows route around the TUN default route.
+func (t *NativeTun) enforceTunDefaultRoute(row *winipcfg.MibIPInterfaceRow, family winipcfg.AddressFamily) {
+	if !row.DisableDefaultRoutes && !row.UseAutomaticMetric && row.Metric == 0 {
+		return
+	}
+	tunRow, err := row.InterfaceLUID.IPInterface(family)
+	if err != nil {
+		if t.options.Logger != nil {
+			t.options.Logger.Error(E.Cause(err, "get ", addressFamilyName(family), " options of TUN"))
+		}
+		return
+	}
+	tunRow.DisableDefaultRoutes = false
+	tunRow.UseAutomaticMetric = false
+	tunRow.Metric = 0
+	err = tunRow.Set()
+	if err != nil {
+		if t.options.Logger != nil {
+			t.options.Logger.Error(E.Cause(err, "restore ", addressFamilyName(family), " default route of TUN"))
+		}
+		return
+	}
+	if t.options.Logger != nil {
+		t.options.Logger.Info("restored ", addressFamilyName(family), " default route of TUN",
+			" (disable default routes: ", row.DisableDefaultRoutes, ", metric: ", row.Metric, ")")
 	}
 }
 
