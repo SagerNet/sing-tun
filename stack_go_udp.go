@@ -448,9 +448,9 @@ func goFragmentPacket(identification *atomic.Uint32, packet []byte, mtu int) ([]
 	if header.IPVersion(packet) == header.IPv4Version {
 		ipHdr := header.IPv4(packet)
 		ipHdr.SetID(uint16(identification.Add(1)))
-		return fragmentIPv4Packet(ipHdr, uint32(mtu))
+		return fragmentIPv4Packet(ipHdr, uint32(mtu), 0)
 	}
-	return fragmentIPv6Packet(header.IPv6(packet), uint32(mtu), identification.Add(1))
+	return fragmentIPv6Packet(header.IPv6(packet), uint32(mtu), identification.Add(1), 0)
 }
 
 func (w *GoPacketConn) HandshakeSuccess() error {

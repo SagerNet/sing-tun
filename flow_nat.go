@@ -24,6 +24,7 @@ var (
 
 type portNAT struct {
 	port       Port
+	routed     bool
 	references int
 	hasher     maphash.Hasher[flowKey]
 	shardMask  uint32
@@ -82,8 +83,10 @@ func acquirePortNAT(port Port) *portNAT {
 		for shardCount < runtime.GOMAXPROCS(0) {
 			shardCount <<= 1
 		}
+		_, routed := port.(RoutedPort)
 		nat = &portNAT{
 			port:      port,
+			routed:    routed,
 			hasher:    maphash.NewHasher[flowKey](),
 			shardMask: uint32(shardCount - 1),
 			shards:    make([]natShard, shardCount),
@@ -237,7 +240,13 @@ func (n *portNAT) reserve(dispatcher *ForwardDispatcher, protocol uint8, portAdd
 		}
 	}
 	ranges, ranged := n.selectorRanges(protocol)
-	reserver, hasReserver := portCapability[PortWithSelectorReservation](n.port)
+	var (
+		reserver    PortWithSelectorReservation
+		hasReserver bool
+	)
+	if !n.routed {
+		reserver, hasReserver = portCapability[PortWithSelectorReservation](n.port)
+	}
 	claim := func(candidate uint16) bool {
 		selectorKey := natSelectorKey{protocol: protocol, portAddress: portAddress, selector: candidate}
 		reverseKey := n.reverseKeyFor(protocol, portAddress, server, candidate)
@@ -329,6 +338,9 @@ func (n *portNAT) release(flow *forwardFlow) {
 	delete(n.selectors, flow.selectorKey)
 	if mapping != nil {
 		delete(n.mappings, mapping.key)
+	}
+	if n.routed {
+		return
 	}
 	reserver, hasReserver := portCapability[PortWithSelectorReservation](n.port)
 	if hasReserver {

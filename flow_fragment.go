@@ -114,10 +114,10 @@ func parseFragment(parsed *forwardPacket) (fragmentInfo, bool) {
 	}, true
 }
 
-func (r *portReturn) classifyFragment(parsed *forwardPacket, size int, now int64) (returnDecision, ForwardWriteback) {
+func (r *portReturn) classifyFragment(parsed *forwardPacket, now int64) (returnDecision, *forwardFlow, *rewriteRule) {
 	info, ok := parseFragment(parsed)
 	if !ok {
-		return returnPass, nil
+		return returnPass, nil, nil
 	}
 	key := fragmentKey{
 		source:      parsed.source.Addr(),
@@ -137,32 +137,24 @@ func (r *portReturn) classifyFragment(parsed *forwardPacket, size int, now int64
 		}
 		if flow == nil {
 			r.fragments.remove(key)
-			return returnPass, nil
+			return returnPass, nil, nil
 		}
 		if info.more {
 			r.fragments.insert(key, flow, rule, len(info.payload), now)
 		}
 		if flow.closed.Load() {
-			return returnDrop, nil
-		}
-		if flow.tracker != nil {
-			flow.tracker.CountReverse(size)
+			return returnDrop, nil, nil
 		}
 		flow.observeReverse(parsed, now)
-		applyRewrite(parsed, rule)
-		return returnWrite, flow.owner.writeback
+		return returnWrite, flow, rule
 	}
 	entry := r.fragments.lookup(key, info, now)
 	if entry == nil {
-		return returnPass, nil
+		return returnPass, nil, nil
 	}
 	if entry.flow.closed.Load() {
-		return returnDrop, nil
-	}
-	if entry.flow.tracker != nil {
-		entry.flow.tracker.CountReverse(size)
+		return returnDrop, nil, nil
 	}
 	entry.flow.lastReverse.Store(now)
-	applyRewriteAddresses(parsed, entry.rule)
-	return returnWrite, entry.flow.owner.writeback
+	return returnWrite, entry.flow, entry.rule
 }
