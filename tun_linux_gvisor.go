@@ -4,6 +4,7 @@ package tun
 
 import (
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
@@ -12,6 +13,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/link/fdbased"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
@@ -135,11 +137,31 @@ func (e *linuxTUNEndpoint) dispatchLoop() {
 	for i := range buffers {
 		buffers[i] = make([]byte, e.tun.options.MTU)
 	}
+	// redbrix patch (STATE §68): the upstream loop returns silently on ANY read error,
+	// leaving the process alive but deaf to the TUN (kernel queue overflows, tx_dropped
+	// climbs, nothing is logged). Mirror stack_system.go's batchLoopLinux instead:
+	// recoverable errors are retried with backoff, a fatal one is logged and terminates
+	// the process so the supervisor (systemd Restart=on-failure) can bring it back.
+	var readRetry ReadRetry
 	for {
 		n, err := e.tun.BatchRead(buffers, 0, sizes)
 		if err != nil {
-			return
+			if E.IsClosed(err) {
+				return
+			}
+			if IsRecoverableReadError(err) {
+				if e.tun.options.Logger != nil {
+					e.tun.options.Logger.Warn(E.Cause(err, "tun: recoverable batch read error, retrying"))
+				}
+				readRetry.Wait(err)
+				continue
+			}
+			if e.tun.options.Logger != nil {
+				e.tun.options.Logger.Error(E.Cause(err, "tun: fatal batch read error, exiting so the supervisor restarts the process"))
+			}
+			os.Exit(1)
 		}
+		readRetry.Reset()
 		e.access.RLock()
 		dispatcher := e.dispatcher
 		e.access.RUnlock()
