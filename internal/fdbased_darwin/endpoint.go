@@ -169,8 +169,10 @@ type endpoint struct {
 	// +checklocks:mu
 	mtu uint32
 
-	batchSize int
-	sendMsgX  bool
+	batchSize     int
+	sendMsgX      bool
+	packetHeader4 []byte
+	packetHeader6 []byte
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -182,6 +184,10 @@ type Options struct {
 
 	// MTU is the mtu to use for this endpoint.
 	MTU uint32
+
+	// PacketHeaderSize is the Darwin utun family header, including an optional
+	// process UUID. Zero retains the ordinary four-byte header.
+	PacketHeaderSize int
 
 	// EthernetHeader if true, indicates that the endpoint should read/write
 	// ethernet frames instead of IP packets.
@@ -259,6 +265,12 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 	if opts.MaxSyscallHeaderBytes < 0 {
 		return nil, fmt.Errorf("opts.MaxSyscallHeaderBytes is negative")
 	}
+	if opts.PacketHeaderSize == 0 {
+		opts.PacketHeaderSize = 4
+	}
+	if opts.PacketHeaderSize != 4 && opts.PacketHeaderSize != 20 {
+		return nil, fmt.Errorf("unsupported utun packet header size: %d", opts.PacketHeaderSize)
+	}
 	var batchSize int
 	if opts.MultiPendingPackets {
 		batchSize = int((512*1024)/opts.MTU) + 1
@@ -277,7 +289,11 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		writevMaxIovs:         rawfile.MaxIovs,
 		batchSize:             batchSize,
 		sendMsgX:              opts.SendMsgX,
+		packetHeader4:         make([]byte, opts.PacketHeaderSize),
+		packetHeader6:         make([]byte, opts.PacketHeaderSize),
 	}
+	e.packetHeader4[3] = unix.AF_INET
+	e.packetHeader6[3] = unix.AF_INET6
 	if e.maxSyscallHeaderBytes != 0 {
 		if max := int(e.maxSyscallHeaderBytes / rawfile.SizeofIovec); max < e.writevMaxIovs {
 			e.writevMaxIovs = max
@@ -440,11 +456,6 @@ func (e *endpoint) ParseHeader(pkt *stack.PacketBuffer) bool {
 	return ok
 }
 
-var (
-	packetHeader4 = []byte{0x00, 0x00, 0x00, unix.AF_INET}
-	packetHeader6 = []byte{0x00, 0x00, 0x00, unix.AF_INET6}
-)
-
 // writePacket writes outbound packets to the file descriptor. If it is not
 // currently writable, the packet is dropped.
 func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
@@ -452,9 +463,9 @@ func (e *endpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	fd := fdInfo.fd
 	var vnetHdrBuf []byte
 	if pkt.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-		vnetHdrBuf = packetHeader4
+		vnetHdrBuf = e.packetHeader4
 	} else {
-		vnetHdrBuf = packetHeader6
+		vnetHdrBuf = e.packetHeader6
 	}
 	views := pkt.AsSlices()
 	numIovecs := len(views)
@@ -506,9 +517,9 @@ func (e *endpoint) sendBatch(batchFDInfo fdInfo, pkts []*stack.PacketBuffer) (in
 		for _, pkt := range batch {
 			var vnetHdrBuf []byte
 			if pkt.NetworkProtocolNumber == header.IPv4ProtocolNumber {
-				vnetHdrBuf = packetHeader4
+				vnetHdrBuf = e.packetHeader4
 			} else {
-				vnetHdrBuf = packetHeader6
+				vnetHdrBuf = e.packetHeader6
 			}
 			views, offset := pkt.AsViewList()
 			var skipped int

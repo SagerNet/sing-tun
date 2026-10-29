@@ -28,30 +28,32 @@ import (
 )
 
 type iovecBuffer struct {
-	mtu    int
-	views  []*buffer.View
-	iovecs []unix.Iovec `state:"nosave"`
+	mtu        int
+	headerSize int
+	views      []*buffer.View
+	iovecs     []unix.Iovec `state:"nosave"`
 }
 
-func newIovecBuffer(mtu uint32) *iovecBuffer {
+func newIovecBuffer(mtu uint32, headerSize int) *iovecBuffer {
 	b := &iovecBuffer{
-		mtu:    int(mtu),
-		views:  make([]*buffer.View, 2),
-		iovecs: make([]unix.Iovec, 2),
+		mtu:        int(mtu),
+		headerSize: headerSize,
+		views:      make([]*buffer.View, 2),
+		iovecs:     make([]unix.Iovec, 2),
 	}
 	return b
 }
 
 func (b *iovecBuffer) nextIovecs() []unix.Iovec {
 	if b.views[0] == nil {
-		b.views[0] = buffer.NewViewSize(4)
+		b.views[0] = buffer.NewViewSize(b.headerSize)
 		b.iovecs[0] = unix.Iovec{Base: b.views[0].BasePtr()}
-		b.iovecs[0].SetLen(4)
+		b.iovecs[0].SetLen(b.headerSize)
 	}
 	if b.views[1] == nil {
-		b.views[1] = buffer.NewViewSize(b.mtu)
+		b.views[1] = buffer.NewViewSize(b.mtu + 1)
 		b.iovecs[1] = unix.Iovec{Base: b.views[1].BasePtr()}
-		b.iovecs[1].SetLen(b.mtu)
+		b.iovecs[1].SetLen(b.mtu + 1)
 	}
 	return b.iovecs
 }
@@ -66,7 +68,7 @@ func (b *iovecBuffer) pullBuffer(n int) buffer.Buffer {
 	pulled.Append(b.views[0])
 	pulled.Append(b.views[1])
 	pulled.Truncate(int64(n))
-	pulled.TrimFront(4)
+	pulled.TrimFront(int64(b.headerSize))
 	b.views[0] = nil
 	b.views[1] = nil
 	return pulled
@@ -139,7 +141,7 @@ func newRecvMMsgDispatcher(fd int, e *endpoint, opts *Options) (linkDispatcher, 
 		msgHdrs: make([]rawfile.MsgHdrX, batchSize),
 	}
 	for i := range d.bufs {
-		d.bufs[i] = newIovecBuffer(opts.MTU)
+		d.bufs[i] = newIovecBuffer(opts.MTU, opts.PacketHeaderSize)
 	}
 	d.gro.Init(false)
 	d.mgr = newProcessorManager(opts, e)
@@ -190,6 +192,9 @@ func (d *recvMMsgDispatcher) dispatch() (bool, tcpip.Error) {
 
 	for k := range nMsgs {
 		n := int(d.msgHdrs[k].DataLen)
+		if n < d.bufs[k].headerSize || n > d.bufs[k].headerSize+d.bufs[k].mtu {
+			continue
+		}
 		payload := d.bufs[k].pullBuffer(n)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: payload,

@@ -3,6 +3,7 @@ package tun
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -40,6 +41,9 @@ type NativeTun struct {
 	readPoller          *rawfile.Poller
 	writeAccess         sync.Mutex
 	options             Options
+	packetHeaderSize    int
+	packetHeaderVec4    unix.Iovec
+	packetHeaderVec6    unix.Iovec
 	inet4Address        [4]byte
 	inet6Address        [16]byte
 	routeSet            bool
@@ -47,25 +51,29 @@ type NativeTun struct {
 }
 
 type iovecBuffer struct {
-	mtu    int
-	buffer *buf.Buffer
-	iovecs []unix.Iovec
+	mtu        int
+	headerSize int
+	buffer     *buf.Buffer
+	iovecs     []unix.Iovec
 }
 
-func newIovecBuffer(mtu int) iovecBuffer {
+func newIovecBuffer(mtu, headerSize int) iovecBuffer {
 	return iovecBuffer{
-		mtu:    mtu,
-		iovecs: make([]unix.Iovec, 2),
+		mtu:        mtu,
+		headerSize: headerSize,
+		iovecs:     make([]unix.Iovec, 2),
 	}
 }
 
 func (b *iovecBuffer) nextIovecs(frontHeadroom int, rearHeadroom int) []unix.Iovec {
 	if b.iovecs[0].Len == 0 {
-		headBuffer := make([]byte, PacketOffset)
+		headBuffer := make([]byte, b.headerSize)
 		b.iovecs[0].Base = &headBuffer[0]
-		b.iovecs[0].SetLen(PacketOffset)
+		b.iovecs[0].SetLen(b.headerSize)
 	}
-	bufferSize := frontHeadroom + b.mtu + rearHeadroom
+	// Some Darwin recvmsg_x paths silently truncate without MSG_TRUNC. Leave
+	// one extra byte so an oversized datagram is distinguishable from an MTU packet.
+	bufferSize := frontHeadroom + b.mtu + 1 + rearHeadroom
 	if b.buffer != nil && (b.buffer.Start() != frontHeadroom || b.buffer.Cap() != bufferSize) {
 		b.buffer.Release()
 		b.buffer = nil
@@ -73,17 +81,17 @@ func (b *iovecBuffer) nextIovecs(frontHeadroom int, rearHeadroom int) []unix.Iov
 	if b.buffer == nil {
 		b.buffer = buf.NewSize(bufferSize)
 		b.buffer.Resize(frontHeadroom, 0)
-		b.iovecs[1] = b.buffer.Iovec(b.mtu)
+		b.iovecs[1] = b.buffer.Iovec(b.mtu + 1)
 	}
 	return b.iovecs
 }
 
-func (b *iovecBuffer) nextIovecsOutput(buffer *buf.Buffer) []unix.Iovec {
+func (b *iovecBuffer) nextIovecsOutput(buffer *buf.Buffer, header4, header6 unix.Iovec) []unix.Iovec {
 	switch header.IPVersion(buffer.Bytes()) {
 	case header.IPv4Version:
-		b.iovecs[0] = packetHeaderVec4
+		b.iovecs[0] = header4
 	case header.IPv6Version:
-		b.iovecs[0] = packetHeaderVec6
+		b.iovecs[0] = header6
 	}
 	b.iovecs[1] = buffer.Iovec(buffer.Len())
 	return b.iovecs
@@ -129,22 +137,38 @@ func New(options Options) (Tun, error) {
 			return nil, err
 		}
 	}
+	// NetworkExtension per-app tunnels may include a process UUID after the
+	// address family. It is socket framing, not part of the IP packet.
+	flags, err := unix.GetsockoptInt(tunFd, 2 /* SYSPROTO_CONTROL */, 1 /* UTUN_OPT_FLAGS */)
+	if err != nil {
+		if options.FileDescriptor == 0 {
+			unix.Close(tunFd)
+		}
+		return nil, os.NewSyscallError("GetsockoptInt UTUN_OPT_FLAGS", err)
+	}
+	headerSize := PacketOffset
+	if flags&4 /* UTUN_FLAGS_ENABLE_PROC_UUID */ != 0 {
+		headerSize += 16
+	}
 	nativeTun := &NativeTun{
-		tunFd:         tunFd,
-		tunFile:       os.NewFile(uintptr(tunFd), "utun"),
-		options:       options,
-		batchSize:     batchSize,
-		iovecs:        make([]iovecBuffer, batchSize),
-		iovecsOutput:  make([]iovecBuffer, batchSize),
-		msgHdrs:       make([]rawfile.MsgHdrX, batchSize),
-		msgHdrsOutput: make([]rawfile.MsgHdrX, batchSize),
-		stopFd:        common.Must1(stopfd.New()),
-		sendMsgX:      options.EXP_SendMsgX,
+		tunFd:            tunFd,
+		tunFile:          os.NewFile(uintptr(tunFd), "utun"),
+		options:          options,
+		packetHeaderSize: headerSize,
+		packetHeaderVec4: utunHeaderVector(headerSize, unix.AF_INET),
+		packetHeaderVec6: utunHeaderVector(headerSize, unix.AF_INET6),
+		batchSize:        batchSize,
+		iovecs:           make([]iovecBuffer, batchSize),
+		iovecsOutput:     make([]iovecBuffer, batchSize),
+		msgHdrs:          make([]rawfile.MsgHdrX, batchSize),
+		msgHdrsOutput:    make([]rawfile.MsgHdrX, batchSize),
+		stopFd:           common.Must1(stopfd.New()),
+		sendMsgX:         options.EXP_SendMsgX,
 	}
 	nativeTun.readPoller = common.Must1(rawfile.NewPoller(nativeTun.stopFd.ReadFD, tunFd))
 	for i := range batchSize {
-		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU))
-		nativeTun.iovecsOutput[i] = newIovecBuffer(int(options.MTU))
+		nativeTun.iovecs[i] = newIovecBuffer(int(options.MTU), headerSize)
+		nativeTun.iovecsOutput[i] = newIovecBuffer(int(options.MTU), headerSize)
 	}
 	if len(options.Inet4Address) > 0 {
 		nativeTun.inet4Address = options.Inet4Address[0].Addr().As4()
@@ -186,23 +210,79 @@ func (t *NativeTun) closePollers() {
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	return t.tunFile.Read(p)
+	if t.packetHeaderSize == PacketOffset {
+		return t.tunFile.Read(p)
+	}
+	if len(p) < PacketOffset {
+		return 0, io.ErrShortBuffer
+	}
+	var framing [PacketOffset + 16]byte
+	raw, err := t.tunFile.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var readErr error
+	err = raw.Read(func(fd uintptr) bool {
+		for {
+			n, readErr = unix.Readv(int(fd), [][]byte{framing[:t.packetHeaderSize], p[PacketOffset:]})
+			if readErr != unix.EINTR {
+				return readErr != unix.EAGAIN
+			}
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	if readErr != nil {
+		return 0, readErr
+	}
+	if n < t.packetHeaderSize {
+		return 0, io.ErrUnexpectedEOF
+	}
+	copy(p, framing[:PacketOffset])
+	return n - t.packetHeaderSize + PacketOffset, nil
 }
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
-	return t.tunFile.Write(p)
+	if t.packetHeaderSize == PacketOffset {
+		return t.tunFile.Write(p)
+	}
+	if len(p) < PacketOffset {
+		return 0, io.ErrShortBuffer
+	}
+	var framing [PacketOffset + 16]byte
+	copy(framing[:], p[:PacketOffset])
+	raw, err := t.tunFile.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var writeErr error
+	err = raw.Write(func(fd uintptr) bool {
+		for {
+			n, writeErr = unix.Writev(int(fd), [][]byte{framing[:t.packetHeaderSize], p[PacketOffset:]})
+			if writeErr != unix.EINTR {
+				return writeErr != unix.EAGAIN
+			}
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	if writeErr != nil {
+		return 0, writeErr
+	}
+	if n != len(p)+t.packetHeaderSize-PacketOffset {
+		return 0, io.ErrShortWrite
+	}
+	return len(p), nil
 }
 
-var (
-	packetHeader4    = []byte{0x00, 0x00, 0x00, unix.AF_INET}
-	packetHeader6    = []byte{0x00, 0x00, 0x00, unix.AF_INET6}
-	packetHeaderVec4 = unix.Iovec{Base: &packetHeader4[0]}
-	packetHeaderVec6 = unix.Iovec{Base: &packetHeader6[0]}
-)
-
-func init() {
-	packetHeaderVec4.SetLen(4)
-	packetHeaderVec6.SetLen(4)
+func utunHeaderVector(size int, family byte) unix.Iovec {
+	header := make([]byte, size)
+	header[3] = family
+	vector := unix.Iovec{Base: &header[0]}
+	vector.SetLen(size)
+	return vector
 }
 
 const utunControlName = "com.apple.net.utun_control"
@@ -441,11 +521,20 @@ func (t *NativeTun) BatchRead(frontHeadroom int, rearHeadroom int) ([]*buf.Buffe
 	if n < 1 {
 		return nil, nil
 	}
+	for k := range n {
+		if int(t.msgHdrs[k].DataLen) < t.packetHeaderSize || int(t.msgHdrs[k].DataLen) > t.packetHeaderSize+t.iovecs[k].mtu || t.msgHdrs[k].Msg.Flags&unix.MSG_TRUNC != 0 {
+			for j := range n {
+				t.iovecs[j].buffer.Release()
+				t.iovecs[j].buffer = nil
+			}
+			return nil, io.ErrUnexpectedEOF
+		}
+	}
 	buffers := t.buffers
 	for k := range n {
 		buffer := t.iovecs[k].buffer
 		t.iovecs[k].buffer = nil
-		buffer.Truncate(int(t.msgHdrs[k].DataLen) - PacketOffset)
+		buffer.Truncate(int(t.msgHdrs[k].DataLen) - t.packetHeaderSize)
 		buffers = append(buffers, buffer)
 	}
 	t.buffers = buffers[:0]
@@ -472,7 +561,7 @@ func (t *NativeTun) BatchWrite(buffers []*buf.Buffer) error {
 func (t *NativeTun) batchWriteChunk(buffers []*buf.Buffer) error {
 	if !t.sendMsgX {
 		for i, buffer := range buffers {
-			t.iovecsOutput[i].nextIovecsOutput(buffer)
+			t.iovecsOutput[i].nextIovecsOutput(buffer, t.packetHeaderVec4, t.packetHeaderVec6)
 		}
 		for i := range buffers {
 			errno := rawfile.NonBlockingWriteIovec(t.tunFd, t.iovecsOutput[i].iovecs)
@@ -482,7 +571,7 @@ func (t *NativeTun) batchWriteChunk(buffers []*buf.Buffer) error {
 		}
 	} else {
 		for i, buffer := range buffers {
-			iovecs := t.iovecsOutput[i].nextIovecsOutput(buffer)
+			iovecs := t.iovecsOutput[i].nextIovecsOutput(buffer, t.packetHeaderVec4, t.packetHeaderVec6)
 			t.msgHdrsOutput[i] = rawfile.MsgHdrX{}
 			t.msgHdrsOutput[i].Msg.Iov = &iovecs[0]
 			t.msgHdrsOutput[i].Msg.Iovlen = 2
