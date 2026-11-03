@@ -1117,6 +1117,14 @@ func (t *NativeTun) setRules() error {
 	for i, rule := range t.rules() {
 		err := netlink.RuleAdd(rule)
 		if err != nil {
+			if rule.Type == unix.FR_ACT_UNREACHABLE && errors.Is(err, unix.EAFNOSUPPORT) {
+				socketFd, socketErr := unix.Socket(rule.Family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+				if socketErr == nil {
+					unix.Close(socketFd)
+				} else if errors.Is(socketErr, unix.EAFNOSUPPORT) {
+					continue
+				}
+			}
 			return E.Cause(err, "add rule ", i, "/", len(t.rules()))
 		}
 	}
