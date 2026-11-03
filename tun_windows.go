@@ -41,7 +41,7 @@ type NativeTun struct {
 	fwpmSession uintptr
 
 	routeFamilies            []winipcfg.AddressFamily
-	bindInterfaceAccess      sync.Mutex
+	interfaceAccess          sync.Mutex
 	forwardingWarned         []interfaceFamily
 	weakHostSendDisabled     map[interfaceFamily]string
 	interfaceChangeListener  *winipcfg.InterfaceChangeCallback
@@ -144,6 +144,7 @@ func (t *NativeTun) configure() error {
 		inetIf.OtherStatefulConfigurationSupported = false
 		inetIf.NLMTU = t.options.MTU
 		if t.options.AutoRoute {
+			inetIf.DisableDefaultRoutes = false
 			inetIf.UseAutomaticMetric = false
 			inetIf.Metric = 0
 		}
@@ -163,6 +164,7 @@ func (t *NativeTun) configure() error {
 		inet6If.OtherStatefulConfigurationSupported = false
 		inet6If.NLMTU = t.options.MTU
 		if t.options.AutoRoute {
+			inet6If.DisableDefaultRoutes = false
 			inet6If.UseAutomaticMetric = false
 			inet6If.Metric = 0
 		}
@@ -192,16 +194,16 @@ func (t *NativeTun) Start() error {
 	t.routeFamilies = routeFamilies(routeRanges)
 	t.weakHostSendDisabled = make(map[interfaceFamily]string)
 	interfaceChangeListener, err := winipcfg.RegisterInterfaceChangeCallback(func(_ winipcfg.MibNotificationType, _ *winipcfg.MibIPInterfaceRow) {
-		t.enforceInterfaceBinding(luid)
+		t.enforceInterfaceOptions(luid)
 	})
 	if err != nil {
 		return E.Cause(err, "register interface change callback")
 	}
 	t.interfaceChangeListener = interfaceChangeListener
 	t.defaultInterfaceListener = t.options.InterfaceMonitor.RegisterCallback(func(_ *control.Interface, _ int) {
-		t.enforceInterfaceBinding(luid)
+		t.enforceInterfaceOptions(luid)
 	})
-	t.enforceInterfaceBinding(luid)
+	t.enforceInterfaceOptions(luid)
 	err = addRouteList(luid, routeRanges, gateway4, gateway6, 0)
 	if err != nil {
 		return err

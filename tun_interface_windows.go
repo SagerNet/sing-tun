@@ -27,14 +27,9 @@ func routeFamilies(routeRanges []netip.Prefix) []winipcfg.AddressFamily {
 	return families
 }
 
-// tcpip.sys ignores IP_UNICAST_IF and IPV6_UNICAST_IF for unicast destinations when the bound
-// interface has forwarding or weak host send enabled for that family. Teredo enables IPv6 weak host
-// send on every interface when it qualifies as a host-specific relay. Weak host send changes raise no
-// interface change notification, but Teredo enables weak host receive on its own interface right
-// after, which does.
-func (t *NativeTun) enforceInterfaceBinding(tunInterface winipcfg.LUID) {
-	t.bindInterfaceAccess.Lock()
-	defer t.bindInterfaceAccess.Unlock()
+func (t *NativeTun) enforceInterfaceOptions(tunInterface winipcfg.LUID) {
+	t.interfaceAccess.Lock()
+	defer t.interfaceAccess.Unlock()
 	if t.close.Load() == 1 {
 		return
 	}
@@ -48,9 +43,36 @@ func (t *NativeTun) enforceInterfaceBinding(tunInterface winipcfg.LUID) {
 			continue
 		}
 		for _, row := range rows {
+			// A RAS connection that uses the default gateway on the remote network sets DisableDefaultRoutes on
+			// every other interface, including ones created after it, and redialing it resets their metric to
+			// automatic.
 			if row.InterfaceLUID == tunInterface {
+				if !row.DisableDefaultRoutes && !row.UseAutomaticMetric && row.Metric == 0 {
+					continue
+				}
+				var tunRow winipcfg.MibIPInterfaceRow
+				tunRow.Init()
+				tunRow.Family = family
+				tunRow.InterfaceLUID = tunInterface
+				tunRow.DisableDefaultRoutes = false
+				tunRow.UseAutomaticMetric = false
+				tunRow.Metric = 0
+				err = tunRow.Set()
+				if err != nil {
+					if t.options.Logger != nil {
+						t.options.Logger.Error(E.Cause(err, "restore ", addressFamilyName(family), " default route options of TUN"))
+					}
+				} else if t.options.Logger != nil {
+					t.options.Logger.Info("restored ", addressFamilyName(family), " default route options of TUN (disable default routes: ",
+						row.DisableDefaultRoutes, ", automatic metric: ", row.UseAutomaticMetric, ", metric: ", row.Metric, ")")
+				}
 				continue
 			}
+			// tcpip.sys ignores IP_UNICAST_IF and IPV6_UNICAST_IF for unicast destinations when the bound
+			// interface has forwarding or weak host send enabled for that family. Teredo enables IPv6 weak host
+			// send on every interface when it qualifies as a host-specific relay. Weak host send changes raise no
+			// interface change notification, but Teredo enables weak host receive on its own interface right
+			// after, which does.
 			key := interfaceFamily{luid: row.InterfaceLUID, family: family}
 			if row.ForwardingEnabled && defaultInterface != nil && row.InterfaceIndex == uint32(defaultInterface.Index) && !slices.Contains(t.forwardingWarned, key) {
 				t.forwardingWarned = append(t.forwardingWarned, key)
@@ -89,8 +111,8 @@ func (t *NativeTun) enforceInterfaceBinding(tunInterface winipcfg.LUID) {
 }
 
 func (t *NativeTun) restoreWeakHostSend() {
-	t.bindInterfaceAccess.Lock()
-	defer t.bindInterfaceAccess.Unlock()
+	t.interfaceAccess.Lock()
+	defer t.interfaceAccess.Unlock()
 	for disabled, name := range t.weakHostSendDisabled {
 		_, err := disabled.luid.IPInterface(disabled.family)
 		if err != nil {
