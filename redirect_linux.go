@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -50,6 +51,7 @@ type autoRedirect struct {
 	useNFTables                  bool
 	androidVPNService            bool
 	nfqueueHandler               *nfqueueHandler
+	preroutingReject             bool
 	iptablesAccess               sync.Mutex
 	iptablesLocalChains          []iptablesLocalChain
 	redirectRouteTableIndex      int
@@ -415,6 +417,12 @@ func (r *autoRedirect) initializeNFTables() error {
 	_, err = nft.ListTablesOfFamily(nftables.TableFamilyIPv4)
 	if err != nil {
 		return err
+	}
+	err = r.nftablesProbe(nftables.ChainTypeFilter, &expr.Reject{Type: unix.NFT_REJECT_TCP_RST})
+	if err != nil {
+		r.logger.Debug("reject in prerouting is not supported (Linux 5.9 or later is required), reject in input and forward instead: ", err)
+	} else {
+		r.preroutingReject = true
 	}
 	r.useNFTables = true
 	return nil
