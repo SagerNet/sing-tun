@@ -123,15 +123,35 @@ func (r *autoRedirect) setupNFTables() error {
 		}
 	}
 
-	if r.redirectServer != nil {
+	resetEnabled := r.nftablesResetEnabled()
+	if r.redirectServer != nil || resetEnabled {
+		inputPriority := nftables.ChainPriorityFilter
+		if resetEnabled {
+			inputPriority = nftables.ChainPriorityMangle
+		}
 		chainInput := nft.AddChain(&nftables.Chain{
 			Name:     "input",
 			Table:    table,
 			Hooknum:  nftables.ChainHookInput,
-			Priority: nftables.ChainPriorityFilter,
+			Priority: inputPriority,
 			Type:     nftables.ChainTypeFilter,
 		})
-		r.nftablesCreateRedirectPortReject(nft, table, chainInput)
+		if r.redirectServer != nil {
+			r.nftablesCreateRedirectPortReject(nft, table, chainInput)
+		}
+		if resetEnabled {
+			r.nftablesCreateResetReject(nft, table, chainInput)
+		}
+	}
+	if resetEnabled {
+		chainForward := nft.AddChain(&nftables.Chain{
+			Name:     "forward",
+			Table:    table,
+			Hooknum:  nftables.ChainHookForward,
+			Priority: nftables.ChainPriorityMangle,
+			Type:     nftables.ChainTypeFilter,
+		})
+		r.nftablesCreateResetReject(nft, table, chainForward)
 	}
 
 	preroutingNATPriority := nftables.ChainPriorityRef(*nftables.ChainPriorityNATDest + 1)
@@ -166,6 +186,7 @@ func (r *autoRedirect) setupNFTables() error {
 				Priority: preroutingNATPriority,
 				Type:     nftables.ChainTypeFilter,
 			})
+			r.nftablesCreateResetReturn(nft, table, chainPreRoutingFilter)
 			err = r.nftablesCreateLoopbackReroute(nft, table, chainPreRoutingFilter)
 			if err != nil {
 				return E.Cause(err, "create prerouting loopback reroute")
@@ -192,6 +213,7 @@ func (r *autoRedirect) setupNFTables() error {
 		if err != nil {
 			return E.Cause(err, "add ip protocol set")
 		}
+		r.nftablesCreateResetReturn(nft, table, chainPreRoutingUDP)
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
@@ -552,21 +574,9 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		},
 	})
 
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: slices.Concat(
-			[]expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-			},
-			r.nftablesMarkMatch(false, expr.CmpOpEq, r.effectiveResetMark()),
-			[]expr.Any{
-				&expr.Counter{},
-				&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
-			},
-		),
-	})
+	if !isPrerouting || r.preroutingReject {
+		r.nftablesCreateTCPReset(nft, table, chain)
+	}
 
 	err = r.nftablesCreateExcludeRules(nft, table, chain)
 	if err != nil {
@@ -628,4 +638,43 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		})
 	}
 	return nil
+}
+
+func (r *autoRedirect) nftablesProbe(chainType nftables.ChainType, exprs ...expr.Any) error {
+	nft, err := nftables.New()
+	if err != nil {
+		return err
+	}
+	defer nft.CloseLasting()
+	probeTable := &nftables.Table{
+		Name:   r.tableName + "_probe",
+		Family: nftables.TableFamilyINet,
+	}
+	nft.AddTable(probeTable)
+	nft.DelTable(probeTable)
+	table := nft.AddTable(probeTable)
+	chain := nft.AddChain(&nftables.Chain{
+		Name:     "prerouting",
+		Table:    table,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: nftables.ChainPriorityFilter,
+		Type:     chainType,
+	})
+	if len(exprs) > 0 {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: append([]expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{uint8(nftables.TableFamilyIPv4)}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{uint8(nftables.TableFamilyIPv6)}},
+			}, exprs...),
+		})
+	}
+	err = nft.Flush()
+	if err != nil {
+		return err
+	}
+	nft.DelTable(table)
+	return nft.Flush()
 }

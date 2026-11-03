@@ -220,6 +220,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	}
 
 	if chain.Hooknum == nftables.ChainHookPrerouting {
+		r.nftablesCreateResetReturn(nft, table, chain)
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
@@ -1087,33 +1088,104 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	return nil
 }
 
+func (r *autoRedirect) nftablesUnreachableFamily() nftables.TableFamily {
+	if (r.enableIPv4 && r.enableIPv6) || !r.tunOptions.StrictRoute {
+		return nftables.TableFamilyUnspecified
+	}
+	if r.enableIPv4 {
+		return nftables.TableFamilyIPv6
+	}
+	return nftables.TableFamilyIPv4
+}
+
 func (r *autoRedirect) nftablesCreateUnreachable(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
 ) {
-	if (r.enableIPv4 && r.enableIPv6) || !r.tunOptions.StrictRoute {
+	family := r.nftablesUnreachableFamily()
+	if family == nftables.TableFamilyUnspecified {
 		return
 	}
-	var nfProto nftables.TableFamily
-	if r.enableIPv4 {
-		nfProto = nftables.TableFamilyIPv6
+	exprs := []expr.Any{
+		&expr.Meta{
+			Key:      expr.MetaKeyNFPROTO,
+			Register: 1,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{uint8(family)},
+		},
+		&expr.Counter{},
+	}
+	if chain.Hooknum == nftables.ChainHookPrerouting && !r.preroutingReject {
+		exprs = slices.Concat(
+			exprs,
+			r.nftablesMarkSet(false, r.effectiveResetMark()),
+			[]expr.Any{&expr.Verdict{Kind: expr.VerdictReturn}},
+		)
 	} else {
-		nfProto = nftables.TableFamilyIPv4
+		exprs = append(exprs, &expr.Reject{})
 	}
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyNFPROTO,
-				Register: 1,
+		Exprs: exprs,
+	})
+}
+
+func (r *autoRedirect) nftablesResetEnabled() bool {
+	return !r.preroutingReject && (r.nfqueueEnabled || r.nftablesUnreachableFamily() != nftables.TableFamilyUnspecified)
+}
+
+func (r *autoRedirect) nftablesCreateResetReturn(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	if !r.nftablesResetEnabled() {
+		return
+	}
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: append(
+			r.nftablesMarkMatch(false, expr.CmpOpEq, r.effectiveResetMark()),
+			&expr.Verdict{Kind: expr.VerdictReturn},
+		),
+	})
+}
+
+func (r *autoRedirect) nftablesCreateResetReject(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	family := r.nftablesUnreachableFamily()
+	if family != nftables.TableFamilyUnspecified {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: slices.Concat(
+				[]expr.Any{
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{uint8(family)}},
+				},
+				r.nftablesMarkMatch(false, expr.CmpOpEq, r.effectiveResetMark()),
+				[]expr.Any{&expr.Counter{}, &expr.Reject{}},
+			),
+		})
+	}
+	if r.nfqueueEnabled {
+		r.nftablesCreateTCPReset(nft, table, chain)
+	}
+}
+
+func (r *autoRedirect) nftablesCreateTCPReset(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: slices.Concat(
+			[]expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{uint8(nfProto)},
+			r.nftablesMarkMatch(false, expr.CmpOpEq, r.effectiveResetMark()),
+			[]expr.Any{
+				&expr.Counter{},
+				&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
 			},
-			&expr.Counter{},
-			&expr.Reject{},
-		},
+		),
 	})
 }

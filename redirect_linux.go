@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -19,6 +20,7 @@ import (
 	"github.com/sagernet/sing/common/x/list"
 
 	"go4.org/netipx"
+	"golang.org/x/sys/unix"
 )
 
 type autoRedirect struct {
@@ -46,6 +48,7 @@ type autoRedirect struct {
 	routeExcludeAddressSet  *[]*netipx.IPSet
 	nfqueueHandler          *nfqueueHandler
 	nfqueueEnabled          bool
+	preroutingReject        bool
 	redirectRouteTableIndex int
 	redirectRouteAccess     sync.Mutex
 	redirectRoutesActive    bool
@@ -264,6 +267,12 @@ func (r *autoRedirect) initializeNFTables() error {
 	_, err = nft.ListTablesOfFamily(nftables.TableFamilyIPv4)
 	if err != nil {
 		return err
+	}
+	err = r.nftablesProbe(nftables.ChainTypeFilter, &expr.Reject{Type: unix.NFT_REJECT_TCP_RST})
+	if err != nil {
+		r.logger.Debug("reject in prerouting is not supported (Linux 5.9 or later is required), reject in input and forward instead: ", err)
+	} else {
+		r.preroutingReject = true
 	}
 	r.useNFTables = true
 	return nil
