@@ -94,7 +94,7 @@ func (m *networkUpdateMonitor) Start() error {
 }
 
 func (m *networkUpdateMonitor) loopRead() {
-	buffer := make([]byte, unix.Getpagesize())
+	buffer := make([]byte, os.Getpagesize())
 	for {
 		_, err := m.socket.Read(buffer)
 		if err != nil && !errors.Is(err, unix.ENOBUFS) {
