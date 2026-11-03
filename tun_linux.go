@@ -1328,9 +1328,9 @@ func (t *NativeTun) setSearchDomainForSystemdResolved() error {
 		return err
 	}
 	go func() {
-		_ = ResolveCtl(ctlPath, "domain", t.options.Name, "~.")
-		_ = ResolveCtl(ctlPath, "default-route", t.options.Name, "true")
-		_ = ResolveCtl(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsAddress, netip.Addr.String)...)...)
+		_ = ResolveCtl("domain", t.options.Name, "~.")
+		_ = ResolveCtl("default-route", t.options.Name, "true")
+		_ = ResolveCtl(append([]string{"dns", t.options.Name}, common.Map(dnsAddress, netip.Addr.String)...)...)
 	}()
 	return nil
 }
