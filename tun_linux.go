@@ -29,6 +29,36 @@ import (
 
 var _ LinuxTUN = (*NativeTun)(nil)
 
+var ResolveCtl func(args ...string) error = func() func(args ...string) error {
+	// These variables are completely private and scoped entirely to this block.
+	// They behave exactly like function-static variables.
+	var (
+		resolveCtlPath string
+		resolveCtlErr  error
+		once           sync.Once
+	)
+
+	return func(args ...string) error {
+		// sync.Once guarantees thread-safety if called concurrently
+		once.Do(func() {
+			// 1. Look for the environment variable
+			envPath, exists := os.LookupEnv("SINGBOX_RESOLVECTL_COMMAND")
+			if ! exists {
+				// 2. Fall back to the default command name
+				envPath = "resolvectl"
+			}
+			resolveCtlPath, resolveCtlErr = exec.LookPath(envPath)
+		})
+
+		// Return initialization error if LookPath failed
+		if resolveCtlErr != nil {
+			return resolveCtlErr
+		}
+
+		return shell.Exec(resolveCtlPath, args...).Run()
+	}
+}()
+
 type NativeTun struct {
 	tunFd               int
 	tunFile             *os.File
@@ -1313,18 +1343,14 @@ func (t *NativeTun) routeUpdate(_ *control.Interface, flags int) {
 }
 
 func (t *NativeTun) setSearchDomainForSystemdResolved() error {
-	ctlPath, err := exec.LookPath("resolvectl")
-	if err != nil {
-		return nil
-	}
 	dnsAddress, err := t.options.DNSServerAddress()
 	if err != nil {
 		return err
 	}
 	go func() {
-		_ = shell.Exec(ctlPath, "domain", t.options.Name, "~.").Run()
-		_ = shell.Exec(ctlPath, "default-route", t.options.Name, "true").Run()
-		_ = shell.Exec(ctlPath, append([]string{"dns", t.options.Name}, common.Map(dnsAddress, netip.Addr.String)...)...).Run()
+		_ = ResolveCtl("domain", t.options.Name, "~.")
+		_ = ResolveCtl("default-route", t.options.Name, "true")
+		_ = ResolveCtl(append([]string{"dns", t.options.Name}, common.Map(dnsAddress, netip.Addr.String)...)...)
 	}()
 	return nil
 }
@@ -1333,19 +1359,11 @@ func (t *NativeTun) FlushDNSCache() {
 	if t.options.FileDescriptor != 0 || t.options.EXP_ExternalConfiguration || t.options.DNSModeOrDefault() == DNSModeDisabled || t.options.NetNs != "" {
 		return
 	}
-	ctlPath, err := exec.LookPath("resolvectl")
-	if err != nil {
-		return
-	}
 	// systemd-resolved flushes the cache of a link only when the link switches its current DNS server
 	// (link_set_dns_server in resolved-link.c), which a network change never causes for the TUN link.
-	go shell.Exec(ctlPath, "flush-caches").Run()
+	go ResolveCtl("flush-caches")
 }
 
 func (t *NativeTun) unsetSearchDomainForSystemdResolved() {
-	ctlPath, err := exec.LookPath("resolvectl")
-	if err != nil {
-		return
-	}
-	_ = shell.Exec(ctlPath, "revert", t.options.Name).Run()
+	_ = ResolveCtl("revert", t.options.Name)
 }
