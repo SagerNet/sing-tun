@@ -29,15 +29,35 @@ import (
 
 var _ LinuxTUN = (*NativeTun)(nil)
 
-var ResolveCtl func(args ...string) error = func(args ...string) error {
-	path, err := exec.LookPath("resolvectl")
-	if err == nil {
-		if len(args) > 0 {
-			return shell.Exec(path, args...).Run()
+var ResolveCtl func(args ...string) error = func() func(args ...string) error {
+	// These variables are completely private and scoped entirely to this block.
+	// They behave exactly like function-static variables.
+	var (
+		resolveCtlPath string
+		resolveCtlErr  error
+		once           sync.Once
+	)
+
+	return func(args ...string) error {
+		// sync.Once guarantees thread-safety if called concurrently
+		once.Do(func() {
+			// 1. Look for the environment variable
+			envPath, exists := os.LookupEnv("SINGBOX_RESOLVECTL_COMMAND")
+			if ! exists {
+				// 2. Fall back to the default command name
+				envPath = "resolvectl"
+			}
+			resolveCtlPath, resolveCtlErr = exec.LookPath(envPath)
+		})
+
+		// Return initialization error if LookPath failed
+		if resolveCtlErr != nil {
+			return resolveCtlErr
 		}
+
+		return shell.Exec(resolveCtlPath, args...).Run()
 	}
-	return err
-}
+}()
 
 type NativeTun struct {
 	tunFd               int
