@@ -93,6 +93,18 @@ func (r *autoRedirect) setupNFTables() error {
 				Priority: outputNATPriority,
 				Type:     nftables.ChainTypeRoute,
 			})
+			// Replies to flows started by a peer are not marked, as with TCP: such a flow can
+			// carry the input mark (its destination was not in the local address set), and a
+			// marked reply would be routed into the TUN and leave with another source port.
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chainOutputUDP,
+				Exprs: []expr.Any{
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+					&expr.Verdict{Kind: expr.VerdictReturn},
+				},
+			})
 			err = r.nftablesCreateExcludeRules(nft, table, chainOutputUDP)
 			if err != nil {
 				return E.Cause(err, "create output udp exclude rules")
