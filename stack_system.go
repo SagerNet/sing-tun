@@ -725,6 +725,11 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 	return nil
 }
 
+// Replies are originated by this stack, which does not implement ECN, so they
+// must not inherit the ECN codepoint of the request (RFC 3168).
+// DSCP is kept.
+const ipECNMask = 0x03
+
 func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
 	var writer N.PacketWriter
 	if source.IsIPv4() {
@@ -732,6 +737,9 @@ func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socks
 		headerLen := packet.HeaderLength() + header.UDPMinimumSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
+		ipHdr := header.IPv4(headerCopy)
+		tos, _ := ipHdr.TOS()
+		ipHdr.SetTOS(tos&^ipECNMask, 0)
 		writer = &systemUDPPacketWriter4{
 			s.tun,
 			s.frontHeadroom + PacketOffset,
@@ -744,6 +752,9 @@ func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socks
 		headerLen := len(packet) - int(packet.PayloadLength()) + header.UDPMinimumSize
 		headerCopy := make([]byte, headerLen)
 		copy(headerCopy, packet[:headerLen])
+		ipHdr := header.IPv6(headerCopy)
+		trafficClass, flowLabel := ipHdr.TOS()
+		ipHdr.SetTOS(trafficClass&^ipECNMask, flowLabel)
 		writer = &systemUDPPacketWriter6{
 			s.tun,
 			s.frontHeadroom + PacketOffset,
