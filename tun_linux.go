@@ -37,10 +37,11 @@ type NativeTun struct {
 	readAccess          sync.Mutex
 	writeAccess         sync.Mutex
 	vnetHdr             bool
-	writeBuffer         []byte
+	readBuffer          []byte
 	readRawConn         syscall.RawConn
-	pendingBuffer       []byte
-	pendingLength       int
+	pendingPayload      []byte
+	pendingOptions      GSOOptions
+	pendingSegment      int
 	vnetHdrWriteBuf     []byte
 	gsoToWrite          []int
 	tcpGROTable         *tcpGROTable
@@ -198,8 +199,7 @@ func (t *NativeTun) enableGSO() error {
 		return E.Cause(err, "enable offload: IFF_VNET_HDR not enabled")
 	}
 	t.vnetHdr = true
-	t.writeBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
-	t.pendingBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
+	t.readBuffer = make([]byte, virtioNetHdrLen+gsoMaxSize)
 	t.tcpGROTable = newTCPGROTable()
 	t.udpGROTable = newUDPGROTable()
 	err = setTCPOffload(t.tunFd)
@@ -389,38 +389,12 @@ func (t *NativeTun) Close() error {
 }
 
 func (t *NativeTun) Read(p []byte) (n int, err error) {
-	if t.vnetHdr {
-		n, err = t.tunFile.Read(t.writeBuffer)
-		if err != nil {
-			if errors.Is(err, syscall.EBADFD) {
-				err = os.ErrClosed
-			}
-			return
-		}
-		var sizes [1]int
-		n, err = handleVirtioRead(t.writeBuffer[:n], [][]byte{p}, sizes[:], 0)
-		if err != nil {
-			return
-		}
-		if n == 0 {
-			return
-		}
-		n = sizes[0]
-		return
-	} else {
+	if !t.vnetHdr {
 		return t.tunFile.Read(p)
 	}
-}
-
-// handleVirtioRead splits in into bufs, leaving offset bytes at the front of
-// each buffer. It mutates sizes to reflect the size of each element of bufs,
-// and returns the number of packets read.
-func handleVirtioRead(in []byte, bufs [][]byte, sizes []int, offset int) (int, error) {
-	payload, options, err := parseVirtioRead(in)
-	if err != nil {
-		return 0, err
-	}
-	return GSOSplit(payload, options, bufs, sizes, offset)
+	var sizes [1]int
+	_, err = t.BatchRead([][]byte{p}, 0, sizes[:])
+	return sizes[0], err
 }
 
 func parseVirtioRead(in []byte) ([]byte, GSOOptions, error) {
@@ -456,14 +430,6 @@ func parseVirtioRead(in []byte) ([]byte, GSOOptions, error) {
 	}
 
 	return in, options, nil
-}
-
-func gsoSegmentCount(payload []byte, options GSOOptions) int {
-	dataLength := len(payload) - int(options.HdrLen)
-	if options.GSOType == GSONone || options.GSOSize == 0 || dataLength < int(options.GSOSize) {
-		return 1
-	}
-	return (dataLength + int(options.GSOSize) - 1) / int(options.GSOSize)
 }
 
 func (t *NativeTun) Write(p []byte) (n int, err error) {
@@ -502,51 +468,36 @@ func (t *NativeTun) BatchRead(buffers [][]byte, offset int, readN []int) (int, e
 	t.readAccess.Lock()
 	defer t.readAccess.Unlock()
 	var used int
-	if t.pendingLength > 0 {
-		pendingLength := t.pendingLength
-		t.pendingLength = 0
-		count, err := handleVirtioRead(t.pendingBuffer[:pendingLength], buffers, readN, offset)
-		if err != nil {
-			return count, err
-		}
-		used = count
-	}
 	for used < len(buffers) {
-		var (
-			readLength int
-			err        error
-		)
-		if used == 0 {
-			readLength, err = t.tunFile.Read(t.writeBuffer)
+		if t.pendingPayload == nil {
+			var (
+				readLength int
+				err        error
+			)
+			if used == 0 {
+				readLength, err = t.tunFile.Read(t.readBuffer)
+				if err != nil {
+					return 0, err
+				}
+			} else {
+				readLength, err = t.readNonblocking(t.readBuffer)
+				if err != nil || readLength == 0 {
+					break
+				}
+			}
+			t.pendingPayload, t.pendingOptions, err = parseVirtioRead(t.readBuffer[:readLength])
 			if err != nil {
-				return 0, err
+				continue
 			}
-		} else {
-			readLength, err = t.readNonblocking(t.writeBuffer)
-			if err != nil || readLength == 0 {
-				break
-			}
+			t.pendingSegment = 0
 		}
-		payload, options, parseErr := parseVirtioRead(t.writeBuffer[:readLength])
-		if parseErr != nil {
-			if used > 0 {
-				break
-			}
-			return 0, parseErr
-		}
-		if used > 0 && gsoSegmentCount(payload, options) > len(buffers)-used {
-			t.writeBuffer, t.pendingBuffer = t.pendingBuffer, t.writeBuffer
-			t.pendingLength = readLength
+		count, err := GSOSplit(t.pendingPayload, t.pendingOptions, t.pendingSegment, buffers[used:], readN[used:], offset)
+		used += count
+		if errors.Is(err, ErrTooManySegments) {
+			t.pendingSegment += count
 			break
 		}
-		count, splitErr := GSOSplit(payload, options, buffers[used:], readN[used:], offset)
-		if splitErr != nil {
-			if used > 0 {
-				break
-			}
-			return count, splitErr
-		}
-		used += count
+		t.pendingPayload = nil
 	}
 	return used, nil
 }

@@ -44,7 +44,7 @@ func (d *ForwardDispatcher) resegmentTCP(flow *forwardFlow, packet *forwardPacke
 		CsumStart:  uint16(headerLength),
 		CsumOffset: header.TCPChecksumOffset,
 		GSOSize:    uint16(segmentSize),
-	}, bufs, sizes, 0)
+	}, 0, bufs, sizes, 0)
 	if err != nil {
 		d.logger.Trace(E.Cause(err, "resegment packet"))
 		return

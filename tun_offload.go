@@ -85,7 +85,7 @@ const (
 // value of options.NeedsCsum. Length of each outBufs element must be greater
 // than or equal to the length of 'in', otherwise output may be silently
 // truncated.
-func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outOffset int) (int, error) {
+func GSOSplit(in []byte, options GSOOptions, segment int, outBufs [][]byte, sizes []int, outOffset int) (int, error) {
 	cSumAt := int(options.CsumStart) + int(options.CsumOffset)
 	if cSumAt+1 >= len(in) {
 		return 0, fmt.Errorf("end of checksum offset (%d) exceeds packet length (%d)", cSumAt+1, len(in))
@@ -161,11 +161,11 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 		protocol = ipProtoUDP
 	}
 	pseudoSumBase := header.PseudoHeaderChecksum(tcpip.TransportProtocolNumber(protocol), in[srcAddrOffset:srcAddrOffset+addrLen], in[srcAddrOffset+addrLen:srcAddrOffset+addrLen*2], 0)
-	nextSegmentDataAt := int(options.HdrLen)
+	nextSegmentDataAt := int(options.HdrLen) + segment*int(options.GSOSize)
 	i := 0
 	for ; nextSegmentDataAt < len(in); i++ {
 		if i == len(outBufs) {
-			return i - 1, ErrTooManySegments
+			return i, ErrTooManySegments
 		}
 		nextSegmentEnd := min(nextSegmentDataAt+int(options.GSOSize), len(in))
 		segmentDataLen := nextSegmentEnd - nextSegmentDataAt
@@ -178,9 +178,9 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 			// For IPv4 we are responsible for incrementing the ID field,
 			// updating the total len field, and recalculating the header
 			// checksum.
-			if i > 0 {
+			if segment+i > 0 {
 				id := binary.BigEndian.Uint16(out[4:])
-				id += uint16(i)
+				id += uint16(segment + i)
 				binary.BigEndian.PutUint16(out[4:], id)
 			}
 			out[10], out[11] = 0, 0 // clear ipv4 header checksum
@@ -194,7 +194,7 @@ func GSOSplit(in []byte, options GSOOptions, outBufs [][]byte, sizes []int, outO
 
 		if protocol == ipProtoTCP {
 			// set TCP seq and adjust TCP flags
-			tcpSeq := firstTCPSeqNum + uint32(options.GSOSize*uint16(i))
+			tcpSeq := firstTCPSeqNum + uint32(options.GSOSize)*uint32(segment+i)
 			binary.BigEndian.PutUint32(out[options.CsumStart+4:], tcpSeq)
 			if nextSegmentEnd != len(in) {
 				// FIN and PSH should only be set on last segment

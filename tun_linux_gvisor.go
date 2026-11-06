@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/header"
 	"github.com/sagernet/gvisor/pkg/tcpip/link/fdbased"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
@@ -135,11 +136,21 @@ func (e *linuxTUNEndpoint) dispatchLoop() {
 	for i := range buffers {
 		buffers[i] = make([]byte, e.tun.options.MTU)
 	}
+	var readRetry ReadRetry
 	for {
 		n, err := e.tun.BatchRead(buffers, 0, sizes)
 		if err != nil {
-			return
+			if !IsRecoverableReadError(err) {
+				if !E.IsClosed(err) {
+					e.tun.options.Logger.Error(E.Cause(err, "batch read packet"))
+				}
+				return
+			}
+			e.tun.options.Logger.Debug(E.Cause(err, "batch read packet"))
+			readRetry.Wait()
+			continue
 		}
+		readRetry.Reset()
 		e.access.RLock()
 		dispatcher := e.dispatcher
 		e.access.RUnlock()

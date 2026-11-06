@@ -230,7 +230,7 @@ func (s *System) tunLoop() {
 		if err != nil {
 			if IsRecoverableReadError(err) {
 				s.logger.Debug(E.Cause(err, "read packet"))
-				readRetry.Wait(err)
+				readRetry.Wait()
 				continue
 			}
 			if !E.IsClosed(err) {
@@ -293,7 +293,7 @@ func (s *System) batchLoopLinux(linuxTUN LinuxTUN, batchSize int) {
 				return
 			}
 			s.logger.Debug(E.Cause(err, "batch read packet"))
-			readRetry.Wait(err)
+			readRetry.Wait()
 		} else {
 			readRetry.Reset()
 		}
@@ -336,7 +336,7 @@ func (s *System) batchLoopDarwin(darwinTUN DarwinTUN) {
 				return
 			}
 			s.logger.Debug(E.Cause(err, "batch read packet"))
-			readRetry.Wait(err)
+			readRetry.Wait()
 		} else {
 			readRetry.Reset()
 		}

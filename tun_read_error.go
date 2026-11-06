@@ -1,7 +1,6 @@
 package tun
 
 import (
-	"errors"
 	"syscall"
 	"time"
 
@@ -9,17 +8,14 @@ import (
 )
 
 func IsRecoverableReadError(err error) bool {
-	return errors.Is(err, ErrTooManySegments) || E.IsMulti(err, syscall.EAGAIN, syscall.EINTR, syscall.ENOMEM, syscall.ENOBUFS)
+	return E.IsMulti(err, syscall.EAGAIN, syscall.EINTR, syscall.ENOMEM, syscall.ENOBUFS)
 }
 
 type ReadRetry struct {
 	delay time.Duration
 }
 
-func (r *ReadRetry) Wait(err error) {
-	if errors.Is(err, ErrTooManySegments) {
-		return
-	}
+func (r *ReadRetry) Wait() {
 	if r.delay == 0 {
 		r.delay = 5 * time.Millisecond
 	} else {
