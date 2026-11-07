@@ -207,6 +207,18 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 					},
 				},
 			})
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chain,
+				Exprs: []expr.Any{
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+					&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
+					&expr.Counter{},
+					&expr.Verdict{Kind: expr.VerdictReturn},
+				},
+			})
 		}
 	}
 	if r.nfqueueEnabled && chain.Type == nftables.ChainTypeNAT {

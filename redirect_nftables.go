@@ -216,6 +216,19 @@ func (r *autoRedirect) setupNFTables() error {
 			Table: table,
 			Chain: chainPreRoutingUDP,
 			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: nftablesIfname(r.tunOptions.Name)},
+				&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
+				&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
+				&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
+				&expr.Counter{},
+			},
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chainPreRoutingUDP,
+			Exprs: []expr.Any{
 				&expr.Meta{
 					Key:      expr.MetaKeyIIFNAME,
 					Register: 1,
