@@ -672,6 +672,16 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	if r.enableIPv6 {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, false)
 	}
+	nft.AddRule(&nftables.Rule{
+		Table: table,
+		Chain: chain,
+		Exprs: []expr.Any{
+			&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+			&expr.Counter{},
+			&expr.Verdict{Kind: expr.VerdictReturn},
+		},
+	})
 
 	routeAddressSet := *r.routeAddressSet
 	routeExcludeAddressSet := *r.routeExcludeAddressSet
