@@ -909,6 +909,16 @@ func udpGRO(bufs [][]byte, offset int, pktI int, table *udpGROTable, isV6 bool) 
 // and recycle them across vectors of packets. gro indicates if TCP and UDP GRO
 // are supported/enabled.
 func handleGRO(bufs [][]byte, offset int, tcpTable *tcpGROTable, udpTable *udpGROTable, gro groDisablementFlags, toWrite *[]int) error {
+	// A single packet cannot be coalesced with another packet.
+	if len(bufs) == 1 {
+		if offset < virtioNetHdrLen || offset > len(bufs[0])-1 {
+			return errors.New("invalid offset")
+		}
+		clear(bufs[0][offset-virtioNetHdrLen : offset])
+		*toWrite = append(*toWrite, 0)
+		return nil
+	}
+
 	for i := range bufs {
 		if offset < virtioNetHdrLen || offset > len(bufs[i])-1 {
 			return errors.New("invalid offset")
