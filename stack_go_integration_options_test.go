@@ -166,27 +166,32 @@ func TestGoConnKeepalive(t *testing.T) {
 	})
 	t.Run("answered", func(scenario *testing.T) {
 		connectionCases(scenario, fixture, func(test *testing.T, conn *GoConn, kernel *net.TCPConn, port uint16) {
-			err := conn.SetKeepAliveConfig(net.KeepAliveConfig{Enable: true, Idle: 100 * time.Millisecond, Interval: 100 * time.Millisecond, Count: 2})
+			// Avoid Linux's default 500 ms duplicate-ACK rate limit.
+			err := conn.SetKeepAliveConfig(net.KeepAliveConfig{Enable: true, Idle: time.Second, Interval: time.Second, Count: 2})
 			if err != nil {
 				test.Fatal(err)
 			}
 			recorder := recordWire(test, fixture, port)
-			time.Sleep(2 * time.Second)
 			probes := 0
 			answered := 0
 			var awaiting []uint32
-			for _, segment := range recorder.take() {
-				switch {
-				case segment.probe():
-					probes++
-					awaiting = append(awaiting, segment.sequence+1)
-				case !segment.outbound && segment.payload == 0 && len(awaiting) > 0 && segment.ack == awaiting[0]:
-					answered++
-					awaiting = awaiting[1:]
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+				for _, segment := range recorder.take() {
+					switch {
+					case segment.probe():
+						probes++
+						awaiting = append(awaiting, segment.sequence+1)
+					case !segment.outbound && segment.payload == 0 && len(awaiting) > 0 && segment.ack == awaiting[0]:
+						answered++
+						awaiting = awaiting[1:]
+					}
+				}
+				if probes >= 2 && answered == probes {
+					break
 				}
 			}
 			if probes < 2 || answered != probes {
-				test.Fatalf("kernel answered %d of %d probes sent while idle for 2s", answered, probes)
+				test.Fatalf("kernel answered %d of %d probes before the deadline", answered, probes)
 			}
 			err = kernelTransfer(conn, kernel, kernelPayload(1<<20, 5), false)
 			if err != nil {
