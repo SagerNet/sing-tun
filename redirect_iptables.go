@@ -262,6 +262,12 @@ func (r *autoRedirect) iptablesFillLocalChain(chain iptablesLocalChain, addresse
 			return err
 		}
 	}
+	if runtime.GOOS != "android" {
+		err := iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN")
+		if err != nil {
+			return err
+		}
+	}
 	return iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-j", chain.next)
 }
 
