@@ -123,9 +123,11 @@ func groTestPacket(src, dst netip.Addr, udp bool, port uint16, seq, ack uint32, 
 	binary.BigEndian.PutUint16(segment[checksumOffset:checksumOffset+2], check)
 	return packet
 }
+
 func tcpPacket(src, dst netip.Addr, seq, ack uint32, flags byte, data []byte) []byte {
 	return groTestPacket(src, dst, false, 443, seq, ack, flags, data)
 }
+
 func udpPacket(src, dst netip.Addr, port uint16, data []byte) []byte {
 	return groTestPacket(src, dst, true, port, 0, 0, 0, data)
 }
@@ -169,17 +171,19 @@ func groPackets(ipv6, udp bool, n, payload int) [][]byte {
 	}
 	return out
 }
+
 func groBuffers(packets [][]byte) [][]byte {
 	out := make([][]byte, len(packets))
 	for i, p := range packets {
 		out[i] = make([]byte, virtioNetHdrLen+len(p), 65536+virtioNetHdrLen)
-		for j := 0; j < virtioNetHdrLen; j++ {
+		for j := range virtioNetHdrLen {
 			out[i][j] = 0xa5
 		}
 		copy(out[i][virtioNetHdrLen:], p)
 	}
 	return out
 }
+
 func TestSingleGROEquivalence(t *testing.T) {
 	tcpA, tcpB, udpA, udpB := newTCPGROTable(), newTCPGROTable(), newUDPGROTable(), newUDPGROTable()
 	cases := 0
@@ -207,7 +211,7 @@ func TestSingleGROEquivalence(t *testing.T) {
 		for _, udp := range []bool{false, true} {
 			for _, n := range []int{1, 2, 3, 64, 1} { // reset/reuse after a coalesced batch
 				for _, payload := range []int{0, 1, 64, 512} {
-					for flags := groDisablementFlags(0); flags < 4; flags++ {
+					for flags := range groDisablementFlags(4) {
 						check(groPackets(ipv6, udp, n, payload), virtioNetHdrLen, flags)
 					}
 				}
@@ -248,7 +252,7 @@ func TestSingleGROEquivalence(t *testing.T) {
 		}
 	}
 	check(nil, 10, 0)
-	for n := 0; n < 80; n++ {
+	for n := range 80 {
 		check([][]byte{bytes.Repeat([]byte{byte(n)}, n)}, 10, 0)
 	}
 	// Confirm a valid single packet clears stale GSO flags from earlier use.
@@ -262,6 +266,7 @@ func TestSingleGROEquivalence(t *testing.T) {
 	}
 	t.Logf("GRO differential cases: %d", cases)
 }
+
 func BenchmarkGROPaths(b *testing.B) {
 	for _, n := range []int{1, 2, 64} {
 		for _, udp := range []bool{false, true} {
