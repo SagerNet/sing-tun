@@ -226,6 +226,7 @@ func (r *autoRedirect) Start() error {
 }
 
 func (r *autoRedirect) Close() error {
+	err := common.Close(common.PtrOrNil(r.redirectServer))
 	if r.nfqueueHandler != nil {
 		r.nfqueueHandler.Close()
 	}
@@ -241,9 +242,7 @@ func (r *autoRedirect) Close() error {
 	} else {
 		r.cleanupIPTables()
 	}
-	return common.Close(
-		common.PtrOrNil(r.redirectServer),
-	)
+	return err
 }
 
 func (r *autoRedirect) UpdateRouteAddressSet() {

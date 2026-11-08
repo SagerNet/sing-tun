@@ -7,7 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing/common/control"
@@ -18,20 +18,22 @@ import (
 )
 
 type redirectServer struct {
-	ctx        context.Context
-	handler    N.TCPConnectionHandlerEx
-	logger     logger.Logger
-	listenAddr netip.Addr
-	listener   *net.TCPListener
-	inShutdown atomic.Bool
+	ctx         context.Context
+	handler     N.TCPConnectionHandlerEx
+	logger      logger.Logger
+	listenAddr  netip.Addr
+	listener    *net.TCPListener
+	access      sync.Mutex
+	connections map[*net.TCPConn]struct{}
 }
 
 func newRedirectServer(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
 	return &redirectServer{
-		ctx:        ctx,
-		handler:    handler,
-		logger:     logger,
-		listenAddr: listenAddr,
+		ctx:         ctx,
+		handler:     handler,
+		logger:      logger,
+		listenAddr:  listenAddr,
+		connections: make(map[*net.TCPConn]struct{}),
 	}
 }
 
@@ -49,8 +51,16 @@ func (s *redirectServer) Start() error {
 }
 
 func (s *redirectServer) Close() error {
-	s.inShutdown.Store(true)
-	return s.listener.Close()
+	s.access.Lock()
+	connections := s.connections
+	s.connections = nil
+	s.access.Unlock()
+	err := s.listener.Close()
+	for conn := range connections {
+		_ = conn.SetLinger(0)
+		_ = conn.Close()
+	}
+	return err
 }
 
 func (s *redirectServer) loopIn() {
@@ -58,7 +68,10 @@ func (s *redirectServer) loopIn() {
 	for {
 		conn, err := s.listener.AcceptTCP()
 		if err != nil {
-			if s.inShutdown.Load() && E.IsClosed(err) {
+			s.access.Lock()
+			closed := s.connections == nil
+			s.access.Unlock()
+			if closed && E.IsClosed(err) {
 				return
 			}
 			var netError net.Error
@@ -89,6 +102,19 @@ func (s *redirectServer) loopIn() {
 			s.logger.Error("process redirect connection from ", source, ": invalid connection: ", err)
 			continue
 		}
-		go s.handler.NewConnectionEx(s.ctx, conn, source, M.SocksaddrFromNetIP(destination).Unwrap(), nil)
+		s.access.Lock()
+		if s.connections == nil {
+			s.access.Unlock()
+			_ = conn.SetLinger(0)
+			_ = conn.Close()
+			return
+		}
+		s.connections[conn] = struct{}{}
+		s.access.Unlock()
+		go s.handler.NewConnectionEx(s.ctx, conn, source, M.SocksaddrFromNetIP(destination).Unwrap(), func(error) {
+			s.access.Lock()
+			delete(s.connections, conn)
+			s.access.Unlock()
+		})
 	}
 }
