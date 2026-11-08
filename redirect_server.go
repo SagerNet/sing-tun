@@ -7,7 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,7 +29,8 @@ type RedirectServer struct {
 	externalTransparent bool
 	listenMark          uint32
 	listener            *net.TCPListener
-	inShutdown          atomic.Bool
+	access              sync.Mutex
+	connections         map[*net.TCPConn]struct{}
 }
 
 func (s *RedirectServer) SetExternalTransparent() {
@@ -49,6 +50,7 @@ func NewRedirectServer(ctx context.Context, handler N.TCPConnectionHandlerEx, lo
 		handler:       handler,
 		logger:        logger,
 		listenAddress: listenAddress,
+		connections:   make(map[*net.TCPConn]struct{}),
 	}
 }
 
@@ -81,8 +83,16 @@ func (s *RedirectServer) Port() uint16 {
 }
 
 func (s *RedirectServer) Close() error {
-	s.inShutdown.Store(true)
-	return s.listener.Close()
+	s.access.Lock()
+	connections := s.connections
+	s.connections = nil
+	s.access.Unlock()
+	err := s.listener.Close()
+	for conn := range connections {
+		_ = conn.SetLinger(0)
+		_ = conn.Close()
+	}
+	return err
 }
 
 func (s *RedirectServer) loopIn() {
@@ -90,7 +100,10 @@ func (s *RedirectServer) loopIn() {
 	for {
 		conn, err := s.listener.AcceptTCP()
 		if err != nil {
-			if s.inShutdown.Load() && E.IsClosed(err) {
+			s.access.Lock()
+			closed := s.connections == nil
+			s.access.Unlock()
+			if closed && E.IsClosed(err) {
 				return
 			}
 			var netError net.Error
@@ -128,6 +141,19 @@ func (s *RedirectServer) loopIn() {
 			}
 			destination = M.SocksaddrFromNetIP(originalDestination).Unwrap()
 		}
-		go s.handler.NewConnectionEx(s.ctx, conn, source, destination, nil)
+		s.access.Lock()
+		if s.connections == nil {
+			s.access.Unlock()
+			_ = conn.SetLinger(0)
+			_ = conn.Close()
+			return
+		}
+		s.connections[conn] = struct{}{}
+		s.access.Unlock()
+		go s.handler.NewConnectionEx(s.ctx, conn, source, destination, func(error) {
+			s.access.Lock()
+			delete(s.connections, conn)
+			s.access.Unlock()
+		})
 	}
 }

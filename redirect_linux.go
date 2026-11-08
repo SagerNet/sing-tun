@@ -380,6 +380,11 @@ func (r *autoRedirect) updateIPTablesNetwork() error {
 }
 
 func (r *autoRedirect) Close() error {
+	var err error
+	if r.redirectServer != nil {
+		err = r.redirectServer.Close()
+		r.redirectServer = nil
+	}
 	if r.useNFTables {
 		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
 			r.cleanupNFTables()
@@ -403,12 +408,7 @@ func (r *autoRedirect) Close() error {
 		r.nfqueueHandler.Close()
 		r.nfqueueHandler = nil
 	}
-	if r.redirectServer != nil {
-		err := r.redirectServer.Close()
-		r.redirectServer = nil
-		return err
-	}
-	return nil
+	return err
 }
 
 func (r *autoRedirect) initializeNFTables() error {
