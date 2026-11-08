@@ -310,6 +310,7 @@ func (w *GoPacketConn) preparePacketHeader(packet []byte, payload []byte, destin
 	if w.ipVersion == 4 {
 		ipHdr := header.IPv4(packet[:header.IPv4MinimumSize])
 		ipHdr.SetTotalLength(uint16(w.templateLength + len(payload)))
+		ipHdr.SetID(uint16(w.engine.stack.fragmentIdentification.Add(1)))
 		ipHdr.SetSourceAddr(destination.Addr)
 		ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
 		sourceAddress = ipHdr.SourceAddressSlice()
