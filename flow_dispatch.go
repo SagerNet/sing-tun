@@ -133,6 +133,8 @@ type ForwardDispatcher struct {
 	segmentBuffers [][]byte
 	segmentSizes   []int
 	segmentUsed    int
+
+	identification atomic.Uint32
 }
 
 func addrToTCPIP(addr netip.Addr) tcpip.Address {
