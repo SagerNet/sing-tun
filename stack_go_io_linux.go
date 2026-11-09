@@ -355,7 +355,7 @@ func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
-		case unix.EAGAIN:
+		case unix.EAGAIN, unix.ENOBUFS:
 			o.device.droppedEngineFrames.record(o.device.stack.logger, "engine frames")
 			return errGoFrameDropped
 		default:
@@ -384,6 +384,12 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoCo
 			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
+		case unix.ENOBUFS:
+			// Before Linux 6.6, tun_alloc_skb places the whole frame in the skb head unless the
+			// virtio header carries a header length, so a large frame needs a high-order
+			// allocation, which fails with ENOBUFS under memory fragmentation.
+			o.device.droppedDataFrames.record(o.device.stack.logger, "data frames")
+			return errGoFrameDropped
 		case unix.EAGAIN:
 			// tun chardev writes complete into netif_rx, which drops on backlog overflow
 			// instead of reporting EAGAIN, and tun_chr_poll reports the fd always writable.
@@ -404,7 +410,7 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoCo
 			if errno == unix.EBADF && o.device.closing.Load() {
 				return os.ErrClosed
 			}
-			return E.Cause(errno, "go: write tun")
+			return errno
 		}
 	}
 }
@@ -605,7 +611,7 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 				continue
 			}
 		}
-		if errno == unix.EAGAIN {
+		if errno == unix.EAGAIN || errno == unix.ENOBUFS {
 			o.device.droppedEngineFrames.record(o.device.stack.logger, "UDP frames")
 			writeError = E.Errors(writeError, errGoFrameDropped)
 		} else if errno != 0 {
