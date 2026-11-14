@@ -268,6 +268,10 @@ func (r *autoRedirect) initializeNFTables() error {
 	if err != nil {
 		return err
 	}
+	err = r.nftablesProbe(nftables.ChainTypeNAT)
+	if err != nil {
+		return E.Cause(err, "create inet nat chain (Linux 5.2 or later is required)")
+	}
 	err = r.nftablesProbe(nftables.ChainTypeFilter, &expr.Reject{Type: unix.NFT_REJECT_TCP_RST})
 	if err != nil {
 		r.logger.Debug("reject in prerouting is not supported (Linux 5.9 or later is required), reject in input and forward instead: ", err)
