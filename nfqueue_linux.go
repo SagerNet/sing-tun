@@ -64,10 +64,7 @@ func (h *nfqueueHandler) acceptVerdict(packet preMatchPacket) (verdict int, mark
 func (h *nfqueueHandler) setVerdict(queued queuedPacket, verdict int, mark uint32) {
 	var err error
 	if mark != 0 {
-		if h.markMask != 0 {
-			mark = queued.mark&^h.markMask | mark
-		}
-		err = h.nfq.SetVerdictWithOption(queued.id, verdict, nfqueue.WithMark(mark))
+		err = h.nfq.SetVerdictWithOption(queued.id, verdict, nfqueue.WithMark(queued.mark&^h.markMask|mark))
 	} else {
 		err = h.nfq.SetVerdict(queued.id, verdict)
 	}

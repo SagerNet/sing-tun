@@ -328,10 +328,6 @@ func (r *autoRedirect) startRedirectServer() error {
 const tcpOptionMultipathTCP = 30
 
 func (r *autoRedirect) startNFQueue() error {
-	var markMask uint32
-	if !r.useNFTables {
-		markMask = r.effectiveMarkMask()
-	}
 	var tproxyMark uint32
 	if r.tproxyEnabled() {
 		tproxyMark = r.tunOptions.AutoRedirectTProxyMark
@@ -344,7 +340,7 @@ func (r *autoRedirect) startNFQueue() error {
 		outputMark: r.tunOptions.AutoRedirectOutputMark,
 		resetMark:  r.tunOptions.AutoRedirectResetMark,
 		tproxyMark: tproxyMark,
-		markMask:   markMask,
+		markMask:   r.effectiveMarkMask(),
 		// A queue verdict leaves the whole iptables mangle hook, while nftables base chains
 		// continue on NF_ACCEPT.
 		repeatOnAccept: !r.useNFTables,
