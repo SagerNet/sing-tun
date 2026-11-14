@@ -72,7 +72,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 	nft *nftables.Conn, table *nftables.Table,
 	localAddresses []netip.Prefix, lastAddresses []netip.Prefix,
 ) error {
-	if r.enableIPv4 {
+	if r.enableIPv4 || !r.fibAddrType {
 		localAddresses4 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is4()
 		})
@@ -91,7 +91,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 			}
 		}
 	}
-	if r.enableIPv6 {
+	if r.enableIPv6 || !r.fibAddrType {
 		localAddresses6 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is6()
 		})
@@ -662,22 +662,24 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	}
 
-	if r.enableIPv4 {
+	if r.enableIPv4 || !r.fibAddrType {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, false)
 	}
-	if r.enableIPv6 {
+	if r.enableIPv6 || !r.fibAddrType {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, false)
 	}
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
-			&expr.Counter{},
-			&expr.Verdict{Kind: expr.VerdictReturn},
-		},
-	})
+	if r.fibAddrType {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: []expr.Any{
+				&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			},
+		})
+	}
 
 	routeAddressSet := *r.routeAddressSet
 	routeExcludeAddressSet := *r.routeExcludeAddressSet

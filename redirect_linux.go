@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
@@ -49,6 +50,7 @@ type autoRedirect struct {
 	nfqueueHandler          *nfqueueHandler
 	nfqueueEnabled          bool
 	preroutingReject        bool
+	fibAddrType             bool
 	redirectRouteTableIndex int
 	redirectRouteAccess     sync.Mutex
 	redirectRoutesActive    bool
@@ -169,7 +171,12 @@ func (r *autoRedirect) Start() error {
 	if r.useNFTables {
 		if r.handler != nil {
 			var handler *nfqueueHandler
-			handler, err = newNFQueueHandler(nfqueueOptions{
+			err = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+				return r.nftablesProbe(nftables.ChainTypeFilter, &expr.Queue{Num: r.effectiveNFQueue(), Flag: expr.QueueFlagBypass})
+			})
+			if err != nil {
+				r.logger.Warn("nfqueue not available, pre-match disabled (missing nft_queue kernel module?): ", err)
+			} else if handler, err = newNFQueueHandler(nfqueueOptions{
 				Context:    r.ctx,
 				Handler:    r.handler,
 				Logger:     r.logger,
@@ -178,8 +185,7 @@ func (r *autoRedirect) Start() error {
 				OutputMark: r.effectiveOutputMark(),
 				ResetMark:  r.effectiveResetMark(),
 				MarkMask:   r.effectiveMarkMask(),
-			})
-			if err != nil {
+			}); err != nil {
 				r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
 			} else if err = runInNetworkNamespace(r.tunOptions.NetNs, handler.Start); err != nil {
 				r.logger.Warn("nfqueue start failed, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
@@ -277,6 +283,15 @@ func (r *autoRedirect) initializeNFTables() error {
 		r.logger.Debug("reject in prerouting is not supported (Linux 5.9 or later is required), reject in input and forward instead: ", err)
 	} else {
 		r.preroutingReject = true
+	}
+	err = r.nftablesProbe(nftables.ChainTypeFilter,
+		&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+	)
+	if err != nil {
+		r.logger.Warn("fib expression not available, local addresses are excluded by address sets only (missing nft_fib_inet kernel module?): ", err)
+	} else {
+		r.fibAddrType = true
 	}
 	r.useNFTables = true
 	return nil
