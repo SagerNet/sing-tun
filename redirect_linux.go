@@ -239,7 +239,12 @@ func (r *autoRedirect) initializeBackend() error {
 	if r.useNFTables {
 		err = runInNetworkNamespace(r.tunOptions.NetNs, r.initializeNFTables)
 		if err != nil {
-			return E.Cause(err, "missing nftables support")
+			_, lookErr := exec.LookPath("iptables")
+			if r.tunOptions.NetNs != "" || r.tunOptions.ExcludeMPTCP || lookErr != nil {
+				return E.Cause(err, "missing nftables support")
+			}
+			r.logger.Warn("nftables not available, fallback to iptables: ", err)
+			r.useNFTables = false
 		}
 	}
 	if len(r.tunOptions.Inet4Address) > 0 {
@@ -417,6 +422,10 @@ func (r *autoRedirect) initializeNFTables() error {
 	_, err = nft.ListTablesOfFamily(nftables.TableFamilyIPv4)
 	if err != nil {
 		return err
+	}
+	err = r.nftablesProbe(nftables.ChainTypeNAT)
+	if err != nil {
+		return E.Cause(err, "create inet nat chain (Linux 5.2 or later is required)")
 	}
 	err = r.nftablesProbe(nftables.ChainTypeFilter, &expr.Reject{Type: unix.NFT_REJECT_TCP_RST})
 	if err != nil {
