@@ -541,7 +541,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	if family.isIPv6 && !family.tproxy {
 		preroutingMarkChain.add("-p", "tcp", "-m", "mark", "--mark", resetMark, "-j", "RETURN")
 	}
-	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-j", "MARK", "--set-xmark", inputMark)
+	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "MARK", "--set-xmark", inputMark)
 	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-j", "RETURN")
 	preroutingMarkChain.add("-m", "connmark", "--mark", outputMark, "-j", "MARK", "--set-xmark", outputMark)
 	preroutingMarkChain.add("-m", "connmark", "--mark", outputMark, "-j", "RETURN")

@@ -4,17 +4,16 @@ package tun
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/sagernet/nftables"
-	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 
-	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
 )
 
@@ -221,66 +220,34 @@ func (r *autoRedirect) setupNFTables() error {
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
-			Exprs: []expr.Any{
-				&expr.Meta{
-					Key:      expr.MetaKeyIIFNAME,
-					Register: 1,
+			Exprs: slices.Concat(
+				[]expr.Any{
+					&expr.Meta{
+						Key:      expr.MetaKeyIIFNAME,
+						Register: 1,
+					},
+					&expr.Cmp{
+						Op:       expr.CmpOpNeq,
+						Register: 1,
+						Data:     nftablesIfname(r.tunOptions.Name),
+					},
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
 				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     nftablesIfname(r.tunOptions.Name),
-				},
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
-				&expr.Counter{},
-			},
+				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
+				[]expr.Any{&expr.Counter{}},
+			),
 		})
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
-			Exprs: []expr.Any{
-				&expr.Ct{
-					Key:      expr.CtKeyMARK,
-					Register: 1,
-				},
-				&expr.Cmp{
-					Op:       expr.CmpOpNeq,
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark),
-				},
-				&expr.Immediate{
-					Register: 1,
-					Data:     binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectOutputMark),
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
-				&expr.Meta{
-					Key:      expr.MetaKeyMARK,
-					Register: 1,
-				},
-				&expr.Ct{
-					Key:            expr.CtKeyMARK,
-					Register:       1,
-					SourceRegister: true,
-				},
-				&expr.Counter{},
-			},
+			Exprs: slices.Concat(
+				r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectOutputMark),
+				[]expr.Any{&expr.Counter{}},
+				r.nftablesMarkSet(true, r.tunOptions.AutoRedirectOutputMark),
+			),
 		})
 	}
 
@@ -420,15 +387,16 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 			nft.AddRule(&nftables.Rule{
 				Table: table,
 				Chain: chain,
-				Exprs: []expr.Any{
-					&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: nftablesIfname(r.tunOptions.Name)},
-					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
-					&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
-					&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
-					&expr.Counter{},
-				},
+				Exprs: slices.Concat(
+					[]expr.Any{
+						&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: nftablesIfname(r.tunOptions.Name)},
+						&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
+						&expr.Counter{},
+					},
+					r.nftablesMarkSet(true, r.tunOptions.AutoRedirectInputMark),
+				),
 			})
 		}
 		nft.AddRule(&nftables.Rule{
@@ -445,17 +413,18 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_ICMP}},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
-				&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
-				&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectInputMark)},
-				&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
-				&expr.Counter{},
-			},
+			Exprs: slices.Concat(
+				[]expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_ICMP}},
+					&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+				},
+				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
+				[]expr.Any{&expr.Counter{}},
+			),
 		})
 	}
 	nft.AddRule(&nftables.Rule{
@@ -471,24 +440,28 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
-				&expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: true},
-				&expr.Counter{},
-				&expr.Verdict{Kind: expr.VerdictReturn},
-			},
+			Exprs: slices.Concat(
+				r.nftablesMarkMatch(false, expr.CmpOpEq, mark),
+				r.nftablesMarkSet(true, mark),
+			),
 		})
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: []expr.Any{
-				&expr.Ct{Key: expr.CtKeyMARK, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
-				&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true},
+			Exprs: append(
+				r.nftablesMarkMatch(false, expr.CmpOpEq, mark),
 				&expr.Counter{},
 				&expr.Verdict{Kind: expr.VerdictReturn},
-			},
+			),
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: slices.Concat(
+				r.nftablesMarkMatch(true, expr.CmpOpEq, mark),
+				r.nftablesMarkSet(false, mark),
+				[]expr.Any{&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}},
+			),
 		})
 	}
 
@@ -569,14 +542,17 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(r.tunOptions.AutoRedirectResetMark)},
-			&expr.Counter{},
-			&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
-		},
+		Exprs: slices.Concat(
+			[]expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+			},
+			r.nftablesMarkMatch(false, expr.CmpOpEq, r.tunOptions.AutoRedirectResetMark),
+			[]expr.Any{
+				&expr.Counter{},
+				&expr.Reject{Type: unix.NFT_REJECT_TCP_RST},
+			},
+		),
 	})
 
 	err = r.nftablesCreateExcludeRules(nft, table, chain)
