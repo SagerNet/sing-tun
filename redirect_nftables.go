@@ -35,7 +35,7 @@ func (r *autoRedirect) setupNFTables() error {
 	}
 	r.localAddresses = common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
-			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast()
+			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast() || (!r.fibAddrType && prefix.Addr().IsLinkLocalUnicast())
 		})
 	})
 	err = r.nftablesCreateLocalAddressSets(nft, table, r.localAddresses, nil)
@@ -319,7 +319,7 @@ func (r *autoRedirect) nftablesUpdateLocalAddressSet() error {
 	}
 	newLocalAddresses := common.FlatMap(r.interfaceFinder.Interfaces(), func(it control.Interface) []netip.Prefix {
 		return common.Filter(it.Addresses, func(prefix netip.Prefix) bool {
-			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast()
+			return it.Name == "lo" || prefix.Addr().IsGlobalUnicast() || (!r.fibAddrType && prefix.Addr().IsLinkLocalUnicast())
 		})
 	})
 	if slices.Equal(newLocalAddresses, r.localAddresses) {

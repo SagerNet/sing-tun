@@ -11,6 +11,7 @@ import (
 
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/control"
@@ -52,6 +53,7 @@ type autoRedirect struct {
 	androidVPNService            bool
 	nfqueueHandler               *nfqueueHandler
 	preroutingReject             bool
+	fibAddrType                  bool
 	iptablesAccess               sync.Mutex
 	iptablesLocalChains          []iptablesLocalChain
 	redirectRouteTableIndex      int
@@ -432,6 +434,19 @@ func (r *autoRedirect) initializeNFTables() error {
 		r.logger.Debug("reject in prerouting is not supported (Linux 5.9 or later is required), reject in input and forward instead: ", err)
 	} else {
 		r.preroutingReject = true
+	}
+	err = r.nftablesProbe(nftables.ChainTypeFilter,
+		&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+	)
+	if err != nil {
+		r.logger.Warn("fib expression not available, local addresses are excluded by address sets only (missing nft_fib_inet kernel module?): ", err)
+	} else {
+		r.fibAddrType = true
+	}
+	err = r.nftablesProbe(nftables.ChainTypeFilter, &expr.Queue{Num: r.effectiveNFQueue(), Flag: expr.QueueFlagBypass})
+	if err != nil {
+		return E.Cause(err, "create queue rule (missing nft_queue kernel module?)")
 	}
 	r.useNFTables = true
 	return nil
