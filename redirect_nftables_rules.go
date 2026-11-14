@@ -1117,13 +1117,18 @@ func (r *autoRedirect) nftablesCreateUnreachable(
 		},
 		&expr.Counter{},
 	}
-	if chain.Hooknum == nftables.ChainHookPrerouting && !r.preroutingReject {
+	switch {
+	case chain.Type == nftables.ChainTypeRoute:
+		exprs = append(exprs, &expr.Verdict{
+			Kind: expr.VerdictReturn,
+		})
+	case chain.Hooknum == nftables.ChainHookPrerouting && !r.preroutingReject:
 		exprs = slices.Concat(
 			exprs,
 			r.nftablesMarkSet(false, r.effectiveResetMark()),
 			[]expr.Any{&expr.Verdict{Kind: expr.VerdictReturn}},
 		)
-	} else {
+	default:
 		exprs = append(exprs, &expr.Reject{})
 	}
 	nft.AddRule(&nftables.Rule{
