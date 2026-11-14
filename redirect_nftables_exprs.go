@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing/common"
 
@@ -16,6 +17,43 @@ func nftablesIfname(n string) []byte {
 	b := make([]byte, 16)
 	copy(b, n+"\x00")
 	return b
+}
+
+func nftablesMarkRegister(conntrack bool, store bool) expr.Any {
+	if conntrack {
+		return &expr.Ct{Key: expr.CtKeyMARK, Register: 1, SourceRegister: store}
+	}
+	return &expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: store}
+}
+
+func (r *autoRedirect) nftablesMarkMatch(conntrack bool, op expr.CmpOp, mark uint32) []expr.Any {
+	return []expr.Any{
+		nftablesMarkRegister(conntrack, false),
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(r.effectiveMarkMask()),
+			Xor:            make([]byte, 4),
+		},
+		&expr.Cmp{Op: op, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
+	}
+}
+
+// Loading the conntrack mark ends the rule for an untracked packet, while storing it alone is a
+// no-op there, so nothing that must still run for such packets may follow a conntrack update.
+func (r *autoRedirect) nftablesMarkSet(conntrack bool, mark uint32) []expr.Any {
+	return []expr.Any{
+		nftablesMarkRegister(conntrack, false),
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Mask:           binaryutil.NativeEndian.PutUint32(^r.effectiveMarkMask()),
+			Xor:            binaryutil.NativeEndian.PutUint32(mark),
+		},
+		nftablesMarkRegister(conntrack, true),
+	}
 }
 
 func nftablesCreateExcludeDestinationIPSet(

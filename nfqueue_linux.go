@@ -26,6 +26,7 @@ type nfqueueHandler struct {
 	inputMark  uint32
 	outputMark uint32
 	resetMark  uint32
+	markMask   uint32
 	closed     atomic.Bool
 }
 
@@ -37,6 +38,7 @@ type nfqueueOptions struct {
 	InputMark  uint32
 	OutputMark uint32
 	ResetMark  uint32
+	MarkMask   uint32
 }
 
 func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
@@ -50,13 +52,14 @@ func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
 		inputMark:  options.InputMark,
 		outputMark: options.OutputMark,
 		resetMark:  options.ResetMark,
+		markMask:   options.MarkMask,
 	}, nil
 }
 
-func (h *nfqueueHandler) setVerdict(packetID uint32, verdict int, mark uint32) {
+func (h *nfqueueHandler) setVerdict(packetID uint32, packetMark uint32, verdict int, mark uint32) {
 	var err error
 	if mark != 0 {
-		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(mark))
+		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(packetMark&^h.markMask|mark))
 	} else {
 		err = h.nfq.SetVerdict(packetID, verdict)
 	}
@@ -261,10 +264,14 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 
 	packetID := *attr.PacketID
 	payload := *attr.Payload
+	var packetMark uint32
+	if attr.Mark != nil {
+		packetMark = *attr.Mark
+	}
 
 	packet, loaded := parsePreMatchPacket(payload)
 	if !loaded {
-		h.setVerdict(packetID, nfqueue.NfAccept, 0)
+		h.setVerdict(packetID, packetMark, nfqueue.NfAccept, 0)
 		return 0
 	}
 
@@ -280,22 +287,22 @@ func (h *nfqueueHandler) handlePacket(attr nfqueue.Attribute) int {
 	// rules of the chain.
 	switch verdict.Action {
 	case ActionBypass:
-		h.setVerdict(packetID, nfqueue.NfRepeat, h.outputMark)
+		h.setVerdict(packetID, packetMark, nfqueue.NfRepeat, h.outputMark)
 	case ActionReject:
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
-			h.setVerdict(packetID, nfqueue.NfRepeat, h.resetMark)
+			h.setVerdict(packetID, packetMark, nfqueue.NfRepeat, h.resetMark)
 		} else {
-			h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
+			h.setVerdict(packetID, packetMark, nfqueue.NfRepeat, h.inputMark)
 		}
 	case ActionDrop:
-		h.setVerdict(packetID, nfqueue.NfDrop, 0)
+		h.setVerdict(packetID, packetMark, nfqueue.NfDrop, 0)
 	case ActionFlow, ActionHijackDNS:
-		h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
+		h.setVerdict(packetID, packetMark, nfqueue.NfRepeat, h.inputMark)
 	default:
 		if packet.protocol == uint8(unix.IPPROTO_TCP) {
-			h.setVerdict(packetID, nfqueue.NfAccept, 0)
+			h.setVerdict(packetID, packetMark, nfqueue.NfAccept, 0)
 		} else {
-			h.setVerdict(packetID, nfqueue.NfRepeat, h.inputMark)
+			h.setVerdict(packetID, packetMark, nfqueue.NfRepeat, h.inputMark)
 		}
 	}
 

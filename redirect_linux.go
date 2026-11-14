@@ -174,6 +174,7 @@ func (r *autoRedirect) Start() error {
 				InputMark:  r.tunOptions.AutoRedirectInputMark,
 				OutputMark: r.effectiveOutputMark(),
 				ResetMark:  r.effectiveResetMark(),
+				MarkMask:   r.effectiveMarkMask(),
 			})
 			if err != nil {
 				r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
@@ -287,6 +288,10 @@ func (r *autoRedirect) effectiveResetMark() uint32 {
 		return r.tunOptions.AutoRedirectResetMark
 	}
 	return DefaultAutoRedirectResetMark
+}
+
+func (r *autoRedirect) effectiveMarkMask() uint32 {
+	return r.tunOptions.AutoRedirectInputMark | r.effectiveOutputMark() | r.effectiveResetMark()
 }
 
 func (r *autoRedirect) effectiveNFQueue() uint16 {

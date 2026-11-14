@@ -674,11 +674,13 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	priority6 := priority
 
 	if t.options.AutoRedirectMarkMode {
+		markMask := int(t.options.AutoRedirectInputMark | t.options.AutoRedirectOutputMark | t.options.AutoRedirectResetMark)
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
 			it.Mark = t.options.AutoRedirectOutputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Goto = priority + 2
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
@@ -688,6 +690,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority
 			it.Mark = t.options.AutoRedirectInputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
@@ -703,6 +706,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority6
 			it.Mark = t.options.AutoRedirectOutputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Goto = priority6 + 2
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
@@ -712,6 +716,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority6
 			it.Mark = t.options.AutoRedirectInputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
@@ -729,6 +734,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
 			it.Mark = t.options.AutoRedirectOutputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Invert = true
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
@@ -739,6 +745,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = t.options.IPRoute2AutoRedirectFallbackRuleIndex
 			it.Mark = t.options.AutoRedirectOutputMark
 			it.MarkSet = true
+			it.Mask = markMask
 			it.Invert = true
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
