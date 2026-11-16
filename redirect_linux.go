@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"math"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -184,7 +185,7 @@ func (r *autoRedirect) Start() error {
 				InputMark:  r.tunOptions.AutoRedirectInputMark,
 				OutputMark: r.effectiveOutputMark(),
 				ResetMark:  r.effectiveResetMark(),
-				MarkMask:   r.effectiveMarkMask(),
+				MarkMask:   r.packetMarkMask,
 			}); err != nil {
 				r.logger.Warn("nfqueue not available, pre-match disabled (missing nfnetlink_queue and nft_queue kernel module?): ", err)
 			} else if err = runInNetworkNamespace(r.tunOptions.NetNs, handler.Start); err != nil {
@@ -320,6 +321,13 @@ func (r *autoRedirect) effectiveResetMark() uint32 {
 
 func (r *autoRedirect) effectiveMarkMask() uint32 {
 	return r.tunOptions.AutoRedirectInputMark | r.effectiveOutputMark() | r.effectiveResetMark()
+}
+
+func (r *autoRedirect) packetMarkMask(mark uint32) uint32 {
+	if mark == r.tunOptions.AutoRedirectInputMark || mark == r.effectiveResetMark() {
+		return math.MaxUint32
+	}
+	return r.effectiveMarkMask()
 }
 
 func (r *autoRedirect) effectiveNFQueue() uint16 {

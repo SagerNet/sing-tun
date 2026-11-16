@@ -26,7 +26,7 @@ type nfqueueHandler struct {
 	inputMark  uint32
 	outputMark uint32
 	resetMark  uint32
-	markMask   uint32
+	markMask   func(mark uint32) uint32
 	closed     atomic.Bool
 }
 
@@ -38,7 +38,7 @@ type nfqueueOptions struct {
 	InputMark  uint32
 	OutputMark uint32
 	ResetMark  uint32
-	MarkMask   uint32
+	MarkMask   func(mark uint32) uint32
 }
 
 func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
@@ -59,7 +59,7 @@ func newNFQueueHandler(options nfqueueOptions) (*nfqueueHandler, error) {
 func (h *nfqueueHandler) setVerdict(packetID uint32, packetMark uint32, verdict int, mark uint32) {
 	var err error
 	if mark != 0 {
-		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(packetMark&^h.markMask|mark))
+		err = h.nfq.SetVerdictWithOption(packetID, verdict, nfqueue.WithMark(packetMark&^h.markMask(mark)|mark))
 	} else {
 		err = h.nfq.SetVerdict(packetID, verdict)
 	}

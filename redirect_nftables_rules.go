@@ -1070,6 +1070,13 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			Kind: expr.VerdictReturn,
 		})
 	} else {
+		if r.tunOptions.AutoRedirectMarkMode {
+			exprs = slices.Concat(
+				exprs,
+				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkSet(true, r.tunOptions.AutoRedirectInputMark),
+			)
+		}
 		exprs = append(exprs,
 			&expr.Immediate{
 				Register: 1,

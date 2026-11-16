@@ -27,13 +27,17 @@ func nftablesMarkRegister(conntrack bool, store bool) expr.Any {
 }
 
 func (r *autoRedirect) nftablesMarkMatch(conntrack bool, op expr.CmpOp, mark uint32) []expr.Any {
+	markMask := r.effectiveMarkMask()
+	if !conntrack {
+		markMask = r.packetMarkMask(mark)
+	}
 	return []expr.Any{
 		nftablesMarkRegister(conntrack, false),
 		&expr.Bitwise{
 			SourceRegister: 1,
 			DestRegister:   1,
 			Len:            4,
-			Mask:           binaryutil.NativeEndian.PutUint32(r.effectiveMarkMask()),
+			Mask:           binaryutil.NativeEndian.PutUint32(markMask),
 			Xor:            make([]byte, 4),
 		},
 		&expr.Cmp{Op: op, Register: 1, Data: binaryutil.NativeEndian.PutUint32(mark)},
@@ -43,13 +47,17 @@ func (r *autoRedirect) nftablesMarkMatch(conntrack bool, op expr.CmpOp, mark uin
 // Loading the conntrack mark ends the rule for an untracked packet, while storing it alone is a
 // no-op there, so nothing that must still run for such packets may follow a conntrack update.
 func (r *autoRedirect) nftablesMarkSet(conntrack bool, mark uint32) []expr.Any {
+	markMask := r.effectiveMarkMask()
+	if !conntrack {
+		markMask = r.packetMarkMask(mark)
+	}
 	return []expr.Any{
 		nftablesMarkRegister(conntrack, false),
 		&expr.Bitwise{
 			SourceRegister: 1,
 			DestRegister:   1,
 			Len:            4,
-			Mask:           binaryutil.NativeEndian.PutUint32(^r.effectiveMarkMask()),
+			Mask:           binaryutil.NativeEndian.PutUint32(^markMask),
 			Xor:            binaryutil.NativeEndian.PutUint32(mark),
 		},
 		nftablesMarkRegister(conntrack, true),

@@ -691,7 +691,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority
 			it.Mark = t.options.AutoRedirectInputMark
 			it.MarkSet = true
-			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
@@ -717,7 +716,6 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority6
 			it.Mark = t.options.AutoRedirectInputMark
 			it.MarkSet = true
-			it.Mask = markMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)
