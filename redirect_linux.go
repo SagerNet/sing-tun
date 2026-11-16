@@ -485,6 +485,16 @@ func (r *autoRedirect) packetMarkMask(mark uint32) uint32 {
 	return r.effectiveMarkMask()
 }
 
+func (r *autoRedirect) tunFlowMark() uint32 {
+	options := r.tunOptions
+	for _, mark := range []uint32{r.effectiveMarkMask(), options.AutoRedirectResetMark} {
+		if mark != options.AutoRedirectInputMark && mark != options.AutoRedirectOutputMark && mark != options.AutoRedirectTProxyMark {
+			return mark
+		}
+	}
+	return options.AutoRedirectInputMark
+}
+
 func (r *autoRedirect) effectiveNFQueue() uint16 {
 	if r.tunOptions.AutoRedirectNFQueue != 0 {
 		return r.tunOptions.AutoRedirectNFQueue
