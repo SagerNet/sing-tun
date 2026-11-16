@@ -105,15 +105,16 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		}
 		*mark.field = value
 	}
+	err := r.initializeBackend()
+	if err != nil {
+		return nil, err
+	}
+	r.tunOptions.AutoRedirectInputMarkMask = r.packetMarkMask(r.tunOptions.AutoRedirectInputMark)
 	return r, nil
 }
 
 func (r *autoRedirect) Start() error {
-	err := r.initializeBackend()
-	if err != nil {
-		return err
-	}
-	err = r.startRedirectServer()
+	err := r.startRedirectServer()
 	if err != nil {
 		return err
 	}
@@ -349,7 +350,7 @@ func (r *autoRedirect) startNFQueue() error {
 		outputMark: r.tunOptions.AutoRedirectOutputMark,
 		resetMark:  r.tunOptions.AutoRedirectResetMark,
 		tproxyMark: tproxyMark,
-		markMask:   r.effectiveMarkMask(),
+		markMask:   r.packetMarkMask,
 		// A queue verdict leaves the whole iptables mangle hook, while nftables base chains
 		// continue on NF_ACCEPT.
 		repeatOnAccept: !r.useNFTables,
@@ -481,6 +482,13 @@ const (
 
 func (r *autoRedirect) effectiveMarkMask() uint32 {
 	return r.tunOptions.AutoRedirectInputMark | r.tunOptions.AutoRedirectOutputMark | r.tunOptions.AutoRedirectResetMark | r.tunOptions.AutoRedirectTProxyMark
+}
+
+func (r *autoRedirect) packetMarkMask(mark uint32) uint32 {
+	if r.useNFTables && (mark == r.tunOptions.AutoRedirectInputMark || mark == r.tunOptions.AutoRedirectResetMark) {
+		return math.MaxUint32
+	}
+	return r.effectiveMarkMask()
 }
 
 func (r *autoRedirect) effectiveNFQueue() uint16 {

@@ -752,6 +752,10 @@ func (t *NativeTun) rules() []*netlink.Rule {
 		resetMark := effectiveMark(t.options.AutoRedirectResetMark, DefaultAutoRedirectResetMark, DefaultAutoRedirectResetMarkAndroid)
 		tproxyMark := effectiveMark(t.options.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark, DefaultAutoRedirectTProxyMarkAndroid)
 		markMask := int(inputMark | outputMark | resetMark | tproxyMark)
+		inputMarkMask := markMask
+		if t.options.AutoRedirectInputMarkMask != 0 {
+			inputMarkMask = int(t.options.AutoRedirectInputMarkMask)
+		}
 		if p4 {
 			it = netlink.NewRule()
 			it.Priority = priority
@@ -767,6 +771,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority
 			it.Mark = inputMark
 			it.MarkSet = true
+			it.Mask = inputMarkMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET
 			rules = append(rules, it)
@@ -792,6 +797,7 @@ func (t *NativeTun) rules() []*netlink.Rule {
 			it.Priority = priority6
 			it.Mark = inputMark
 			it.MarkSet = true
+			it.Mask = inputMarkMask
 			it.Table = t.options.IPRoute2TableIndex
 			it.Family = unix.AF_INET6
 			rules = append(rules, it)

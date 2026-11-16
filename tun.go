@@ -86,6 +86,7 @@ type Options struct {
 	IPRoute2AutoRedirectFallbackRuleIndex int
 	AutoRedirectMarkMode                  bool
 	AutoRedirectInputMark                 uint32
+	AutoRedirectInputMarkMask             uint32
 	AutoRedirectOutputMark                uint32
 	AutoRedirectResetMark                 uint32
 	AutoRedirectTProxyMark                uint32
