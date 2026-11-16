@@ -199,7 +199,7 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 						&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
 						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
 					},
-					r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunOptions.AutoRedirectInputMark),
+					r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunFlowMark()),
 					[]expr.Any{&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}},
 				),
 			})
@@ -802,6 +802,7 @@ func (r *autoRedirect) nftablesCreateMark(nft *nftables.Conn, table *nftables.Ta
 		Exprs: slices.Concat(
 			r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
 			[]expr.Any{&expr.Counter{}},
+			r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunFlowMark()),
 			r.nftablesMarkSet(true, r.tunOptions.AutoRedirectInputMark),
 		),
 	})
