@@ -106,7 +106,7 @@ func (d *Destination) loopRead() {
 			return
 		}
 		err := d.conn.SetReadDeadline(deadline)
-		if err != nil {
+		if err != nil && !E.IsClosed(err) {
 			d.logger.ErrorContext(d.ctx, E.Cause(err, "set read deadline for ICMP conn"))
 		}
 		buffer := buf.NewSize(maxICMPPacketSize)

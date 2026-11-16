@@ -15,13 +15,14 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-const defaultFlowTimeout = time.Minute
+const flowEvictionSample = 16
 
 type Port struct {
 	ctx         context.Context
 	logger      logger.ContextLogger
 	controlFunc func(destination netip.Addr) control.Func
 	timeout     time.Duration
+	maxSize     int
 
 	returnAccess sync.Mutex
 	returnPaths  []tun.Return
@@ -37,15 +38,19 @@ type flowKey struct {
 	identifier  uint16
 }
 
-func NewPort(ctx context.Context, logger logger.ContextLogger, controlFunc func(destination netip.Addr) control.Func, timeout time.Duration) *Port {
+func NewPort(ctx context.Context, logger logger.ContextLogger, controlFunc func(destination netip.Addr) control.Func, timeout time.Duration, maxSize int) *Port {
 	if timeout <= 0 {
-		timeout = defaultFlowTimeout
+		panic("invalid timeout")
+	}
+	if maxSize <= 0 {
+		panic("invalid max size")
 	}
 	return &Port{
 		ctx:         ctx,
 		logger:      logger,
 		controlFunc: controlFunc,
 		timeout:     timeout,
+		maxSize:     maxSize,
 		flows:       make(map[flowKey]*Destination),
 	}
 }
@@ -155,6 +160,9 @@ func (p *Port) flowFor(source netip.Addr, destination netip.Addr, identifier uin
 	if loaded && !flow.IsClosed() {
 		return flow, nil
 	}
+	if !loaded && len(p.flows) >= p.maxSize {
+		p.evictFlowLocked()
+	}
 	var controlFunc control.Func
 	if p.controlFunc != nil {
 		controlFunc = p.controlFunc(destination)
@@ -165,6 +173,32 @@ func (p *Port) flowFor(source netip.Addr, destination netip.Addr, identifier uin
 	}
 	p.flows[key] = flow
 	return flow, nil
+}
+
+func (p *Port) evictFlowLocked() {
+	var (
+		visited      int
+		oldestKey    flowKey
+		oldestFlow   *Destination
+		oldestActive time.Time
+	)
+	for key, flow := range p.flows {
+		if flow.IsClosed() {
+			delete(p.flows, key)
+		} else if lastActive := flow.lastActive.Load(); oldestFlow == nil || lastActive.Before(oldestActive) {
+			oldestKey = key
+			oldestFlow = flow
+			oldestActive = lastActive
+		}
+		visited++
+		if visited >= flowEvictionSample {
+			break
+		}
+	}
+	if len(p.flows) >= p.maxSize {
+		oldestFlow.Close()
+		delete(p.flows, oldestKey)
+	}
 }
 
 type portWriter struct {
