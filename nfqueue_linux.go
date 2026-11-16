@@ -28,7 +28,7 @@ type nfqueueHandler struct {
 	outputMark     uint32
 	resetMark      uint32
 	tproxyMark     uint32
-	markMask       uint32
+	markMask       func(mark uint32) uint32
 	repeatOnAccept bool
 	closed         atomic.Bool
 	judgingAccess  sync.Mutex
@@ -64,7 +64,7 @@ func (h *nfqueueHandler) acceptVerdict(packet preMatchPacket) (verdict int, mark
 func (h *nfqueueHandler) setVerdict(queued queuedPacket, verdict int, mark uint32) {
 	var err error
 	if mark != 0 {
-		err = h.nfq.SetVerdictWithOption(queued.id, verdict, nfqueue.WithMark(queued.mark&^h.markMask|mark))
+		err = h.nfq.SetVerdictWithOption(queued.id, verdict, nfqueue.WithMark(queued.mark&^h.markMask(mark)|mark))
 	} else {
 		err = h.nfq.SetVerdict(queued.id, verdict)
 	}
