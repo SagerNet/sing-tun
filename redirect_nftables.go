@@ -264,7 +264,21 @@ func (r *autoRedirect) setupNFTables() error {
 			Table: table,
 			Chain: chainPreRoutingUDP,
 			Exprs: slices.Concat(
+				[]expr.Any{
+					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+				},
+				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunFlowMark()),
+				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
+				[]expr.Any{&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}},
+			),
+		})
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chainPreRoutingUDP,
+			Exprs: slices.Concat(
 				r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkMatch(true, expr.CmpOpNeq, r.tunFlowMark()),
 				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectOutputMark),
 				[]expr.Any{&expr.Counter{}},
 				r.nftablesMarkSet(true, r.tunOptions.AutoRedirectOutputMark),
@@ -416,7 +430,7 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0}},
 						&expr.Counter{},
 					},
-					r.nftablesMarkSet(true, r.tunOptions.AutoRedirectInputMark),
+					r.nftablesMarkSet(true, r.tunFlowMark()),
 				),
 			})
 		}
@@ -442,7 +456,7 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 					&expr.Ct{Key: expr.CtKeyDIRECTION, Register: 1},
 					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
 				},
-				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunOptions.AutoRedirectInputMark),
+				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunFlowMark()),
 				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
 				[]expr.Any{&expr.Counter{}},
 			),
