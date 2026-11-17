@@ -233,7 +233,11 @@ func (r *autoRedirect) iptablesFillLocalChain(chain iptablesLocalChain, addresse
 			return []string{"-g", chain.next}
 		}
 		if chain.hook == iptablesHookPrerouting {
-			for _, prefix := range prefixes {
+			sources := prefixes
+			if !chain.family.isIPv6 {
+				sources = append([]netip.Prefix{netip.PrefixFrom(netip.AddrFrom4([4]byte{169, 254, 0, 0}), 16)}, prefixes...)
+			}
+			for _, prefix := range sources {
 				for _, protocol := range []string{"udp", "tcp"} {
 					err := iptablesRun(chain.family.path, slices.Concat([]string{
 						"-t", chain.table, "-A", chain.name,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -31,6 +32,7 @@ type AutoRedirect interface {
 
 type AutoRedirectHandler interface {
 	JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort, firstPacket []byte) FlowVerdict
+	NewDNSPacket(payload []byte, source M.Socksaddr, destination M.Socksaddr, writer N.PacketWriter)
 	N.TCPConnectionHandlerEx
 }
 

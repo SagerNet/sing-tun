@@ -18,21 +18,21 @@ import (
 
 type redirectDNSServer struct {
 	ctx         context.Context
-	handler     Handler
+	handler     AutoRedirectHandler
 	logger      logger.Logger
 	destination M.Socksaddr
-	server      *redirectServer
+	server      *RedirectServer
 	packetConn  *ipv6.PacketConn
 }
 
-func newRedirectDNSServer(ctx context.Context, handler Handler, logger logger.Logger, address netip.Addr) *redirectDNSServer {
+func newRedirectDNSServer(ctx context.Context, handler AutoRedirectHandler, logger logger.Logger, address netip.Addr) *redirectDNSServer {
 	s := &redirectDNSServer{
 		ctx:         ctx,
 		handler:     handler,
 		logger:      logger,
 		destination: M.SocksaddrFrom(address, 53),
 	}
-	s.server = newRedirectServer(ctx, s, logger, netip.IPv6Unspecified())
+	s.server = NewRedirectServer(ctx, s, logger, netip.IPv6Unspecified())
 	return s
 }
 
@@ -64,7 +64,7 @@ func (s *redirectDNSServer) Close() error {
 }
 
 func (s *redirectDNSServer) tcpPort() uint16 {
-	return M.AddrPortFromNet(s.server.listener.Addr()).Port()
+	return s.server.Port()
 }
 
 func (s *redirectDNSServer) udpPort() uint16 {
