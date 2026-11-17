@@ -745,7 +745,16 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 // IPS_DST_NAT in linux/netfilter/nf_conntrack_common.h, not exported by golang.org/x/sys
 const conntrackStatusDstNAT = 1 << 5
 
-func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain) {
+func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain, protocol uint8, port uint16) {
+	reject := &expr.Reject{
+		Type: unix.NFT_REJECT_TCP_RST,
+	}
+	if protocol != unix.IPPROTO_TCP {
+		reject = &expr.Reject{
+			Type: unix.NFT_REJECT_ICMPX_UNREACH,
+			Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH,
+		}
+	}
 	nft.AddRule(&nftables.Rule{
 		Table: table,
 		Chain: chain,
@@ -757,7 +766,7 @@ func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, tabl
 			&expr.Cmp{
 				Op:       expr.CmpOpEq,
 				Register: 1,
-				Data:     []byte{unix.IPPROTO_TCP},
+				Data:     []byte{protocol},
 			},
 			&expr.Payload{
 				OperationType: expr.PayloadLoad,
@@ -769,7 +778,7 @@ func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, tabl
 			&expr.Cmp{
 				Op:       expr.CmpOpEq,
 				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(r.redirectPort()),
+				Data:     binaryutil.BigEndian.PutUint16(port),
 			},
 			&expr.Ct{
 				Key:      expr.CtKeySTATUS,
@@ -788,9 +797,7 @@ func (r *autoRedirect) nftablesCreateRedirectPortReject(nft *nftables.Conn, tabl
 				Data:     make([]byte, 4),
 			},
 			&expr.Counter{},
-			&expr.Reject{
-				Type: unix.NFT_REJECT_TCP_RST,
-			},
+			reject,
 		},
 	})
 }
@@ -962,20 +969,10 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	nft *nftables.Conn, table *nftables.Table, chain *nftables.Chain,
 	family nftables.TableFamily, setID uint32, setName string,
 ) error {
-	ipProto := &nftables.Set{
-		Table:     table,
-		Anonymous: true,
-		Constant:  true,
-		KeyType:   nftables.TypeInetProto,
-	}
-	err := nft.AddSet(ipProto, []nftables.SetElement{
-		{Key: []byte{unix.IPPROTO_TCP}},
-		{Key: []byte{unix.IPPROTO_UDP}},
-	})
-	if err != nil {
-		return E.Cause(err, "add dns protocol set")
-	}
-	var dnsServers []netip.Addr
+	var (
+		dnsServers []netip.Addr
+		err        error
+	)
 	if family == nftables.TableFamilyIPv4 {
 		dnsServers, err = r.tunOptions.Inet4DNSAddress()
 	} else {
@@ -987,8 +984,7 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 	if len(dnsServers) == 0 {
 		return nil
 	}
-	dnsServer := dnsServers[0]
-	exprs := []expr.Any{
+	matchFamily := []expr.Any{
 		&expr.Meta{
 			Key:      expr.MetaKeyNFPROTO,
 			Register: 1,
@@ -999,59 +995,7 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			Data:     []byte{uint8(family)},
 		},
 	}
-	if chain.Hooknum == nftables.ChainHookOutput {
-		// It looks like we can't hijack DNS requests sent to loopback.
-		// https://serverfault.com/questions/363899/iptables-dnat-from-loopback
-		// and tproxy is not available in output
-		exprs = append(exprs,
-			&expr.Meta{
-				Key:      expr.MetaKeyOIFNAME,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpNeq,
-				Register: 1,
-				Data:     nftablesIfname("lo"),
-			},
-		)
-	} else {
-		if family == nftables.TableFamilyIPv4 {
-			exprs = append(exprs,
-				&expr.Payload{
-					OperationType: expr.PayloadLoad,
-					DestRegister:  1,
-					Base:          expr.PayloadBaseNetworkHeader,
-					Offset:        12,
-					Len:           4,
-				},
-			)
-		} else {
-			exprs = append(exprs,
-				&expr.Payload{
-					OperationType: expr.PayloadLoad,
-					DestRegister:  1,
-					Base:          expr.PayloadBaseNetworkHeader,
-					Offset:        8,
-					Len:           16,
-				},
-			)
-		}
-		exprs = append(exprs, &expr.Lookup{
-			SourceRegister: 1,
-			SetID:          setID,
-			SetName:        setName,
-		})
-	}
-	exprs = append(exprs,
-		&expr.Meta{
-			Key:      expr.MetaKeyL4PROTO,
-			Register: 1,
-		},
-		&expr.Lookup{
-			SourceRegister: 1,
-			SetID:          ipProto.ID,
-			SetName:        ipProto.Name,
-		},
+	matchPort := []expr.Any{
 		&expr.Payload{
 			OperationType: expr.PayloadLoad,
 			DestRegister:  1,
@@ -1065,23 +1009,25 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			Data:     binaryutil.BigEndian.PutUint16(53),
 		},
 		&expr.Counter{},
-	)
-	if chain.Type != nftables.ChainTypeNAT {
-		exprs = append(exprs, &expr.Verdict{
+	}
+	bypass := []expr.Any{
+		&expr.Verdict{
 			Kind: expr.VerdictReturn,
-		})
-	} else {
+		},
+	}
+	hijack := bypass
+	if chain.Type == nftables.ChainTypeNAT {
+		hijack = nil
 		if r.tunOptions.AutoRedirectMarkMode {
-			exprs = slices.Concat(
-				exprs,
+			hijack = slices.Concat(
 				r.nftablesMarkSet(false, r.tunOptions.AutoRedirectInputMark),
 				r.nftablesMarkSet(true, r.tunOptions.AutoRedirectInputMark),
 			)
 		}
-		exprs = append(exprs,
+		hijack = append(hijack,
 			&expr.Immediate{
 				Register: 1,
-				Data:     dnsServer.AsSlice(),
+				Data:     dnsServers[0].AsSlice(),
 			},
 			&expr.NAT{
 				Type:       expr.NATTypeDestNAT,
@@ -1090,11 +1036,149 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 			},
 		)
 	}
-	nft.AddRule(&nftables.Rule{
-		Table: table,
-		Chain: chain,
-		Exprs: exprs,
-	})
+	var matches, verdicts [][]expr.Any
+	if chain.Hooknum == nftables.ChainHookOutput {
+		// It looks like we can't hijack DNS requests sent to loopback.
+		// https://serverfault.com/questions/363899/iptables-dnat-from-loopback
+		// and tproxy is not available in output
+		matches = [][]expr.Any{{
+			&expr.Meta{
+				Key:      expr.MetaKeyOIFNAME,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpNeq,
+				Register: 1,
+				Data:     nftablesIfname("lo"),
+			},
+		}}
+		verdicts = [][]expr.Any{hijack}
+	} else if family == nftables.TableFamilyIPv4 {
+		matches = [][]expr.Any{{
+			&expr.Payload{
+				OperationType: expr.PayloadLoad,
+				DestRegister:  1,
+				Base:          expr.PayloadBaseNetworkHeader,
+				Offset:        12,
+				Len:           2,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{169, 254},
+			},
+		}, {
+			&expr.Payload{
+				OperationType: expr.PayloadLoad,
+				DestRegister:  1,
+				Base:          expr.PayloadBaseNetworkHeader,
+				Offset:        12,
+				Len:           4,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				SetID:          setID,
+				SetName:        setName,
+			},
+		}}
+		verdicts = [][]expr.Any{hijack, hijack}
+	} else {
+		matchLinkLocal := []expr.Any{
+			&expr.Payload{
+				OperationType: expr.PayloadLoad,
+				DestRegister:  1,
+				Base:          expr.PayloadBaseNetworkHeader,
+				Offset:        8,
+				Len:           2,
+			},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            2,
+				Mask:           []byte{0xff, 0xc0},
+				Xor:            []byte{0x00, 0x00},
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte{0xfe, 0x80},
+			},
+		}
+		if chain.Type == nftables.ChainTypeNAT && r.redirectDNSServer != nil {
+			redirectPorts := []uint16{r.redirectDNSServer.tcpPort(), r.redirectDNSServer.udpPort()}
+			for i, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+				nft.AddRule(&nftables.Rule{
+					Table: table,
+					Chain: chain,
+					Exprs: slices.Concat(matchFamily, matchLinkLocal, []expr.Any{
+						&expr.Meta{
+							Key:      expr.MetaKeyL4PROTO,
+							Register: 1,
+						},
+						&expr.Cmp{
+							Op:       expr.CmpOpEq,
+							Register: 1,
+							Data:     []byte{protocol},
+						},
+					}, matchPort, []expr.Any{
+						&expr.Immediate{
+							Register: 1,
+							Data:     binaryutil.BigEndian.PutUint16(redirectPorts[i]),
+						},
+						&expr.Redir{
+							RegisterProtoMin: 1,
+							Flags:            unix.NF_NAT_RANGE_PROTO_SPECIFIED,
+						},
+					}),
+				})
+			}
+		}
+		matches = [][]expr.Any{matchLinkLocal, {
+			&expr.Payload{
+				OperationType: expr.PayloadLoad,
+				DestRegister:  1,
+				Base:          expr.PayloadBaseNetworkHeader,
+				Offset:        8,
+				Len:           16,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				SetID:          setID,
+				SetName:        setName,
+			},
+		}}
+		verdicts = [][]expr.Any{bypass, hijack}
+	}
+	for i, match := range matches {
+		ipProto := &nftables.Set{
+			Table:     table,
+			Anonymous: true,
+			Constant:  true,
+			KeyType:   nftables.TypeInetProto,
+		}
+		err = nft.AddSet(ipProto, []nftables.SetElement{
+			{Key: []byte{unix.IPPROTO_TCP}},
+			{Key: []byte{unix.IPPROTO_UDP}},
+		})
+		if err != nil {
+			return E.Cause(err, "add dns protocol set")
+		}
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: slices.Concat(matchFamily, match, []expr.Any{
+				&expr.Meta{
+					Key:      expr.MetaKeyL4PROTO,
+					Register: 1,
+				},
+				&expr.Lookup{
+					SourceRegister: 1,
+					SetID:          ipProto.ID,
+					SetName:        ipProto.Name,
+				},
+			}, matchPort, verdicts[i]),
+		})
+	}
 	return nil
 }
 

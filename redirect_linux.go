@@ -39,6 +39,7 @@ type autoRedirect struct {
 	customRedirectPortFunc  func() int
 	customRedirectPort      int
 	redirectServer          *redirectServer
+	redirectDNSServer       *redirectDNSServer
 	enableIPv4              bool
 	enableIPv6              bool
 	iptablesPath            string
@@ -169,6 +170,21 @@ func (r *autoRedirect) Start() error {
 		}
 		r.redirectServer = server
 	}
+	if r.handler != nil && r.enableIPv6 && r.tunOptions.DNSModeOrDefault() == DNSModeHijack {
+		var dnsServers []netip.Addr
+		dnsServers, err = r.tunOptions.Inet6DNSAddress()
+		if err != nil {
+			return err
+		}
+		if len(dnsServers) > 0 {
+			server := newRedirectDNSServer(r.ctx, r.handler, r.logger, dnsServers[0])
+			err = runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
+			if err != nil {
+				return E.Cause(err, "start redirect DNS server")
+			}
+			r.redirectDNSServer = server
+		}
+	}
 	if r.useNFTables {
 		if r.handler != nil {
 			var handler *nfqueueHandler
@@ -237,7 +253,7 @@ func (r *autoRedirect) Start() error {
 }
 
 func (r *autoRedirect) Close() error {
-	err := common.Close(common.PtrOrNil(r.redirectServer))
+	err := common.Close(common.PtrOrNil(r.redirectServer), common.PtrOrNil(r.redirectDNSServer))
 	if r.nfqueueHandler != nil {
 		r.nfqueueHandler.Close()
 	}
