@@ -113,7 +113,7 @@ func (r *autoRedirect) setupNFTables() error {
 		}
 	}
 
-	if r.redirectServer != nil || !r.preroutingReject {
+	if r.redirectServer != nil || r.redirectDNSServer != nil || !r.preroutingReject {
 		inputPriority := nftables.ChainPriorityFilter
 		if !r.preroutingReject {
 			inputPriority = nftables.ChainPriorityMangle
@@ -126,7 +126,11 @@ func (r *autoRedirect) setupNFTables() error {
 			Type:     nftables.ChainTypeFilter,
 		})
 		if r.redirectServer != nil {
-			r.nftablesCreateRedirectPortReject(nft, table, chainInput)
+			r.nftablesCreateRedirectPortReject(nft, table, chainInput, unix.IPPROTO_TCP, r.redirectPort())
+		}
+		if r.redirectDNSServer != nil {
+			r.nftablesCreateRedirectPortReject(nft, table, chainInput, unix.IPPROTO_TCP, r.redirectDNSServer.tcpPort())
+			r.nftablesCreateRedirectPortReject(nft, table, chainInput, unix.IPPROTO_UDP, r.redirectDNSServer.udpPort())
 		}
 		if !r.preroutingReject {
 			r.nftablesCreateResetReject(nft, table, chainInput)
