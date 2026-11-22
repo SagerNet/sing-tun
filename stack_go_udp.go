@@ -2,6 +2,7 @@ package tun
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"net/netip"
 	"os"
@@ -31,6 +32,63 @@ type goUDPFrame struct {
 	length  int
 	payload []byte
 	meta    ForwardFrameMeta
+}
+
+func goUDPSegmentRun(frames []goUDPFrame, index int) (int, int) {
+	frame := &frames[index]
+	end := index + 1
+	payloadLength := len(frame.payload)
+	if payloadLength == 0 {
+		return end, payloadLength
+	}
+	for end < len(frames) {
+		next := &frames[end]
+		if next.length != frame.length || len(next.payload) == 0 || len(next.payload) > len(frame.payload) || frame.length+payloadLength+len(next.payload) > 65535 {
+			break
+		}
+		udpOffset := frame.length - header.UDPMinimumSize
+		if binary.BigEndian.Uint32(next.header[udpOffset:]) != binary.BigEndian.Uint32(frame.header[udpOffset:]) {
+			break
+		}
+		if frame.length == header.IPv4MinimumSize+header.UDPMinimumSize {
+			if [8]byte(next.header[12:20]) != [8]byte(frame.header[12:20]) {
+				break
+			}
+		} else if [32]byte(next.header[8:40]) != [32]byte(frame.header[8:40]) {
+			break
+		}
+		payloadLength += len(next.payload)
+		end++
+		if len(next.payload) < len(frame.payload) {
+			break
+		}
+	}
+	return end, payloadLength
+}
+
+func (f *goUDPFrame) coalesce(payloadLength int) ForwardFrameMeta {
+	udpLength := uint16(header.UDPMinimumSize + payloadLength)
+	var sourceAddress, destinationAddress []byte
+	if f.length == header.IPv4MinimumSize+header.UDPMinimumSize {
+		ipHeader := header.IPv4(f.header[:header.IPv4MinimumSize])
+		ipHeader.SetTotalLength(uint16(f.length + payloadLength))
+		ipHeader.SetChecksum(0)
+		ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
+		sourceAddress = ipHeader.SourceAddressSlice()
+		destinationAddress = ipHeader.DestinationAddressSlice()
+	} else {
+		ipHeader := header.IPv6(f.header[:header.IPv6MinimumSize])
+		ipHeader.SetPayloadLength(udpLength)
+		sourceAddress = ipHeader.SourceAddressSlice()
+		destinationAddress = ipHeader.DestinationAddressSlice()
+	}
+	udpHeader := header.UDP(f.header[f.length-header.UDPMinimumSize : f.length])
+	udpHeader.SetLength(udpLength)
+	udpHeader.SetChecksum(header.PseudoHeaderChecksum(header.UDPProtocolNumber, sourceAddress, destinationAddress, udpLength))
+	meta := f.meta
+	meta.gsoType = goUDPGSOType
+	meta.gsoSize = uint16(len(f.payload))
+	return meta
 }
 
 var goUDPFramePool = sync.Pool{
@@ -84,7 +142,7 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		buffer := e.gsoSlots.slot(index)
 		buffer.Truncate(e.gsoSizes[index])
 		options.PostReturn(buffer)
-		e.gsoFrame = goFrame{buffer: buffer}
+		e.gsoFrame = goFrame{buffer: buffer, meta: ForwardFrameMeta{dataValid: meta.needsChecksum || meta.dataValid}}
 		e.processFrame(&e.gsoFrame)
 	}
 	e.flushPacketUploads()
@@ -214,12 +272,11 @@ func (s *Go) prepareUDPConnection(source M.Socksaddr, destination M.Socksaddr, u
 		}
 	}
 	writer := &GoPacketConn{
-		engine:          data.engine,
-		key:             data.key,
-		platformIO:      data.engine.platformIO,
-		checksumOffload: data.engine.platformIO.transmitChecksumOffload(),
-		snapshot:        slices.Clone(data.packet),
-		snapshotMeta:    data.meta,
+		engine:       data.engine,
+		key:          data.key,
+		platformIO:   data.engine.platformIO,
+		snapshot:     slices.Clone(data.packet),
+		snapshotMeta: data.meta,
 	}
 	writer.spliceMessage = goMessage{kind: goMessagePacketSplice, packet: writer}
 	writer.closeMessage = goMessage{kind: goMessagePacketClose, packet: writer}
@@ -247,7 +304,6 @@ type GoPacketConn struct {
 	closeMessage     goMessage
 	ipVersion        uint8
 	templateLength   int
-	checksumOffload  bool
 	template         [header.IPv6MinimumSize + header.UDPMinimumSize]byte
 	conn             atomic.Pointer[UDPNatConn]
 	tracker          atomic.Pointer[FlowTracker]
@@ -390,7 +446,7 @@ func (w *GoPacketConn) WritePacketBatch(buffers []*buf.Buffer, destinations []M.
 			continue
 		}
 		frame := &frames[count]
-		meta, err := w.preparePacketHeader(frame.header[:], buffer.Bytes(), destinations[index], w.checksumOffload)
+		meta, err := w.preparePacketHeader(frame.header[:], buffer.Bytes(), destinations[index], w.platformIO.transmitChecksumOffload())
 		if err == errGoFrameDropped {
 			continue
 		} else if err != nil {
@@ -419,7 +475,7 @@ func (w *GoPacketConn) transmit(buffer *buf.Buffer, destination M.Socksaddr) err
 	payload := buffer.Bytes()
 	mtu := w.platformIO.mtu()
 	fragmented := w.templateLength+len(payload) > mtu
-	meta, err := w.preparePacketHeader(buffer.ExtendHeader(w.templateLength), payload, destination, w.checksumOffload && !fragmented)
+	meta, err := w.preparePacketHeader(buffer.ExtendHeader(w.templateLength), payload, destination, !fragmented && w.platformIO.transmitChecksumOffload())
 	if err != nil {
 		if w.ipVersion == 4 && destination.IsIPv6() {
 			return E.New("send IPv6 packet to IPv4 connection")

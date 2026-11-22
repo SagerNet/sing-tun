@@ -46,10 +46,24 @@ func (q *OutboundQueue) WriteBuffers(buffers []*buf.Buffer) {
 		return
 	}
 	wasEmpty := q.emptyLocked()
+	var unresolved *buf.Buffer
 	for _, buffer := range buffers {
-		if buffer.IsEmpty() || q.datagram.full() {
+		if buffer.IsEmpty() || q.datagram.full() || q.tun.ethernet && !goIPHeaderComplete(buffer.Bytes()) {
 			buffer.Release()
 			continue
+		}
+		if q.tun.ethernet {
+			_, resolved := q.tun.linkDestination(buffer.Bytes())
+			if !resolved {
+				if unresolved != nil {
+					unresolved.Release()
+				}
+				unresolved = buffer
+				continue
+			}
+		}
+		if q.tun.linkHeaderLength > 0 {
+			buffer = q.tun.prependLinkHeader(buffer)
 		}
 		q.pushLocked(&q.datagram, buffer, nil, 0)
 	}
@@ -57,6 +71,13 @@ func (q *OutboundQueue) WriteBuffers(buffers []*buf.Buffer) {
 	q.access.Unlock()
 	if notify {
 		q.readerWake.notify()
+	}
+	if unresolved != nil {
+		platformIO := q.tun.platformIO.Load()
+		if platformIO != nil {
+			platformIO.solicitPeer(unresolved.Bytes())
+		}
+		unresolved.Release()
 	}
 }
 
@@ -154,7 +175,7 @@ func (q *OutboundQueue) enqueue(packet *buf.Buffer, fragments [][]byte, class go
 		err = errGoFrameDropped
 	case ring.full() && class == goOutboundData:
 		err = errGoTransmitBlocked
-	case ring.capacity-ring.count < max(len(fragments), 1):
+	case ring.full():
 		err = errGoFrameDropped
 	}
 	if err != nil {
@@ -166,10 +187,15 @@ func (q *OutboundQueue) enqueue(packet *buf.Buffer, fragments [][]byte, class go
 	if fragments == nil {
 		q.pushLocked(ring, packet, owner, segmentEnd)
 	} else {
-		for _, fragment := range fragments {
-			fragmentPacket := q.tun.newOutboundPacket(len(fragment))
-			common.Must1(fragmentPacket.Write(fragment))
-			q.pushLocked(ring, fragmentPacket, owner, segmentEnd)
+		for index, fragment := range fragments {
+			fragmentFrame := q.tun.newOutboundFrame(len(fragment))
+			common.Must1(fragmentFrame.Write(fragment))
+			q.tun.encodeLinkHeader(fragmentFrame.Bytes(), ForwardFrameMeta{})
+			end := uint64(0)
+			if index == len(fragments)-1 {
+				end = segmentEnd
+			}
+			q.pushLocked(ring, fragmentFrame, owner, end)
 		}
 		packet.Release()
 	}
@@ -214,12 +240,16 @@ func (r *goPacketRing) empty() bool {
 }
 
 func (r *goPacketRing) full() bool {
-	return r.count == r.capacity
+	return r.count >= r.capacity
 }
 
 func (r *goPacketRing) push(packet *buf.Buffer, owner *GoConn, segmentEnd uint64) {
 	if r.count == len(r.entries) {
-		entries := make([]goPacketEntry, min(max(2*len(r.entries), goPacketRingInitialSize), r.capacity))
+		size := max(2*len(r.entries), goPacketRingInitialSize)
+		if r.count < r.capacity {
+			size = min(size, r.capacity)
+		}
+		entries := make([]goPacketEntry, size)
 		copied := copy(entries, r.entries[r.head:])
 		copy(entries[copied:], r.entries[:r.head])
 		r.entries = entries

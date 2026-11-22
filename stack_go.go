@@ -39,6 +39,7 @@ type Go struct {
 	engines                []*goEngine
 	closed                 atomic.Bool
 	validateChecksum       bool
+	buffers                goBufferCapacity
 }
 
 func NewGo(options StackOptions) (*Go, error) {
@@ -73,6 +74,15 @@ func NewGo(options StackOptions) (*Go, error) {
 			tcpLocals:  make(map[netip.AddrPort]uint32),
 			reserved:   make(map[goPortKey]struct{}),
 		},
+	}
+	bufferProfile := options.BufferProfile
+	if bufferProfile == BufferProfileDefault {
+		bufferProfile = goDefaultBufferProfile
+	}
+	if bufferProfile == BufferProfileCompact {
+		stack.buffers = goCompactBuffers
+	} else {
+		stack.buffers = goFullBuffers
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
 		stack.inet4Address = options.TunOptions.Inet4Address[0].Addr()

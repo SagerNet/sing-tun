@@ -88,7 +88,7 @@ func (s *Go) openUDP(local netip.AddrPort, destination netip.AddrPort) (*GoUDPCo
 		remote:          destination,
 		ipVersion:       goIPVersion(local.Addr()),
 		connected:       destination.IsValid(),
-		receiveCapacity: min(goUDPReceiveCapacity, goReceiveCapacityMax),
+		receiveCapacity: min(goUDPReceiveCapacity, int(s.buffers.receiveMax)),
 		openSignal:      make(chan struct{}),
 		closeSignal:     make(chan struct{}),
 		closeDone:       make(chan struct{}),
@@ -445,7 +445,7 @@ func (c *GoUDPConn) SetReadDeadline(t time.Time) error {
 
 func (c *GoUDPConn) SetReadBuffer(size int) error {
 	c.access.Lock()
-	c.receiveCapacity = min(max(size, goUDPReceiveMinimum), goReceiveCapacityMax)
+	c.receiveCapacity = min(max(size, goUDPReceiveMinimum), int(c.engine.stack.buffers.receiveMax))
 	c.access.Unlock()
 	return nil
 }

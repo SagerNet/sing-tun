@@ -172,7 +172,7 @@ func (e *goEngine) handleTCPSyn(parsed *forwardPacket) {
 }
 
 func (e *goEngine) initializeSession(conn *GoConn, now int64, peerWindow uint16) {
-	conn.receiveCapacity = min(goReceiveCapacityBase, conn.receiveWindowBound())
+	conn.receiveCapacity = min(e.stack.buffers.receiveBase, conn.receiveWindowBound())
 	conn.receiveNext = 1
 	conn.lastAckSent = 1
 	conn.lastActivity = now
@@ -859,9 +859,9 @@ func (e *goEngine) receiveCapacityLimit(conn *GoConn) uint64 {
 	}
 	transmitHeld := conn.transmitStore.chain.heldBytes()
 	if share <= transmitHeld {
-		return min(goReceiveCapacityBase, bound)
+		return min(e.stack.buffers.receiveBase, bound)
 	}
-	return min(max(share-transmitHeld, goReceiveCapacityBase), bound)
+	return min(max(share-transmitHeld, e.stack.buffers.receiveBase), bound)
 }
 
 func (e *goEngine) markAck(conn *GoConn, forced bool) {

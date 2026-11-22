@@ -26,6 +26,7 @@ const goTimestampOptionLength = 2 + header.TCPOptionTSLength
 
 // include/uapi/linux/virtio_net.h
 const (
+	goGSONone     uint8 = 0
 	goGSOTypeIPv4 uint8 = 1
 	goGSOTypeIPv6 uint8 = 4
 )
@@ -207,7 +208,7 @@ func (c *GoConn) FrontHeadroom() int {
 }
 
 func (c *GoConn) WriterMTU() int {
-	return int(c.gsoMaxSize(c.effectiveMSS.Load()))
+	return int(goGSOMaxSize(c.effectiveMSS.Load(), c.engine.platformIO.transmitSegmentOffload()))
 }
 
 func (c *GoConn) publishBuffered(tail uint64) {
@@ -418,7 +419,7 @@ func (c *GoConn) nextTransmitLength(mss uint32) int {
 	if allowance < 2*uint64(mss) && packets > 1 {
 		length = min(length, int((allowance+1)/2))
 	}
-	return c.frameLength(length, mss)
+	return length
 }
 
 func (c *GoConn) writeBudget(pending int, capacity uint64) int {
@@ -552,6 +553,7 @@ func (c *GoConn) transmitLoop(transmitter bool, budget int) (int, goTransmitResu
 			}
 			break
 		}
+		length = c.frameLength(length, mss, c.engine.platformIO.transmitSegmentOffload())
 		var now int64
 		if paced {
 			now = int64(time.Since(c.engine.epoch))
@@ -688,10 +690,10 @@ func (c *GoConn) pushDescriptors(offset uint64, length int, mss uint32, sentAt i
 	}
 }
 
-func (c *GoConn) frameLength(pending int, mss uint32) int {
+func (c *GoConn) frameLength(pending int, mss uint32, segmentOffload bool) int {
 	limit := int(mss)
-	if c.engine.platformIO.transmitSegmentOffload() {
-		limit = int(c.gsoMaxSize(mss))
+	if segmentOffload {
+		limit = int(goGSOMaxSize(mss, segmentOffload))
 		if frameLimit := int(c.frameLimit.Load()); frameLimit > 0 {
 			limit = min(limit, max(frameLimit, int(mss)))
 		}
@@ -766,7 +768,7 @@ func (c *GoConn) transmitFrame(segment *goSegment) error {
 	if c.blockedValid && c.blockedFrame != nil && segment.offset == c.blockedSegment.offset && segment.length == c.blockedSegment.length {
 		frame, meta = c.blockedFrame, c.blockedMeta
 	} else {
-		offload := c.engine.platformIO.transmitChecksumOffload()
+		offload := segment.gsoSize > 0 || c.engine.platformIO.transmitChecksumOffload()
 		buffer, payload, contiguous := c.transmitStore.leadingRun(segment.offset, segment.length)
 		if contiguous && buffer.Start() >= c.FrontHeadroom() {
 			var packet []byte

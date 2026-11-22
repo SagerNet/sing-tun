@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	goWakeIdent       = 0
 	goEngineTransmits = true
 
 	goDarwinTransmitBatch = 64
@@ -49,28 +48,21 @@ const (
 )
 
 type goDarwinIO struct {
-	stack                 *Go
-	tunFd                 int
-	kqueueFd              int
-	pollAccess            sync.RWMutex
-	transmitAccess        *sync.Mutex
-	receiveSlots          goReadSlots
-	receiveIovecs         []unix.Iovec
-	messageHeaders        []rawfile.MsgHdrX
-	events                [goSocketEventBatch + 3]unix.Kevent_t
-	changes               [2]unix.Kevent_t
-	wakeEvent             [1]unix.Kevent_t
-	transmitWritableEvent [1]unix.Kevent_t
-	transmitWritable      atomic.Bool
-	blocked               goBlockedWriters
-	receiveBatch          int
-	transmitIovecs        []unix.Iovec
-	socketTokens          []uint32
-	socketInterests       []uint8
-	droppedEngineFrames   goDropCounter
-	droppedBatchFrames    goDropCounter
-	leakedClusters        goDropCounter
-	closing               atomic.Bool
+	stack *Go
+	tunFd int
+	goPoller
+	transmitAccess      *sync.Mutex
+	receiveSlots        goReadSlots
+	receiveIovecs       []unix.Iovec
+	messageHeaders      []rawfile.MsgHdrX
+	transmitWritable    atomic.Bool
+	blocked             goBlockedWriters
+	receiveBatch        int
+	transmitIovecs      []unix.Iovec
+	droppedEngineFrames goDropCounter
+	droppedBatchFrames  goDropCounter
+	leakedClusters      goDropCounter
+	closing             atomic.Bool
 
 	batchHeaders   []byte
 	batchIovecs    []unix.Iovec
@@ -116,22 +108,6 @@ func (o *goDarwinIO) start() error {
 	if err != nil {
 		return E.Cause(err, "go: set UTUN_OPT_MAX_PENDING_PACKETS")
 	}
-	kqueueFd, err := unix.Kqueue()
-	if err != nil {
-		return E.Cause(err, "go: create kqueue")
-	}
-	registrations := []unix.Kevent_t{
-		{Ident: uint64(o.tunFd), Filter: unix.EVFILT_READ, Flags: unix.EV_ADD | unix.EV_ENABLE},
-		{Ident: goWakeIdent, Filter: unix.EVFILT_USER, Flags: unix.EV_ADD | unix.EV_ENABLE | unix.EV_CLEAR},
-	}
-	_, err = unix.Kevent(kqueueFd, registrations, nil, nil)
-	if err != nil {
-		unix.Close(kqueueFd)
-		return E.Cause(err, "go: register kqueue events")
-	}
-	o.kqueueFd = kqueueFd
-	o.wakeEvent[0] = unix.Kevent_t{Ident: goWakeIdent, Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
-	o.transmitWritableEvent[0] = unix.Kevent_t{Ident: uint64(o.tunFd), Filter: unix.EVFILT_WRITE, Flags: unix.EV_ADD | unix.EV_ENABLE | unix.EV_ONESHOT}
 	o.receiveIovecs = make([]unix.Iovec, goReadBatch)
 	o.messageHeaders = make([]rawfile.MsgHdrX, goReadBatch)
 	o.transmitIovecs = make([]unix.Iovec, 0, 8)
@@ -144,24 +120,21 @@ func (o *goDarwinIO) start() error {
 	if err == nil && netif != 0 {
 		name, nameErr := nativeTun.Name()
 		if nameErr != nil {
-			unix.Close(kqueueFd)
 			return E.Cause(nameErr, "go: utun name")
 		}
 		netInterface, lookupErr := net.InterfaceByName(name)
 		if lookupErr != nil {
-			unix.Close(kqueueFd)
 			return E.Cause(lookupErr, "go: utun interface")
 		}
 		o.netif = true
 		o.interfaceIndex = netInterface.Index
 		consumed, sampleErr := o.readInterfacePackets()
 		if sampleErr != nil {
-			unix.Close(kqueueFd)
 			return E.Cause(sampleErr, "go: utun statistics")
 		}
 		o.gateConsumedBase = consumed
 	}
-	return nil
+	return o.goPoller.open(o.tunFd)
 }
 
 // The NET_RT_IFLIST2 route sysctl takes the interface index as its last name component and
@@ -208,107 +181,17 @@ func (o *goDarwinIO) wait(timeout time.Duration, events []goSocketEvent) (bool, 
 			timeout = poll
 		}
 	}
-	var timeoutSpec *unix.Timespec
-	if timeout >= 0 {
-		spec := unix.NsecToTimespec(timeout.Nanoseconds())
-		timeoutSpec = &spec
-	}
-	var eventCount int
-	var err error
-	if timeout == 0 {
-		//nolint:staticcheck
-		count, _, errno := unix.RawSyscall6(unix.SYS_KEVENT, uintptr(o.kqueueFd), 0, 0, uintptr(unsafe.Pointer(&o.events[0])), uintptr(len(o.events)), uintptr(unsafe.Pointer(timeoutSpec)))
-		eventCount = int(count)
-		if errno != 0 {
-			err = errno
-		}
-	} else {
-		eventCount, err = unix.Kevent(o.kqueueFd, nil, o.events[:], timeoutSpec)
-	}
+	deviceReady, socketCount, err := o.goPoller.wait(timeout, events)
 	if o.gateBlocked.Load() {
 		o.gatePoll()
 	}
 	if err != nil {
-		if err == unix.EINTR {
-			return false, 0, nil
-		}
-		return false, 0, E.Cause(err, "go: kevent wait")
+		return false, 0, err
 	}
-	tunReadable := false
-	socketCount := 0
-	for index := range eventCount {
-		event := &o.events[index]
-		if event.Filter == unix.EVFILT_USER {
-			continue
-		}
-		if int(event.Ident) == o.tunFd {
-			if event.Filter == unix.EVFILT_WRITE {
-				o.transmitWritable.Store(true)
-				continue
-			}
-			if event.Flags&unix.EV_ERROR != 0 && event.Data != 0 {
-				return false, 0, unix.Errno(event.Data)
-			}
-			if event.Flags&unix.EV_EOF != 0 {
-				return false, 0, unix.ECONNRESET
-			}
-			tunReadable = true
-			continue
-		}
-		if int(event.Ident) >= len(o.socketTokens) || socketCount == len(events) {
-			continue
-		}
-		events[socketCount] = goSocketEvent{
-			token:    o.socketTokens[event.Ident],
-			readable: event.Filter == unix.EVFILT_READ,
-			writable: event.Filter == unix.EVFILT_WRITE,
-		}
-		socketCount++
+	if deviceReady&goInterestWrite != 0 {
+		o.transmitWritable.Store(true)
 	}
-	return tunReadable, socketCount, nil
-}
-
-func (o *goDarwinIO) registerSocket(socket *goSocket, token uint32, interest uint8) error {
-	if socket.fd >= len(o.socketTokens) {
-		grown := max(socket.fd+1, 2*len(o.socketTokens), 64)
-		o.socketTokens = append(o.socketTokens, make([]uint32, grown-len(o.socketTokens))...)
-		o.socketInterests = append(o.socketInterests, make([]uint8, grown-len(o.socketInterests))...)
-	}
-	o.socketTokens[socket.fd] = token
-	o.socketInterests[socket.fd] = 0
-	return o.updateSocket(socket, interest)
-}
-
-func (o *goDarwinIO) updateSocket(socket *goSocket, interest uint8) error {
-	current := o.socketInterests[socket.fd]
-	if current == interest {
-		return nil
-	}
-	changes := o.changes[:0]
-	if current&goInterestRead != interest&goInterestRead {
-		changes = append(changes, unix.Kevent_t{Ident: uint64(socket.fd), Filter: unix.EVFILT_READ, Flags: goKqueueFlags(interest&goInterestRead != 0)})
-	}
-	if current&goInterestWrite != interest&goInterestWrite {
-		changes = append(changes, unix.Kevent_t{Ident: uint64(socket.fd), Filter: unix.EVFILT_WRITE, Flags: goKqueueFlags(interest&goInterestWrite != 0)})
-	}
-	o.socketInterests[socket.fd] = interest
-	_, err := unix.Kevent(o.kqueueFd, changes, nil, nil)
-	if err != nil {
-		return E.Cause(err, "go: update socket interest")
-	}
-	return nil
-}
-
-func goKqueueFlags(enable bool) uint16 {
-	if enable {
-		return unix.EV_ADD | unix.EV_ENABLE
-	}
-	return unix.EV_DELETE
-}
-
-func (o *goDarwinIO) unregisterSocket(socket *goSocket) {
-	o.updateSocket(socket, 0)
-	o.socketTokens[socket.fd] = 0
+	return deviceReady&goInterestRead != 0, socketCount, nil
 }
 
 func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
@@ -755,17 +638,15 @@ func (o *goDarwinIO) transmitSegmentOffload() bool {
 }
 
 func (o *goDarwinIO) armTransmitWritable(conn *GoConn) (*goBlockedWriters, error) {
-	o.pollAccess.RLock()
-	defer o.pollAccess.RUnlock()
 	if o.closing.Load() {
 		return nil, os.ErrClosed
 	}
 	if o.gateBlocked.Load() {
 		return &o.blocked, nil
 	}
-	_, err := unix.Kevent(o.kqueueFd, o.transmitWritableEvent[:], nil, nil)
+	err := o.goPoller.armDeviceWritable()
 	if err != nil {
-		return nil, E.Cause(err, "go: arm EVFILT_WRITE")
+		return nil, err
 	}
 	return &o.blocked, nil
 }
@@ -777,28 +658,17 @@ func (o *goDarwinIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBlo
 	return append(writable, &o.blocked)
 }
 
-func (o *goDarwinIO) wake() {
-	o.pollAccess.RLock()
-	defer o.pollAccess.RUnlock()
-	if o.closing.Load() {
-		return
-	}
-	_, _ = unix.Kevent(o.kqueueFd, o.wakeEvent[:], nil, nil)
-}
-
 func (o *goDarwinIO) close() error {
 	o.closing.Store(true)
 	o.transmitAccess.Lock()
 	defer o.transmitAccess.Unlock()
-	o.pollAccess.Lock()
-	defer o.pollAccess.Unlock()
 	clear(o.batchIovecs)
 	clear(o.batchMessages)
 	o.batchSpill = nil
 	o.batchCount = 0
 	o.batchStart = 0
 	o.receiveSlots.release()
-	return unix.Close(o.kqueueFd)
+	return o.goPoller.close()
 }
 
 func (o *goDarwinIO) writePacketBatch(frames []goUDPFrame) error {

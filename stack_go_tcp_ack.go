@@ -1006,8 +1006,8 @@ func (c *GoConn) publishPermit(ackOffset uint64) {
 	c.wakeWriter()
 }
 
-func (c *GoConn) gsoMaxSize(mss uint32) uint32 {
-	if c.engine.platformIO.transmitSegmentOffload() {
+func goGSOMaxSize(mss uint32, segmentOffload bool) uint32 {
+	if segmentOffload {
 		return max(goGSOMaxPayload/mss*mss, mss)
 	}
 	return max(0xffff/mss*mss, mss)
@@ -1021,7 +1021,7 @@ func (e *goEngine) updateFrameLimit(conn *GoConn) {
 	}
 	bytes := rate >> goPacingShift
 	shift := conn.roundTripMin.get() >> goTSORoundTripShift
-	gsoMax := uint64(conn.gsoMaxSize(conn.effectiveMSS.Load()))
+	gsoMax := uint64(goGSOMaxSize(conn.effectiveMSS.Load(), conn.engine.platformIO.transmitSegmentOffload()))
 	if shift < 64 {
 		bytes += gsoMax >> shift
 	}
