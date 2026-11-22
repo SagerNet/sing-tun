@@ -1,7 +1,6 @@
 package tun
 
 import (
-	"encoding/binary"
 	"net/netip"
 	"os"
 	"runtime"
@@ -34,15 +33,13 @@ type goLinuxDevice struct {
 }
 
 type goLinuxIO struct {
-	device       *goLinuxDevice
-	tun          *NativeTun
-	tunFd        int
-	ownsFd       bool
-	epollFd      int
-	eventFd      int
+	device *goLinuxDevice
+	tun    *NativeTun
+	tunFd  int
+	ownsFd bool
+	goPoller
 	fdAccess     sync.RWMutex
 	receiveSlots goReadSlots
-	events       [goSocketEventBatch + 2]unix.EpollEvent
 }
 
 func newGoPlatformQueues(stack *Go) ([]goPlatformIO, error) {
@@ -96,33 +93,11 @@ func (o *goLinuxIO) start() error {
 		o.tunFd = queueFd
 		o.ownsFd = true
 	}
-	err := o.startPoller()
+	err := o.goPoller.open(o.tunFd)
 	if err != nil && o.ownsFd {
 		err = E.Errors(err, unix.Close(o.tunFd))
 	}
 	return err
-}
-
-func (o *goLinuxIO) startPoller() error {
-	epollFd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
-	if err != nil {
-		return E.Cause(err, "go: create epoll")
-	}
-	eventFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
-	if err != nil {
-		unix.Close(epollFd)
-		return E.Cause(err, "go: create eventfd")
-	}
-	err = unix.EpollCtl(epollFd, unix.EPOLL_CTL_ADD, o.tunFd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: goEpollDataTun})
-	if err == nil {
-		err = unix.EpollCtl(epollFd, unix.EPOLL_CTL_ADD, eventFd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: goEpollDataWake})
-	}
-	if err != nil {
-		return E.Errors(E.Cause(err, "go: register epoll events"), unix.Close(epollFd), unix.Close(eventFd))
-	}
-	o.epollFd = epollFd
-	o.eventFd = eventFd
-	return nil
 }
 
 func (o *goLinuxIO) probeTransmitOffload() error {
@@ -169,104 +144,9 @@ func (o *goLinuxIO) probeTransmitOffload() error {
 	return nil
 }
 
-const (
-	goEpollDataTun  int32 = -1
-	goEpollDataWake int32 = -2
-)
-
 func (o *goLinuxIO) wait(timeout time.Duration, events []goSocketEvent) (bool, int, error) {
-	milliseconds := -1
-	if timeout >= 0 {
-		milliseconds = int((timeout + time.Millisecond - 1) / time.Millisecond)
-	}
-	var eventCount int
-	var err error
-	if timeout == 0 {
-		//nolint:staticcheck
-		count, _, errno := unix.RawSyscall6(unix.SYS_EPOLL_PWAIT, uintptr(o.epollFd), uintptr(unsafe.Pointer(&o.events[0])), uintptr(len(o.events)), 0, 0, 0)
-		eventCount = int(count)
-		if errno != 0 {
-			err = errno
-		}
-	} else {
-		eventCount, err = unix.EpollWait(o.epollFd, o.events[:], milliseconds)
-	}
-	if err != nil {
-		if err == unix.EINTR {
-			return false, 0, nil
-		}
-		return false, 0, E.Cause(err, "go: epoll wait")
-	}
-	tunReadable := false
-	socketCount := 0
-	for index := range eventCount {
-		event := &o.events[index]
-		switch event.Fd {
-		case goEpollDataWake:
-			var value [8]byte
-			_, _ = unix.Read(o.eventFd, value[:])
-		case goEpollDataTun:
-			if event.Events&(unix.EPOLLERR|unix.EPOLLHUP) != 0 {
-				return false, 0, unix.ECONNRESET
-			}
-			tunReadable = true
-		default:
-			if socketCount == len(events) {
-				continue
-			}
-			events[socketCount] = goSocketEvent{
-				token:    uint32(event.Fd),
-				readable: event.Events&(unix.EPOLLIN|unix.EPOLLERR|unix.EPOLLHUP|unix.EPOLLRDHUP) != 0,
-				writable: event.Events&unix.EPOLLOUT != 0,
-			}
-			socketCount++
-		}
-	}
-	return tunReadable, socketCount, nil
-}
-
-func (o *goLinuxIO) registerSocket(socket *goSocket, token uint32, interest uint8) error {
-	socket.token = token
-	err := unix.EpollCtl(o.epollFd, unix.EPOLL_CTL_ADD, socket.fd, &unix.EpollEvent{Events: goEpollEvents(interest), Fd: int32(token)})
-	if err != nil {
-		return E.Cause(err, "go: register socket")
-	}
-	socket.registered = true
-	return nil
-}
-
-func (o *goLinuxIO) updateSocket(socket *goSocket, interest uint8) error {
-	operation := unix.EPOLL_CTL_MOD
-	if interest == 0 {
-		operation = unix.EPOLL_CTL_DEL
-	} else if !socket.registered {
-		operation = unix.EPOLL_CTL_ADD
-	}
-	err := unix.EpollCtl(o.epollFd, operation, socket.fd, &unix.EpollEvent{Events: goEpollEvents(interest), Fd: int32(socket.token)})
-	if err != nil {
-		return E.Cause(err, "go: update socket interest")
-	}
-	socket.registered = interest != 0
-	return nil
-}
-
-func (o *goLinuxIO) unregisterSocket(socket *goSocket) {
-	if !socket.registered {
-		return
-	}
-	unix.EpollCtl(o.epollFd, unix.EPOLL_CTL_DEL, socket.fd, nil)
-	socket.registered = false
-}
-
-func goEpollEvents(interest uint8) uint32 {
-	var events uint32
-	if interest&goInterestRead != 0 {
-		events |= unix.EPOLLIN | unix.EPOLLRDHUP
-	}
-	if interest&goInterestWrite != 0 {
-		events |= unix.EPOLLOUT
-	}
-	return events
+	deviceReady, socketCount, err := o.goPoller.wait(timeout, events)
+	return deviceReady&goInterestRead != 0, socketCount, err
 }
 
 func (o *goLinuxIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
@@ -317,22 +197,7 @@ func (o *goLinuxIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int,
 		if parseErr != nil {
 			continue
 		}
-		var meta ForwardFrameMeta
-		switch virtioOptions.GSOType {
-		case GSONone:
-		case GSOTCPv4:
-			meta.gsoType = unix.VIRTIO_NET_HDR_GSO_TCPV4
-			meta.gsoSize = virtioOptions.GSOSize
-		case GSOTCPv6:
-			meta.gsoType = unix.VIRTIO_NET_HDR_GSO_TCPV6
-			meta.gsoSize = virtioOptions.GSOSize
-		case GSOUDPL4:
-			meta.gsoType = goUDPGSOType
-			meta.gsoSize = virtioOptions.GSOSize
-		}
-		meta.needsChecksum = virtioOptions.NeedsCsum
-		meta.checksumStart = virtioOptions.CsumStart
-		meta.checksumOffset = virtioOptions.CsumOffset
+		meta := goFrameMeta(virtioOptions)
 		buffer.Resize(options.FrontHeadroom+len(packet)-len(payload), len(payload))
 		options.PostReturn(buffer)
 		frames[count] = goFrame{buffer: buffer, meta: meta}
@@ -435,16 +300,11 @@ func (o *goLinuxIO) transmitFrame(frame [][]byte, meta ForwardFrameMeta) unix.Er
 	if o.device.vnetHeader {
 		prefix := goEmptyVirtioHeader[:]
 		if meta != (ForwardFrameMeta{}) {
-			virtioHeader := virtioNetHdr{gsoType: meta.gsoType, gsoSize: meta.gsoSize}
+			virtioHeader := virtioNetHdr{gsoType: meta.gsoType, gsoSize: meta.gsoSize, hdrLen: meta.segmentHeaderLength(frame[0])}
 			if meta.needsChecksum {
 				virtioHeader.flags = unix.VIRTIO_NET_HDR_F_NEEDS_CSUM
 				virtioHeader.csumStart = meta.checksumStart
 				virtioHeader.csumOffset = meta.checksumOffset
-			}
-			if meta.gsoType == goUDPGSOType {
-				virtioHeader.hdrLen = meta.checksumStart + header.UDPMinimumSize
-			} else if meta.gsoType != unix.VIRTIO_NET_HDR_GSO_NONE {
-				virtioHeader.hdrLen = meta.checksumStart + uint16(header.TCP(frame[0][meta.checksumStart:]).DataOffset())
 			}
 			common.Must(virtioHeader.encode(headerStorage[:]))
 			prefix = headerStorage[:]
@@ -499,23 +359,12 @@ func (o *goLinuxIO) takeTransmitWritable(writable []*goBlockedWriters) []*goBloc
 	return writable
 }
 
-func (o *goLinuxIO) wake() {
-	o.fdAccess.RLock()
-	defer o.fdAccess.RUnlock()
-	if o.device.closing.Load() {
-		return
-	}
-	var value [8]byte
-	binary.NativeEndian.PutUint64(value[:], 1)
-	_, _ = unix.Write(o.eventFd, value[:])
-}
-
 func (o *goLinuxIO) close() error {
 	o.device.closing.Store(true)
 	o.fdAccess.Lock()
 	defer o.fdAccess.Unlock()
 	o.receiveSlots.release()
-	err := E.Errors(unix.Close(o.epollFd), unix.Close(o.eventFd))
+	err := o.goPoller.close()
 	if o.ownsFd {
 		err = E.Errors(err, unix.Close(o.tunFd))
 	}
@@ -543,53 +392,13 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 		frame := &frames[index]
 		end := index + 1
 		payloadLength := len(frame.payload)
-		if o.device.vnetHeader && !o.device.udpTransmitDisabled.Load() && payloadLength > 0 {
-			for end < len(frames) {
-				next := &frames[end]
-				if next.length != frame.length || len(next.payload) == 0 || len(next.payload) > len(frame.payload) || frame.length+payloadLength+len(next.payload) > 65535 {
-					break
-				}
-				udpOffset := frame.length - header.UDPMinimumSize
-				if binary.BigEndian.Uint32(next.header[udpOffset:]) != binary.BigEndian.Uint32(frame.header[udpOffset:]) {
-					break
-				}
-				if frame.length == header.IPv4MinimumSize+header.UDPMinimumSize {
-					if [8]byte(next.header[12:20]) != [8]byte(frame.header[12:20]) {
-						break
-					}
-				} else if [32]byte(next.header[8:40]) != [32]byte(frame.header[8:40]) {
-					break
-				}
-				payloadLength += len(next.payload)
-				end++
-				if len(next.payload) < len(frame.payload) {
-					break
-				}
-			}
+		if o.device.vnetHeader && !o.device.udpTransmitDisabled.Load() {
+			end, payloadLength = goUDPSegmentRun(frames, index)
 		}
 		packetHeader := frame.header
 		meta := frame.meta
 		if end-index > 1 {
-			udpLength := uint16(header.UDPMinimumSize + payloadLength)
-			var sourceAddress, destinationAddress []byte
-			if frame.length == header.IPv4MinimumSize+header.UDPMinimumSize {
-				ipHdr := header.IPv4(frame.header[:header.IPv4MinimumSize])
-				ipHdr.SetTotalLength(uint16(frame.length + payloadLength))
-				ipHdr.SetChecksum(0)
-				ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
-				sourceAddress = ipHdr.SourceAddressSlice()
-				destinationAddress = ipHdr.DestinationAddressSlice()
-			} else {
-				ipHdr := header.IPv6(frame.header[:header.IPv6MinimumSize])
-				ipHdr.SetPayloadLength(udpLength)
-				sourceAddress = ipHdr.SourceAddressSlice()
-				destinationAddress = ipHdr.DestinationAddressSlice()
-			}
-			udpHdr := header.UDP(frame.header[frame.length-header.UDPMinimumSize : frame.length])
-			udpHdr.SetLength(udpLength)
-			udpHdr.SetChecksum(header.PseudoHeaderChecksum(header.UDPProtocolNumber, sourceAddress, destinationAddress, udpLength))
-			meta.gsoType = goUDPGSOType
-			meta.gsoSize = uint16(len(frame.payload))
+			meta = frame.coalesce(payloadLength)
 		}
 		segments[0] = frame.header[:frame.length]
 		for packetIndex := index; packetIndex < end; packetIndex++ {

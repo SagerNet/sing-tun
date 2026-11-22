@@ -1,10 +1,14 @@
 package tun
 
 import (
+	"crypto/rand"
+	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
 
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
 )
 
@@ -13,13 +17,27 @@ const (
 	memoryTunMaxPacketSize    = 65535
 )
 
+const (
+	memoryTunOffloadChecksum uint32 = 1 << iota
+	memoryTunOffloadTCPSegmentation
+	memoryTunOffloadUDPSegmentation
+)
+
 type MemoryTunOptions struct {
-	MTU       int
-	Headroom  int
-	RearSpace int
-	BatchSize int
-	Outbound  func(packets []*buf.Buffer)
-	Route     func(packet []byte) *OutboundQueue
+	MTU                    int
+	Headroom               int
+	RearSpace              int
+	BatchSize              int
+	Outbound               func(packets []*buf.Buffer)
+	Route                  func(packet []byte) *OutboundQueue
+	Ethernet               bool
+	VirtioNetHeader        bool
+	ChecksumOffload        bool
+	TCPSegmentationOffload bool
+	UDPSegmentationOffload bool
+	GatewayMAC             net.HardwareAddr
+	PeerMAC                net.HardwareAddr
+	Inet6Prefix            []netip.Prefix
 }
 
 type MemoryTun struct {
@@ -28,6 +46,15 @@ type MemoryTun struct {
 	rearSpace        int
 	batchSize        int
 	route            func(packet []byte) *OutboundQueue
+	ethernet         bool
+	virtioHeader     bool
+	linkHeaderLength int
+	offload          atomic.Uint32
+	gatewayMAC       [header.EthernetAddressSize]byte
+	peerMAC          atomic.Uint64
+	peerMACFixed     bool
+	inet6Prefix      []netip.Prefix
+	platformIO       atomic.Pointer[goMemoryIO]
 	attached         atomic.Bool
 	closed           atomic.Bool
 	inboundAccess    sync.Mutex
@@ -39,8 +66,6 @@ type MemoryTun struct {
 	writableAccess   sync.Mutex
 	writable         []*OutboundQueue
 	writablePending  atomic.Bool
-	engineWake       goSignal
-	closeSignal      chan struct{}
 }
 
 func NewMemoryTun(options MemoryTunOptions) *MemoryTun {
@@ -49,18 +74,36 @@ func NewMemoryTun(options MemoryTunOptions) *MemoryTun {
 		batchSize = memoryTunDefaultBatchSize
 	}
 	memoryTun := &MemoryTun{
-		headroom:    options.Headroom,
-		rearSpace:   options.RearSpace,
-		batchSize:   batchSize,
-		route:       options.Route,
-		inbound:     newGoPacketRing(4 * batchSize),
-		engineWake:  make(goSignal, 1),
-		closeSignal: make(chan struct{}),
+		headroom:     options.Headroom,
+		rearSpace:    options.RearSpace,
+		batchSize:    batchSize,
+		route:        options.Route,
+		ethernet:     options.Ethernet,
+		virtioHeader: options.VirtioNetHeader,
+		inet6Prefix:  options.Inet6Prefix,
+		inbound:      newGoPacketRing(4 * batchSize),
+	}
+	if options.VirtioNetHeader {
+		memoryTun.linkHeaderLength += goVirtioHeaderLength
+	}
+	if options.Ethernet {
+		memoryTun.linkHeaderLength += header.EthernetMinimumSize
+		if len(options.GatewayMAC) == header.EthernetAddressSize {
+			memoryTun.gatewayMAC = [header.EthernetAddressSize]byte(options.GatewayMAC)
+		} else {
+			rand.Read(memoryTun.gatewayMAC[:])
+			memoryTun.gatewayMAC[0] = memoryTun.gatewayMAC[0]&^1 | 2
+		}
+		if len(options.PeerMAC) == header.EthernetAddressSize {
+			memoryTun.peerMACFixed = true
+			memoryTun.peerMAC.Store(goPackMAC(options.PeerMAC))
+		}
 	}
 	outboundHandler := options.Outbound
 	if outboundHandler == nil {
 		outboundHandler = buf.ReleaseMulti
 	}
+	memoryTun.SetOffload(options.ChecksumOffload, options.TCPSegmentationOffload, options.UDPSegmentationOffload)
 	memoryTun.inboundWritable = sync.NewCond(&memoryTun.inboundAccess)
 	memoryTun.outbound = memoryTun.NewOutboundQueue(outboundHandler)
 	memoryTun.mtu.Store(int32(options.MTU))
@@ -85,6 +128,20 @@ func (t *MemoryTun) MTU() int {
 
 func (t *MemoryTun) UpdateMTU(mtu int) {
 	t.mtu.Store(int32(mtu))
+}
+
+func (t *MemoryTun) SetOffload(checksum bool, tcpSegmentation bool, udpSegmentation bool) {
+	var offload uint32
+	if t.virtioHeader && checksum {
+		offload = memoryTunOffloadChecksum
+		if tcpSegmentation {
+			offload |= memoryTunOffloadTCPSegmentation
+		}
+		if udpSegmentation {
+			offload |= memoryTunOffloadUDPSegmentation
+		}
+	}
+	t.offload.Store(offload)
 }
 
 func (t *MemoryTun) Read(p []byte) (int, error) {
@@ -124,15 +181,18 @@ func (t *MemoryTun) writePackets(packets [][]byte, wait bool) (int, error) {
 	accepted := 0
 	notify := false
 	for _, packet := range packets {
-		if len(packet) == 0 || len(packet) > memoryTunMaxPacketSize {
+		if len(packet) == 0 || len(packet) > t.linkHeaderLength+memoryTunMaxPacketSize {
 			continue
 		}
 		for wait && t.inbound.full() {
 			if notify {
 				notify = false
-				t.engineWake.notify()
+				t.inboundAccess.Unlock()
+				t.wakeEngine()
+				t.inboundAccess.Lock()
+			} else {
+				t.inboundWritable.Wait()
 			}
-			t.inboundWritable.Wait()
 			if t.closed.Load() {
 				t.inboundAccess.Unlock()
 				return accepted, os.ErrClosed
@@ -158,7 +218,7 @@ func (t *MemoryTun) writePackets(packets [][]byte, wait bool) (int, error) {
 	}
 	t.inboundAccess.Unlock()
 	if notify {
-		t.engineWake.notify()
+		t.wakeEngine()
 	}
 	return accepted, nil
 }
@@ -172,8 +232,15 @@ func (t *MemoryTun) Close() error {
 	t.inboundWritable.Broadcast()
 	t.inboundAccess.Unlock()
 	t.outbound.Close()
-	close(t.closeSignal)
+	t.wakeEngine()
 	return nil
+}
+
+func (t *MemoryTun) wakeEngine() {
+	platformIO := t.platformIO.Load()
+	if platformIO != nil {
+		platformIO.wake()
+	}
 }
 
 func (t *MemoryTun) queueWritable(queue *OutboundQueue) {
@@ -186,7 +253,7 @@ func (t *MemoryTun) queueWritable(queue *OutboundQueue) {
 	t.writable = append(t.writable, queue)
 	t.writablePending.Store(true)
 	t.writableAccess.Unlock()
-	t.engineWake.notify()
+	t.wakeEngine()
 }
 
 func (t *MemoryTun) takeWritable(spare []*OutboundQueue) []*OutboundQueue {
@@ -201,10 +268,4 @@ func (t *MemoryTun) takeWritable(spare []*OutboundQueue) []*OutboundQueue {
 	}
 	t.writableAccess.Unlock()
 	return queues
-}
-
-func (t *MemoryTun) newOutboundPacket(length int) *buf.Buffer {
-	packet := buf.NewSize(t.headroom + length + t.rearSpace)
-	packet.Resize(t.headroom, 0)
-	return packet
 }

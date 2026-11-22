@@ -694,7 +694,7 @@ func (e *goEngine) processParsed(buffer *buf.Buffer, meta ForwardFrameMeta, pars
 		}
 		parsed.transport = parsed.transport[:length]
 	}
-	if e.stack.validateChecksum && !goValidateTransportChecksum(parsed) {
+	if e.stack.validateChecksum && !meta.needsChecksum && !meta.dataValid && !goValidateTransportChecksum(parsed) {
 		return
 	}
 	packet := buffer.Bytes()

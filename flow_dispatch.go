@@ -45,6 +45,7 @@ type ForwardWriteback interface {
 
 type ForwardFrameMeta struct {
 	needsChecksum  bool
+	dataValid      bool
 	checksumStart  uint16
 	checksumOffset uint16
 	gsoType        uint8

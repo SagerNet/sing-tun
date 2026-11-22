@@ -228,7 +228,7 @@ func goCubicHystartAckDelay(c *GoConn) uint32 {
 	if rate == 0 {
 		return 0
 	}
-	return uint32(min(uint64(time.Second/time.Microsecond)/1000, uint64(c.gsoMaxSize(c.effectiveMSS.Load()))*4*uint64(time.Second/time.Microsecond)/rate))
+	return uint32(min(uint64(time.Second/time.Microsecond)/1000, uint64(goGSOMaxSize(c.effectiveMSS.Load(), c.engine.platformIO.transmitSegmentOffload()))*4*uint64(time.Second/time.Microsecond)/rate))
 }
 
 func (s *goCubicState) hystartUpdate(c *GoConn, delay uint32) {

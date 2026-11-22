@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -78,6 +79,37 @@ func (w *goWriteback) WriteReturnPackets(packets [][]byte) error {
 		writeErr = E.Errors(writeErr, goIgnoreDropped(w.platformIO.writeDatagram(packet[prefix:], ForwardFrameMeta{})))
 	}
 	return writeErr
+}
+
+func goFrameMeta(options GSOOptions) ForwardFrameMeta {
+	meta := ForwardFrameMeta{
+		needsChecksum:  options.NeedsCsum,
+		checksumStart:  options.CsumStart,
+		checksumOffset: options.CsumOffset,
+	}
+	switch options.GSOType {
+	case GSOTCPv4:
+		meta.gsoType = goGSOTypeIPv4
+	case GSOTCPv6:
+		meta.gsoType = goGSOTypeIPv6
+	case GSOUDPL4:
+		meta.gsoType = goUDPGSOType
+	default:
+		return meta
+	}
+	meta.gsoSize = options.GSOSize
+	return meta
+}
+
+func (m *ForwardFrameMeta) segmentHeaderLength(headers []byte) uint16 {
+	switch m.gsoType {
+	case goGSONone:
+		return 0
+	case goUDPGSOType:
+		return m.checksumStart + header.UDPMinimumSize
+	default:
+		return m.checksumStart + uint16(header.TCP(headers[m.checksumStart:]).DataOffset())
+	}
 }
 
 func goIgnoreDropped(err error) error {

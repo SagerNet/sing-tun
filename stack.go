@@ -26,6 +26,14 @@ const (
 	MemoryPressureCritical
 )
 
+type BufferProfile uint8
+
+const (
+	BufferProfileDefault BufferProfile = iota
+	BufferProfileCompact
+	BufferProfileFull
+)
+
 type StackOptions struct {
 	Context                context.Context
 	Tun                    Tun
@@ -41,6 +49,7 @@ type StackOptions struct {
 	IncludeAllNetworks     bool
 	InterfaceFinder        control.InterfaceFinder
 	MemoryPressure         func() MemoryPressure
+	BufferProfile          BufferProfile
 	TCPCongestionControl   string
 }
 

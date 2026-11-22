@@ -991,7 +991,7 @@ func (e *goEngine) packetSpliceDownload(w *GoPacketConn, data []byte, destinatio
 		return
 	}
 	frame := &e.packetFrames[e.packetFrameCount]
-	meta, err := w.preparePacketHeader(frame.header[:], data, destination, w.checksumOffload)
+	meta, err := w.preparePacketHeader(frame.header[:], data, destination, w.platformIO.transmitChecksumOffload())
 	if err != nil {
 		if err != errGoFrameDropped {
 			e.stack.logger.Trace(err)

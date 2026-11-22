@@ -3,9 +3,7 @@ package tun
 import "time"
 
 const (
-	goReceiveCapacityBase    = 32 << 10
-	goReceiveCapacityMax     = 256 << 10
-	goTransmitCapacityMax    = 512 << 10
+	goDefaultBufferProfile   = BufferProfileCompact
 	goEngineBurstBytes       = 256 << 10
 	goFlowCapacity           = 1024
 	goReceiveBatchMin        = 4
