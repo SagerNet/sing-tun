@@ -213,19 +213,19 @@ func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine 
 		platformIO:         platformIO,
 		dispatcher:         stack.dispatcher,
 		epoch:              time.Now(),
-		frames:             make([]goFrame, goReadBatch),
-		reassemblyEntries:  make([]goReassemblyEntry, goReassemblyEntries),
+		frames:             make([]goFrame, stack.profile.readBatch),
+		reassemblyEntries:  make([]goReassemblyEntry, stack.profile.reassemblyEntries),
 		exitSignal:         make(chan struct{}),
 		flows:              stack.directory.flows,
-		flowCapacity:       max(goFlowCapacity/engineCount, 1024),
-		slabPool:           newGoSlabPool(stack.memoryPressure, max(goSlabPoolLowWater/engineCount, 8)),
+		flowCapacity:       max(stack.profile.flowCapacity/engineCount, 64),
+		slabPool:           newGoSlabPool(stack.memoryPressure, max(stack.profile.slabPoolLowWater/engineCount, 1)),
 		sequenceSeed:       maphash.MakeSeed(),
 		controlSegments:    make([][]byte, 0, 8),
 		socketEvents:       make([]goSocketEvent, goSocketEventBatch),
 		spliceSegments:     make([][]byte, 0, 8),
 		spliceIovecs:       make([]goIOVector, 0, 8),
-		packetFlows:        make(map[flowKey]*GoPacketConn, goReadBatch),
-		packetReceiveBatch: goReceiveBatchMin,
+		packetFlows:        make(map[flowKey]*GoPacketConn, stack.profile.readBatch),
+		packetReceiveBatch: stack.profile.receiveBatchMin,
 		udpSockets:         stack.directory.udpSockets,
 		tcpListeners:       stack.directory.listeners,
 	}
@@ -396,7 +396,7 @@ func (e *goEngine) idleTimeout(timeout time.Duration) time.Duration {
 	if e.idleSince < 0 {
 		e.idleSince = now
 	}
-	releaseAt := e.idleSince + int64(goReadBufferIdle)
+	releaseAt := e.idleSince + int64(e.stack.profile.readBufferIdle)
 	if now >= releaseAt || e.slabPool.pressureLevel() != MemoryPressureNone {
 		e.releaseReadBuffers()
 		return timeout
@@ -635,8 +635,8 @@ func (e *goEngine) shutdown() {
 }
 
 func (e *goEngine) processBurst() error {
-	remaining := goReadBatch
-	budget := goEngineBurstBytes
+	remaining := e.stack.profile.readBatch
+	budget := e.stack.profile.engineBurstBytes
 	e.tunPending = false
 	for remaining > 0 && budget > 0 {
 		count, drained, err := e.platformIO.readBurst(e.frames[:remaining], *e.packetReadOptions.Load())

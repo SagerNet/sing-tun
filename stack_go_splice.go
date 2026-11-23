@@ -858,7 +858,7 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 	if count == batchSize {
 		e.packetReceiveBatch = min(batchSize*2, goPacketBatchSize)
 	} else if count*2 < batchSize {
-		e.packetReceiveBatch = max(batchSize/2, goReceiveBatchMin)
+		e.packetReceiveBatch = max(batchSize/2, e.stack.profile.receiveBatchMin)
 	}
 	defer func() {
 		e.flushPacketFrames()

@@ -532,6 +532,7 @@ type kernelPacketAllocator struct {
 	active       atomic.Int64
 	epoch        time.Time
 	lastActivity atomic.Int64
+	idleTimeout  time.Duration
 }
 
 type kernelPacketIO struct {
@@ -554,6 +555,7 @@ func (p *kernelPacketIO) wait(timeout time.Duration, events []goSocketEvent) (bo
 }
 
 func (a *kernelPacketAllocator) prepareStack(stack *Go) {
+	a.idleTimeout = stack.profile.readBufferIdle
 	queues := stack.queueFactory
 	stack.queueFactory = func(current *Go) ([]goPlatformIO, error) {
 		platforms, err := queues(current)
@@ -591,10 +593,10 @@ func (a *kernelPacketAllocator) waitIdle(t *testing.T) {
 		quiet := time.Since(a.epoch) - time.Duration(lastActivity)
 		active := a.active.Load()
 		unchanged := a.lastActivity.Load() == lastActivity
-		if quiet >= goReadBufferIdle && active == 0 && unchanged {
+		if quiet >= a.idleTimeout && active == 0 && unchanged {
 			return
 		}
-		if quiet >= goReadBufferIdle+time.Second && active != 0 && unchanged {
+		if quiet >= a.idleTimeout+time.Second && active != 0 && unchanged {
 			t.Fatalf("connections retain %d pooled buffers after %s without native I/O", active, quiet)
 		}
 		if time.Now().After(deadline) {

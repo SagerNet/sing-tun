@@ -396,6 +396,7 @@ type goSentDescriptor struct {
 
 const (
 	goDescriptorBlockCapacity  = 64
+	goMaxDescriptorBlocks      = 32
 	goScoreboardInlineCapacity = 16
 )
 
@@ -405,7 +406,9 @@ type goDescriptorBlock [goDescriptorBlockCapacity]goSentDescriptor
 // head. Blocks are allocated on demand and returned after their final entry is
 // consumed. The directory stays fixed so neither side has to resize shared state.
 type goDescriptorRing struct {
-	blocks         [goDescriptorRingCapacity / goDescriptorBlockCapacity]atomic.Pointer[goDescriptorBlock]
+	blocks         [goMaxDescriptorBlocks]atomic.Pointer[goDescriptorBlock]
+	blockMask      uint32
+	capacity       uint32
 	pool           *goDescriptorPool
 	head           atomic.Uint32
 	tail           atomic.Uint32
@@ -433,7 +436,7 @@ func (p *goDescriptorPool) release(block *goDescriptorBlock) {
 // release requires exclusive access to both sides of the ring. For a live
 // connection the engine holds transmitAccess and checks that all sent data is ACKed.
 func (r *goDescriptorRing) release() {
-	for index := range r.blocks {
+	for index := range r.blocks[:r.blockMask+1] {
 		if block := r.blocks[index].Swap(nil); block != nil {
 			r.pool.release(block)
 		}
@@ -466,10 +469,10 @@ func (r *goDescriptorRing) push(entry goSentDescriptor) {
 
 func (r *goDescriptorRing) store(entry goSentDescriptor) bool {
 	tail := r.tail.Load()
-	if tail-r.head.Load() >= goDescriptorRingCapacity {
+	if tail-r.head.Load() >= r.capacity {
 		return false
 	}
-	slot := &r.blocks[tail/goDescriptorBlockCapacity%uint32(len(r.blocks))]
+	slot := &r.blocks[(tail/goDescriptorBlockCapacity)&r.blockMask]
 	block := slot.Load()
 	// A wrapped producer must not reuse the consumed prefix of a block that
 	// the consumer still owns; the consumer releases whole blocks.
@@ -486,7 +489,7 @@ func (r *goDescriptorRing) store(entry goSentDescriptor) bool {
 }
 
 func (r *goDescriptorRing) take(index uint32) goSentDescriptor {
-	slot := &r.blocks[index/goDescriptorBlockCapacity%uint32(len(r.blocks))]
+	slot := &r.blocks[(index/goDescriptorBlockCapacity)&r.blockMask]
 	block := slot.Load()
 	entry := block[index%goDescriptorBlockCapacity]
 	if (index+1)%goDescriptorBlockCapacity == 0 {

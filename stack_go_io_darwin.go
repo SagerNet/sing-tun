@@ -108,10 +108,10 @@ func (o *goDarwinIO) start() error {
 	if err != nil {
 		return E.Cause(err, "go: set UTUN_OPT_MAX_PENDING_PACKETS")
 	}
-	o.receiveIovecs = make([]unix.Iovec, goReadBatch)
-	o.messageHeaders = make([]rawfile.MsgHdrX, goReadBatch)
+	o.receiveIovecs = make([]unix.Iovec, o.stack.profile.readBatch)
+	o.messageHeaders = make([]rawfile.MsgHdrX, o.stack.profile.readBatch)
 	o.transmitIovecs = make([]unix.Iovec, 0, 8)
-	o.receiveBatch = goReceiveBatchMin
+	o.receiveBatch = o.stack.profile.receiveBatchMin
 	o.batchHeaders = make([]byte, goDarwinTransmitBatch*goDarwinBatchHeader)
 	o.batchIovecs = make([]unix.Iovec, goDarwinTransmitBatch*goDarwinBatchIovecs)
 	o.batchMessages = make([]rawfile.MsgHdrX, goDarwinTransmitBatch)
@@ -196,7 +196,7 @@ func (o *goDarwinIO) wait(timeout time.Duration, events []goSocketEvent) (bool, 
 
 func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int, bool, error) {
 	o.flush()
-	o.receiveSlots.configure(goReadBatch, o.stack.mtu+PacketOffset+options.FrontHeadroom+options.RearHeadroom)
+	o.receiveSlots.configure(o.stack.profile.readBatch, o.stack.mtu+PacketOffset+options.FrontHeadroom+options.RearHeadroom)
 	// recvmsg_x walks every submitted msghdr slot, whether or not a packet is pending for it.
 	count := min(o.receiveBatch, len(frames))
 	o.receiveSlots.wake(count)
@@ -222,7 +222,7 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 	if received >= count {
 		o.receiveBatch = min(count*2, len(o.messageHeaders))
 	} else if received*2 < count {
-		o.receiveBatch = max(count/2, goReceiveBatchMin)
+		o.receiveBatch = max(count/2, o.stack.profile.receiveBatchMin)
 	}
 	frameCount := 0
 	for index := range received {
