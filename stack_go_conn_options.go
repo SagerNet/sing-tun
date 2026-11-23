@@ -74,14 +74,14 @@ func (c *GoConn) SetLinger(sec int) error {
 
 func (c *GoConn) SetReadBuffer(size int) error {
 	c.access.Lock()
-	c.receiveCapacityMax = min(uint64(max(size, goSlabSize)), c.engine.stack.buffers.receiveMax)
+	c.receiveCapacityMax = min(uint64(max(size, goSlabSize)), c.engine.stack.profile.receiveMax)
 	c.access.Unlock()
 	return nil
 }
 
 func (c *GoConn) SetWriteBuffer(size int) error {
 	c.access.Lock()
-	c.transmitCapacity = min(uint64(max(size, goSlabSize)), c.engine.stack.buffers.transmitMax)
+	c.transmitCapacity = min(uint64(max(size, goSlabSize)), c.engine.stack.profile.transmitMax)
 	c.access.Unlock()
 	return nil
 }

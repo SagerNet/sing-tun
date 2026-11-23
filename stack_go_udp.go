@@ -209,7 +209,7 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 			return
 		}
 		if writer.splice != nil {
-			if len(e.packetFlows) < goReadBatch {
+			if len(e.packetFlows) < e.stack.profile.readBatch {
 				e.packetFlows[parsed.flowKey()] = writer
 			}
 			e.packetSpliceInput(writer, packetBuffer, parsed)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,7 +38,7 @@ type Go struct {
 	engines                []*goEngine
 	closed                 atomic.Bool
 	validateChecksum       bool
-	buffers                goBufferCapacity
+	profile                goProfile
 }
 
 func NewGo(options StackOptions) (*Go, error) {
@@ -80,9 +79,9 @@ func NewGo(options StackOptions) (*Go, error) {
 		bufferProfile = goDefaultBufferProfile
 	}
 	if bufferProfile == BufferProfileCompact {
-		stack.buffers = goCompactBuffers
+		stack.profile = goCompactProfile
 	} else {
-		stack.buffers = goFullBuffers
+		stack.profile = goFullProfile
 	}
 	if len(options.TunOptions.Inet4Address) > 0 {
 		stack.inet4Address = options.TunOptions.Inet4Address[0].Addr()
@@ -94,7 +93,7 @@ func NewGo(options StackOptions) (*Go, error) {
 	if isMemoryTun {
 		stack.validateChecksum = true
 		stack.queueFactory = func(current *Go) ([]goPlatformIO, error) {
-			return []goPlatformIO{&goMemoryIO{stack: current, tun: memoryTun, handed: make([]*buf.Buffer, 0, goReadBatch), blocked: make(map[*OutboundQueue]*goBlockedWriters)}}, nil
+			return []goPlatformIO{&goMemoryIO{stack: current, tun: memoryTun, handed: make([]*buf.Buffer, 0, current.profile.readBatch), blocked: make(map[*OutboundQueue]*goBlockedWriters)}}, nil
 		}
 	}
 	return stack, nil
@@ -126,11 +125,7 @@ func (s *Go) Start() error {
 		udpNATOptions.Prepare = s.prepareUDPConnection
 		maxSize := udpNATOptions.MaxSize
 		if maxSize == 0 {
-			if runtime.GOOS == "ios" {
-				maxSize = 4096
-			} else {
-				maxSize = 16384
-			}
+			maxSize = s.profile.udpNATMax
 		}
 		if udpNATOptions.Mapping == NATMappingAddressAndPortDependent {
 			natCount = min(uint32(len(queues)), maxSize)

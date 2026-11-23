@@ -43,7 +43,7 @@ func (s *Go) DialTCP(ctx context.Context, source netip.Addr, destination netip.A
 	conn.localWindowShift = goLocalWindowShift
 	conn.timestampsEnabled = true
 	conn.sackPermitted = true
-	conn.receiveCapacity = min(s.buffers.receiveBase, conn.receiveWindowBound())
+	conn.receiveCapacity = min(s.profile.receiveBase, conn.receiveWindowBound())
 	conn.dialMessage = goMessage{kind: goMessageConnDial, conn: conn}
 	engine.postMessage(&conn.dialMessage)
 	err = conn.awaitHandshake(ctx, nil)
