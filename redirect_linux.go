@@ -18,7 +18,6 @@ import (
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/x/list"
 
 	"go4.org/netipx"
@@ -39,7 +38,6 @@ type autoRedirect struct {
 	customRedirectPortFunc  func() int
 	customRedirectPort      int
 	redirectServer          *redirectServer
-	redirectDNSServer       *redirectDNSServer
 	enableIPv4              bool
 	enableIPv6              bool
 	iptablesPath            string
@@ -164,26 +162,14 @@ func (r *autoRedirect) Start() error {
 			listenAddr = netip.IPv4Unspecified()
 		}
 		server := newRedirectServer(r.ctx, r.handler, r.logger, listenAddr)
+		if r.useNFTables && r.enableIPv6 && r.tunOptions.DNSModeOrDefault() == DNSModeHijack {
+			server.packetHandler = r.handler
+		}
 		err = runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
 		if err != nil {
 			return E.Cause(err, "start redirect server")
 		}
 		r.redirectServer = server
-	}
-	if r.handler != nil && r.enableIPv6 && r.tunOptions.DNSModeOrDefault() == DNSModeHijack {
-		var dnsServers []netip.Addr
-		dnsServers, err = r.tunOptions.Inet6DNSAddress()
-		if err != nil {
-			return err
-		}
-		if len(dnsServers) > 0 {
-			server := newRedirectDNSServer(r.ctx, r.handler, r.logger, dnsServers[0])
-			err = runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
-			if err != nil {
-				return E.Cause(err, "start redirect DNS server")
-			}
-			r.redirectDNSServer = server
-		}
 	}
 	if r.useNFTables {
 		if r.handler != nil {
@@ -253,7 +239,7 @@ func (r *autoRedirect) Start() error {
 }
 
 func (r *autoRedirect) Close() error {
-	err := common.Close(common.PtrOrNil(r.redirectServer), common.PtrOrNil(r.redirectDNSServer))
+	err := common.Close(common.PtrOrNil(r.redirectServer))
 	if r.nfqueueHandler != nil {
 		r.nfqueueHandler.Close()
 	}
@@ -318,7 +304,7 @@ func (r *autoRedirect) redirectPort() uint16 {
 	if r.customRedirectPort > 0 {
 		return uint16(r.customRedirectPort)
 	}
-	return M.AddrPortFromNet(r.redirectServer.listener.Addr()).Port()
+	return r.redirectServer.Port()
 }
 
 func (r *autoRedirect) effectiveOutputMark() uint32 {

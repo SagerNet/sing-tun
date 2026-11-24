@@ -25,7 +25,6 @@ func (r *autoRedirect) configureOpenWRTFirewall4(nft *nftables.Conn, cleanup boo
 		err = os.WriteFile(rulePath, []byte(`chain input {
 	type filter hook input priority filter; policy accept;
 	iifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
-	oifname "`+r.tunOptions.Name+`" counter accept comment "!`+r.tableName+`: Accept traffic from tun"
 }
 chain forward {
 	type filter hook forward priority filter; policy accept;

@@ -10,21 +10,26 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	"golang.org/x/net/ipv6"
 )
 
 type redirectServer struct {
-	ctx         context.Context
-	handler     N.TCPConnectionHandlerEx
-	logger      logger.Logger
-	listenAddr  netip.Addr
-	listener    *net.TCPListener
-	access      sync.Mutex
-	connections map[*net.TCPConn]struct{}
+	ctx           context.Context
+	handler       N.TCPConnectionHandlerEx
+	packetHandler Handler
+	logger        logger.Logger
+	listenAddr    netip.Addr
+	listener      *net.TCPListener
+	packetConn    *ipv6.PacketConn
+	access        sync.Mutex
+	connections   map[*net.TCPConn]struct{}
 }
 
 func newRedirectServer(ctx context.Context, handler N.TCPConnectionHandlerEx, logger logger.Logger, listenAddr netip.Addr) *redirectServer {
@@ -46,8 +51,33 @@ func (s *redirectServer) Start() error {
 		return err
 	}
 	s.listener = listener.(*net.TCPListener)
+	if s.packetHandler != nil {
+		var conn net.PacketConn
+		conn, err = listenConfig.ListenPacket(s.ctx, "udp6", "[::]:0")
+		if err != nil {
+			s.listener.Close()
+			return err
+		}
+		packetConn := ipv6.NewPacketConn(conn)
+		err = packetConn.SetControlMessage(ipv6.FlagDst|ipv6.FlagInterface, true)
+		if err != nil {
+			conn.Close()
+			s.listener.Close()
+			return err
+		}
+		s.packetConn = packetConn
+		go s.loopPacketIn()
+	}
 	go s.loopIn()
 	return nil
+}
+
+func (s *redirectServer) Port() uint16 {
+	return M.AddrPortFromNet(s.listener.Addr()).Port()
+}
+
+func (s *redirectServer) PacketPort() uint16 {
+	return M.AddrPortFromNet(s.packetConn.LocalAddr()).Port()
 }
 
 func (s *redirectServer) Close() error {
@@ -56,6 +86,9 @@ func (s *redirectServer) Close() error {
 	s.connections = nil
 	s.access.Unlock()
 	err := s.listener.Close()
+	if s.packetConn != nil {
+		err = E.Errors(err, s.packetConn.Close())
+	}
 	for conn := range connections {
 		_ = conn.SetLinger(0)
 		_ = conn.Close()
@@ -118,3 +151,41 @@ func (s *redirectServer) loopIn() {
 		})
 	}
 }
+
+func (s *redirectServer) loopPacketIn() {
+	buffer := make([]byte, 65535)
+	for {
+		n, controlMessage, source, err := s.packetConn.ReadFrom(buffer)
+		if err != nil {
+			if !E.IsClosed(err) {
+				s.logger.Error(E.Cause(err, "read redirected packet"))
+			}
+			return
+		}
+		if controlMessage == nil {
+			continue
+		}
+		s.packetHandler.NewDNSPacket(buffer[:n], M.SocksaddrFromNet(source).Unwrap(), M.SocksaddrFrom(M.AddrFromIP(controlMessage.Dst), 53), &redirectPacketWriter{
+			packetConn: s.packetConn,
+			source:     source,
+			controlMessage: ipv6.ControlMessage{
+				Src:     controlMessage.Dst,
+				IfIndex: controlMessage.IfIndex,
+			},
+		})
+	}
+}
+
+type redirectPacketWriter struct {
+	packetConn     *ipv6.PacketConn
+	source         net.Addr
+	controlMessage ipv6.ControlMessage
+}
+
+func (w *redirectPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	defer buffer.Release()
+	_, err := w.packetConn.WriteTo(buffer.Bytes(), &w.controlMessage, w.source)
+	return err
+}
+
+var _ N.PacketWriter = (*redirectPacketWriter)(nil)
