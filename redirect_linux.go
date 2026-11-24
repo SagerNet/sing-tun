@@ -47,7 +47,6 @@ type autoRedirect struct {
 	bypassIncludeAddresses       []netip.Prefix
 	bypassExcludeAddresses       []netip.Prefix
 	redirectServer               *RedirectServer
-	redirectDNSServer            *redirectDNSServer
 	enableIPv4                   bool
 	enableIPv6                   bool
 	iptablesPath                 string
@@ -117,23 +116,6 @@ func (r *autoRedirect) Start() error {
 	err := r.startRedirectServer()
 	if err != nil {
 		return err
-	}
-	if r.redirectServer != nil && r.useNFTables && r.enableIPv6 && r.tunOptions.DNSModeOrDefault() == DNSModeHijack {
-		var dnsServers []netip.Addr
-		dnsServers, err = r.tunOptions.Inet6DNSAddress()
-		if err != nil {
-			_ = r.Close()
-			return err
-		}
-		if len(dnsServers) > 0 {
-			server := newRedirectDNSServer(r.ctx, r.handler, r.logger, dnsServers[0])
-			err = runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
-			if err != nil {
-				_ = r.Close()
-				return E.Cause(err, "start redirect DNS server")
-			}
-			r.redirectDNSServer = server
-		}
 	}
 	err = r.startNFQueue()
 	if err != nil {
@@ -344,6 +326,9 @@ func (r *autoRedirect) startRedirectServer() error {
 		server.transparent = true
 		server.listenMark = r.tunOptions.AutoRedirectOutputMark
 	}
+	if r.useNFTables && r.enableIPv6 && r.tunOptions.DNSModeOrDefault() == DNSModeHijack {
+		server.packetHandler = r.handler
+	}
 	err := runInNetworkNamespace(r.tunOptions.NetNs, server.Start)
 	if err != nil {
 		return E.Cause(err, "start redirect server")
@@ -411,10 +396,6 @@ func (r *autoRedirect) Close() error {
 	if r.redirectServer != nil {
 		err = r.redirectServer.Close()
 		r.redirectServer = nil
-	}
-	if r.redirectDNSServer != nil {
-		err = E.Errors(err, r.redirectDNSServer.Close())
-		r.redirectDNSServer = nil
 	}
 	if r.useNFTables {
 		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {

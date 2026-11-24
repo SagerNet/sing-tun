@@ -164,14 +164,26 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	}
 	if chain.Type == nftables.ChainTypeNAT {
-		for _, mark := range []uint32{r.tunOptions.AutoRedirectOutputMark, r.tunOptions.AutoRedirectInputMark} {
+		nft.AddRule(&nftables.Rule{
+			Table: table,
+			Chain: chain,
+			Exprs: append(
+				r.nftablesMarkMatch(true, expr.CmpOpEq, r.tunOptions.AutoRedirectOutputMark),
+				&expr.Counter{},
+				&expr.Verdict{Kind: expr.VerdictReturn},
+			),
+		})
+		for _, mark := range []uint32{r.tunOptions.AutoRedirectInputMark, r.tunFlowMark()} {
 			nft.AddRule(&nftables.Rule{
 				Table: table,
 				Chain: chain,
-				Exprs: append(
+				Exprs: slices.Concat(
+					[]expr.Any{
+						&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+					},
 					r.nftablesMarkMatch(true, expr.CmpOpEq, mark),
-					&expr.Counter{},
-					&expr.Verdict{Kind: expr.VerdictReturn},
+					[]expr.Any{&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}},
 				),
 			})
 		}
@@ -603,7 +615,6 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 	}
 
 	if r.tunOptions.DNSModeOrDefault() == DNSModeHijack &&
-		(chain.Type == nftables.ChainTypeNAT || chain.Type == nftables.ChainTypeFilter || chain.Name == "output_prematch") &&
 		(chain.Hooknum == nftables.ChainHookPrerouting ||
 			(r.tunOptions.AutoRedirectMarkMode && chain.Hooknum == nftables.ChainHookOutput)) {
 		if r.enableIPv4 {
@@ -1043,8 +1054,8 @@ func (r *autoRedirect) nftablesCreateDNSHijackRulesForFamily(
 				Data:     []byte{0xfe, 0x80},
 			},
 		}
-		if chain.Type == nftables.ChainTypeNAT && r.redirectDNSServer != nil {
-			redirectPorts := []uint16{r.redirectDNSServer.tcpPort(), r.redirectDNSServer.udpPort()}
+		if chain.Type == nftables.ChainTypeNAT && r.redirectServer != nil && r.redirectServer.packetConn != nil {
+			redirectPorts := []uint16{r.redirectServer.Port(), r.redirectServer.PacketPort()}
 			for i, protocol := range []uint8{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
 				nft.AddRule(&nftables.Rule{
 					Table: table,
