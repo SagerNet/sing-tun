@@ -248,6 +248,21 @@ func (r *autoRedirect) iptablesFillLocalChain(chain iptablesLocalChain, addresse
 					}
 				}
 			}
+			if chain.family.isIPv6 {
+				for _, protocol := range []string{"udp", "tcp"} {
+					linkLocalAction := []string{"-j", "RETURN"}
+					if protocol == "tcp" && chain.family.tproxy && chain.kind == iptablesKindNAT {
+						linkLocalAction = []string{"-g", chain.next}
+					}
+					err := iptablesRun(chain.family.path, slices.Concat([]string{
+						"-t", chain.table, "-A", chain.name,
+						"-s", "fe80::/10", "-p", protocol, "--dport", "53",
+					}, linkLocalAction)...)
+					if err != nil {
+						return err
+					}
+				}
+			}
 		} else {
 			for _, protocol := range []string{"udp", "tcp"} {
 				err := iptablesRun(chain.family.path, slices.Concat([]string{
