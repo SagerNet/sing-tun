@@ -4,12 +4,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"slices"
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-tun/dnsinfo"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -24,7 +21,6 @@ type networkUpdateMonitor struct {
 	access          sync.Mutex
 	callbacks       list.List[NetworkUpdateCallback]
 	routeSocketFile *os.File
-	dnsWatcher      *dnsinfo.Watcher
 	closeOnce       sync.Once
 	done            chan struct{}
 	logger          logger.Logger
@@ -38,11 +34,6 @@ func NewNetworkUpdateMonitor(logger logger.Logger) (NetworkUpdateMonitor, error)
 }
 
 func (m *networkUpdateMonitor) Start() error {
-	dnsWatcher, err := dnsinfo.NewWatcher(m.emit, m.logger)
-	if err != nil {
-		return E.Cause(err, "watch DNS configuration")
-	}
-	m.dnsWatcher = dnsWatcher
 	go m.loopUpdate()
 	return nil
 }
@@ -111,9 +102,6 @@ func (m *networkUpdateMonitor) loopUpdate1(routeSocketFile *os.File) {
 func (m *networkUpdateMonitor) Close() error {
 	m.closeOnce.Do(func() {
 		close(m.done)
-		if m.dnsWatcher != nil {
-			m.dnsWatcher.Close()
-		}
 	})
 	return nil
 }
@@ -181,15 +169,8 @@ func (m *defaultInterfaceMonitor) checkUpdate() error {
 	if err != nil {
 		return E.Cause(err, "find updated interface: ", defaultInterface.Name)
 	}
-	var dnsServers []netip.Addr
-	dnsConfiguration := dnsinfo.Copy()
-	if dnsConfiguration != nil {
-		dnsServers = common.Map(dnsConfiguration.Select(newInterface.Index).Servers, netip.AddrPort.Addr)
-	}
 	oldInterface := m.defaultInterface.Swap(newInterface)
-	oldDNSServers := m.defaultDNSServers
-	m.defaultDNSServers = dnsServers
-	if !defaultInterfaceChanged(oldInterface, newInterface) && slices.Equal(oldDNSServers, dnsServers) {
+	if !defaultInterfaceChanged(oldInterface, newInterface) {
 		return nil
 	}
 	m.emit(newInterface, 0)

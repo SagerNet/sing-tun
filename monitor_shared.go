@@ -42,7 +42,6 @@ type defaultInterfaceMonitor struct {
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
 	defaultInterface      atomic.Pointer[control.Interface]
-	defaultDNSServers     []netip.Addr
 	androidVPNEnabled     atomic.Bool
 	noRoute               atomic.Bool
 	networkMonitor        NetworkUpdateMonitor
