@@ -673,14 +673,40 @@ func (e *goEngine) processFrame(frame *goFrame) {
 		return
 	}
 	if parsed.fragment {
+		packet := frame.buffer.Bytes()
+		if e.dispatchStage != nil {
+			if e.dispatchStage.ReturnParsed(packet, frame.meta, &parsed) {
+				return
+			}
+			if !e.hasLocalEndpoint(&parsed) && e.dispatchStage.DispatchParsed(packet, frame.meta, &parsed) {
+				return
+			}
+		}
 		if parsed.ipVersion == 4 {
-			e.reassembleIPv4(frame.buffer.Bytes(), &parsed)
+			e.reassembleIPv4(packet, &parsed)
 		} else {
-			e.reassembleIPv6(frame.buffer.Bytes(), &parsed)
+			e.reassembleIPv6(packet, &parsed)
 		}
 		return
 	}
 	e.processParsed(frame.buffer, frame.meta, &parsed)
+}
+
+func (e *goEngine) hasLocalEndpoint(parsed *forwardPacket) bool {
+	if !parsed.hasFlow {
+		return false
+	}
+	switch parsed.protocol {
+	case uint8(header.TCPProtocolNumber):
+		return e.flows[parsed.flowKey()] != nil || parsed.isPureTCPSyn() && e.lookupListener(parsed.destination) != nil
+	case uint8(header.UDPProtocolNumber):
+		if e.udpSockets[parsed.destination] != nil || e.packetFlows[parsed.flowKey()] != nil {
+			return true
+		}
+		return len(e.stack.engines) > 1 && e.stack.directory.lookupUDPSocket(parsed.destination) != nil
+	default:
+		return false
+	}
 }
 
 func (e *goEngine) processParsed(buffer *buf.Buffer, meta ForwardFrameMeta, parsed *forwardPacket) {
@@ -856,6 +882,43 @@ type goReassemblyRange struct {
 	end   int
 }
 
+type goReassemblyRanges struct {
+	ranges [goReassemblyMaxRanges]goReassemblyRange
+	count  int
+}
+
+func (r *goReassemblyRanges) merge(start int, end int) bool {
+	count := r.count
+	index := 0
+	for index < count && r.ranges[index].end < start {
+		index++
+	}
+	if index == count || r.ranges[index].start > end {
+		if count == goReassemblyMaxRanges {
+			return false
+		}
+		copy(r.ranges[index+1:count+1], r.ranges[index:count])
+		r.ranges[index] = goReassemblyRange{start: start, end: end}
+		r.count = count + 1
+		return true
+	}
+	mergedStart := min(start, r.ranges[index].start)
+	mergedEnd := end
+	mergeEnd := index
+	for mergeEnd < count && r.ranges[mergeEnd].start <= end {
+		mergedEnd = max(mergedEnd, r.ranges[mergeEnd].end)
+		mergeEnd++
+	}
+	r.ranges[index] = goReassemblyRange{start: mergedStart, end: mergedEnd}
+	copy(r.ranges[index+1:], r.ranges[mergeEnd:count])
+	r.count = count - (mergeEnd - index) + 1
+	return true
+}
+
+func (r *goReassemblyRanges) complete(total int) bool {
+	return total >= 0 && r.count == 1 && r.ranges[0].start == 0 && r.ranges[0].end == total
+}
+
 type goReassemblyEntry struct {
 	active       bool
 	headerSeen   bool
@@ -869,8 +932,7 @@ type goReassemblyEntry struct {
 	totalLength  int
 	buffer       *buf.Buffer
 	headroom     int
-	ranges       [goReassemblyMaxRanges]goReassemblyRange
-	rangeCount   int
+	ranges       goReassemblyRanges
 }
 
 func (r *goReassemblyEntry) discard() {
@@ -959,7 +1021,7 @@ func (e *goEngine) reassemblyEntry(ipVersion uint8, protocol uint8, source netip
 	entry.deadline = now + int64(goReassemblyTimeout)
 	entry.headerLength = 0
 	entry.totalLength = -1
-	entry.rangeCount = 0
+	entry.ranges.count = 0
 	if e.reassemblyTickNode.slot == nil {
 		e.wheel.schedule(&e.reassemblyTickNode, entry.deadline)
 	}
@@ -987,42 +1049,13 @@ func (e *goEngine) reassemblyAdd(entry *goReassemblyEntry, offset int, fragment 
 		return
 	}
 	copy(entry.buffer.Range(entry.headroom+offset, entry.headroom+end), fragment)
-	if !reassemblyMergeRanges(entry, offset, end) {
+	if !entry.ranges.merge(offset, end) {
 		entry.discard()
 		return
 	}
-	if entry.headerSeen && entry.totalLength >= 0 && entry.rangeCount == 1 &&
-		entry.ranges[0].start == 0 && entry.ranges[0].end == entry.totalLength {
+	if entry.headerSeen && entry.ranges.complete(entry.totalLength) {
 		e.completeReassembly(entry)
 	}
-}
-
-func reassemblyMergeRanges(entry *goReassemblyEntry, start int, end int) bool {
-	count := entry.rangeCount
-	index := 0
-	for index < count && entry.ranges[index].end < start {
-		index++
-	}
-	if index == count || entry.ranges[index].start > end {
-		if count == goReassemblyMaxRanges {
-			return false
-		}
-		copy(entry.ranges[index+1:count+1], entry.ranges[index:count])
-		entry.ranges[index] = goReassemblyRange{start: start, end: end}
-		entry.rangeCount = count + 1
-		return true
-	}
-	mergedStart := min(start, entry.ranges[index].start)
-	mergedEnd := end
-	mergeEnd := index
-	for mergeEnd < count && entry.ranges[mergeEnd].start <= end {
-		mergedEnd = max(mergedEnd, entry.ranges[mergeEnd].end)
-		mergeEnd++
-	}
-	entry.ranges[index] = goReassemblyRange{start: mergedStart, end: mergedEnd}
-	copy(entry.ranges[index+1:], entry.ranges[mergeEnd:count])
-	entry.rangeCount = count - (mergeEnd - index) + 1
-	return true
 }
 
 func (e *goEngine) completeReassembly(entry *goReassemblyEntry) {

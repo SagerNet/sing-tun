@@ -18,17 +18,18 @@ func (k flowKey) reversed() flowKey {
 }
 
 type forwardPacket struct {
-	ipVersion   uint8
-	protocol    uint8
-	network     []byte
-	transport   []byte
-	source      netip.AddrPort
-	destination netip.AddrPort
-	tcpFlags    header.TCPFlags
-	icmpType    uint8
-	fragment    bool
-	hasFlow     bool
-	verdict     FlowVerdict
+	ipVersion    uint8
+	protocol     uint8
+	network      []byte
+	transport    []byte
+	source       netip.AddrPort
+	destination  netip.AddrPort
+	tcpFlags     header.TCPFlags
+	icmpType     uint8
+	fragment     bool
+	fragmentInfo fragmentInfo
+	hasFlow      bool
+	verdict      FlowVerdict
 }
 
 func (p *forwardPacket) flowKey() flowKey {
@@ -63,8 +64,8 @@ func parseForwardPacket(packet []byte) (forwardPacket, bool) {
 			destination: netip.AddrPortFrom(ipHdr.DestinationAddr(), 0),
 		}
 		if ipHdr.More() || ipHdr.FragmentOffset() != 0 {
-			parsed.fragment = true
-			return parsed, true
+			valid := parsed.parseFragment(uint32(ipHdr.ID()), int(ipHdr.FragmentOffset()), ipHdr.More(), ipHdr.Payload())
+			return parsed, valid
 		}
 		parsed.parseTransport(ipHdr.Payload())
 		return parsed, true
@@ -85,13 +86,37 @@ func parseForwardPacket(packet []byte) (forwardPacket, bool) {
 		case header.IPv6HopByHopOptionsExtHdrIdentifier, header.IPv6RoutingExtHdrIdentifier, header.IPv6DestinationOptionsExtHdrIdentifier:
 			return forwardPacket{}, false
 		case header.IPv6FragmentExtHdrIdentifier:
-			parsed.fragment = true
-			return parsed, true
+			fragmentHeader := header.IPv6Fragment(ipHdr.Payload())
+			if !fragmentHeader.IsValid() {
+				return forwardPacket{}, false
+			}
+			parsed.protocol = fragmentHeader.NextHeader()
+			valid := parsed.parseFragment(fragmentHeader.ID(), int(fragmentHeader.FragmentOffset())*8, fragmentHeader.More(), fragmentHeader.Payload())
+			return parsed, valid
 		}
 		parsed.parseTransport(ipHdr.Payload())
 		return parsed, true
 	default:
 		return forwardPacket{}, false
+	}
+}
+
+func (p *forwardPacket) parseFragment(id uint32, offset int, more bool, payload []byte) bool {
+	p.fragment = true
+	p.fragmentInfo = fragmentInfo{id: id, offset: offset, more: more, length: len(payload)}
+	if offset != 0 {
+		return true
+	}
+	p.parseTransport(payload)
+	return p.hasFlow || p.protocol != uint8(header.TCPProtocolNumber) && p.protocol != uint8(header.UDPProtocolNumber)
+}
+
+func (p *forwardPacket) fragmentKey() fragmentKey {
+	return fragmentKey{
+		source:      p.source.Addr(),
+		destination: p.destination.Addr(),
+		protocol:    p.protocol,
+		id:          p.fragmentInfo.id,
 	}
 }
 
@@ -220,7 +245,7 @@ func parseEmbedded(inner []byte) (embeddedPacket, bool) {
 		}
 		ipHdr := header.IPv4(inner)
 		headerLength := int(ipHdr.HeaderLength())
-		if headerLength < header.IPv4MinimumSize || headerLength > len(inner) {
+		if headerLength < header.IPv4MinimumSize || headerLength > len(inner) || ipHdr.FragmentOffset() != 0 {
 			return embeddedPacket{}, false
 		}
 		return parseEmbeddedTransport(ipHdr, inner[headerLength:], uint8(ipHdr.TransportProtocol()), ipHdr.SourceAddr(), ipHdr.DestinationAddr())
@@ -229,8 +254,14 @@ func parseEmbedded(inner []byte) (embeddedPacket, bool) {
 			return embeddedPacket{}, false
 		}
 		ipHdr := header.IPv6(inner)
-		protocol, payload, _, transportPresent := skipIPv6ExtensionHeaders(uint8(ipHdr.TransportProtocol()), inner[header.IPv6MinimumSize:])
-		if !transportPresent {
+		protocol, payload, fragment, transportPresent := skipIPv6ExtensionHeaders(uint8(ipHdr.TransportProtocol()), inner[header.IPv6MinimumSize:])
+		if fragment {
+			fragmentHeader := header.IPv6Fragment(payload)
+			if !fragmentHeader.IsValid() || fragmentHeader.FragmentOffset() != 0 {
+				return embeddedPacket{}, false
+			}
+			protocol, payload = fragmentHeader.NextHeader(), fragmentHeader.Payload()
+		} else if !transportPresent {
 			return embeddedPacket{}, false
 		}
 		return parseEmbeddedTransport(ipHdr, payload, protocol, ipHdr.SourceAddr(), ipHdr.DestinationAddr())

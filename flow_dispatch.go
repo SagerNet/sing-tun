@@ -197,6 +197,7 @@ type ForwardStage struct {
 	judging    map[flowKey]*flowJudgement
 	judged     []*flowJudgement
 	held       int
+	fragments  fragmentTable
 	lastSweep  int64
 	resetSeen  uint32
 
@@ -285,6 +286,7 @@ func (d *ForwardDispatcher) Close() {
 		clear(stage.judging)
 		stage.judged = nil
 		stage.held = 0
+		stage.fragments.reset()
 		stage.access.Unlock()
 	}
 	d.portsAccess.Lock()
@@ -315,7 +317,10 @@ func (s *ForwardStage) DispatchParsed(packet []byte, meta ForwardFrameMeta, pars
 }
 
 func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
-	if parsed.fragment || !parsed.hasFlow {
+	if parsed.fragment && parsed.fragmentInfo.offset != 0 {
+		return s.dispatchFragment(packet, parsed, meta)
+	}
+	if !parsed.hasFlow {
 		return false
 	}
 	key := parsed.flowKey()
@@ -331,13 +336,16 @@ func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *Forw
 			if remove {
 				s.removeEntry(key, entry, FlowCloseReset)
 			}
+			if parsed.fragment {
+				s.resolveFragments(parsed, key, handled, now)
+			}
 			return handled
 		}
 	}
 	judgement, judging := s.judging[key]
 	if judging {
-		if len(judgement.packets) < flowHoldPerFlow {
-			s.hold(judgement, packet, parsed, meta)
+		if len(judgement.packets) < flowHoldPerFlow && s.hold(judgement, packet, parsed, meta) && parsed.fragment {
+			s.fragments.pend(parsed.fragmentKey(), parsed.fragmentInfo, now)
 		}
 		return true
 	}
@@ -349,6 +357,9 @@ func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *Forw
 	if !s.hold(judgement, packet, parsed, meta) {
 		return true
 	}
+	if parsed.fragment {
+		s.fragments.pend(parsed.fragmentKey(), parsed.fragmentInfo, now)
+	}
 	s.judging[key] = judgement
 	var firstPacket []byte
 	if parsed.protocol == uint8(header.UDPProtocolNumber) {
@@ -356,6 +367,48 @@ func (s *ForwardStage) dispatch(packet []byte, parsed *forwardPacket, meta *Forw
 	}
 	go s.judge(judgement, firstPacket)
 	return true
+}
+
+func (s *ForwardStage) dispatchFragment(packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
+	now := s.dispatcher.now()
+	s.access.Lock()
+	defer s.access.Unlock()
+	entry := s.fragments.lookup(parsed.fragmentKey(), parsed.fragmentInfo, now)
+	if entry == nil {
+		return false
+	}
+	if entry.pending {
+		return s.fragments.hold(entry, packet, meta)
+	}
+	if !entry.flow.closed.Load() {
+		s.forwardToPort(entry.flow, parsed, packet, meta)
+	}
+	return true
+}
+
+func (s *ForwardStage) resolveFragments(parsed *forwardPacket, key flowKey, handled bool, now int64) []heldPacket {
+	var (
+		flow *forwardFlow
+		rule *rewriteRule
+	)
+	entry := s.table[key]
+	if entry != nil && entry.action == ActionFlow && !entry.flow.closed.Load() {
+		flow = entry.flow
+		rule = &flow.forwardRule
+	}
+	held := s.fragments.resolve(parsed.fragmentKey(), parsed.fragmentInfo, flow, rule, now)
+	if flow == nil {
+		if handled {
+			return nil
+		}
+		return held
+	}
+	for index := range held {
+		fragment := &held[index]
+		fragmentParsed, _ := parseForwardPacket(fragment.packet)
+		s.forwardToPort(flow, &fragmentParsed, fragment.packet, &fragment.meta)
+	}
+	return nil
 }
 
 func (s *ForwardStage) hold(judgement *flowJudgement, packet []byte, parsed *forwardPacket, meta *ForwardFrameMeta) bool {
@@ -406,8 +459,12 @@ func (s *ForwardStage) ResumeJudged(process func(packet []byte, meta ForwardFram
 			held := &judgement.packets[index]
 			parsed, _ := parseForwardPacket(held.packet)
 			parsed.transport = parsed.transport[:held.transportLength]
-			if !s.install(judgement.key, &parsed, held.packet, &held.meta, judgement.verdict, now) {
+			handled := s.install(judgement.key, &parsed, held.packet, &held.meta, judgement.verdict, now)
+			if !handled {
 				unhandled = append(unhandled, *held)
+			}
+			if parsed.fragment {
+				unhandled = append(unhandled, s.resolveFragments(&parsed, judgement.key, handled, now)...)
 			}
 		}
 	}
@@ -525,7 +582,7 @@ func (s *ForwardStage) install(key flowKey, packet *forwardPacket, raw []byte, m
 		s.installSimple(key, ActionDrop, packet.protocol, now)
 		return true
 	case ActionHijackDNS:
-		if packet.protocol == uint8(header.UDPProtocolNumber) {
+		if packet.protocol == uint8(header.UDPProtocolNumber) && !packet.fragment {
 			d.hijackDNSPacket(packet)
 			return true
 		}
@@ -721,7 +778,6 @@ func (d *ForwardDispatcher) natFor(port Port) *portNAT {
 	returnPath = &portReturn{
 		dispatcher: d,
 		nat:        acquirePortNAT(port),
-		fragments:  fragmentTable{entries: make(map[fragmentKey]*fragmentEntry)},
 	}
 	err := port.AttachReturn(returnPath)
 	if err != nil {
@@ -801,7 +857,10 @@ func (o *stageReturnOutput) relayTooBig(packet *forwardPacket, mtu uint32) {
 }
 
 func (s *ForwardStage) stageTooBig(packet *forwardPacket, mtu uint32) {
-	s.writebackBatch = append(s.writebackBatch, buildICMPError(packet, ICMPErrorPacketTooBig, mtu, s.writeback.ReturnHeadroom()))
+	reply, ok := BuildICMPError(packet.network, ICMPErrorPacketTooBig, netip.Addr{}, mtu, s.writeback.ReturnHeadroom())
+	if ok {
+		s.writebackBatch = append(s.writebackBatch, reply)
+	}
 }
 
 func (s *ForwardStage) forwardToPort(flow *forwardFlow, packet *forwardPacket, raw []byte, meta *ForwardFrameMeta) {
@@ -942,6 +1001,7 @@ func (s *ForwardStage) Flush() {
 		clear(s.judged)
 		s.judged = s.judged[:0]
 		s.held = 0
+		s.fragments.reset()
 		s.access.Unlock()
 	}
 	for index := range s.ports {
@@ -1090,9 +1150,10 @@ func isICMPProtocol(protocol uint8) bool {
 }
 
 type portReturn struct {
-	dispatcher *ForwardDispatcher
-	nat        *portNAT
-	fragments  fragmentTable
+	dispatcher     *ForwardDispatcher
+	nat            *portNAT
+	fragmentAccess sync.Mutex
+	fragments      fragmentTable
 }
 
 func (r *portReturn) ReturnHeadroom() int {
@@ -1146,7 +1207,11 @@ func (o *returnOutput) relaySegment(segment []byte) {
 }
 
 func (o *returnOutput) relayTooBig(packet *forwardPacket, mtu uint32) {
-	err := o.returnPath.nat.port.WritePackets([][]byte{buildICMPError(packet, ICMPErrorPacketTooBig, mtu, 0)})
+	reply, ok := BuildICMPError(packet.network, ICMPErrorPacketTooBig, netip.Addr{}, mtu, 0)
+	if !ok {
+		return
+	}
+	err := o.returnPath.nat.port.WritePackets([][]byte{reply})
 	if err != nil {
 		o.returnPath.dispatcher.logger.Trace(E.Cause(err, "write packet too big"))
 	}
