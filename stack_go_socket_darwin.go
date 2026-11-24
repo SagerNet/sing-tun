@@ -91,6 +91,7 @@ func (b *goPacketBatchIO) reset() {
 func (s *goSocket) enablePacketOffload() {}
 
 func (b *goPacketBatchIO) receive(socket *goSocket, packets []goPacketMessage, connected bool) (int, syscall.Errno) {
+	defer b.reset()
 	for index := range packets {
 		b.vectors[index] = rawfile.IovecFromBytes(packets[index].data)
 		message := &b.headers[index]
@@ -120,6 +121,7 @@ func (b *goPacketBatchIO) receive(socket *goSocket, packets []goPacketMessage, c
 }
 
 func (b *goPacketBatchIO) send(socket *goSocket, packets []goPacketMessage, connected bool, family uint8) (int, syscall.Errno) {
+	defer b.reset()
 	sent := 0
 	limit := len(packets)
 	for sent < len(packets) {

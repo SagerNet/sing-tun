@@ -782,12 +782,12 @@ func (c *GoConn) transmitFrame(segment *goSegment) error {
 	}
 	err := c.engine.platformIO.writeData(frame, meta, c, segment.offset+uint64(segment.length))
 	switch err {
-	case nil, errGoFrameDropped:
-		c.blockedFrame = nil
-		clear(c.transmitSegments[:cap(c.transmitSegments)])
 	case errGoTransmitBlocked:
 		c.blockedFrame = frame
 		c.blockedMeta = meta
+	default:
+		c.blockedFrame = nil
+		clear(c.transmitSegments[:cap(c.transmitSegments)])
 	}
 	return err
 }

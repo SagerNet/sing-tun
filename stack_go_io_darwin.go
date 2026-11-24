@@ -212,6 +212,10 @@ func (o *goDarwinIO) readBurst(frames []goFrame, options N.ReadWaitOptions) (int
 		o.messageHeaders[index].Msg.Iov = &o.receiveIovecs[index]
 		o.messageHeaders[index].Msg.Iovlen = 1
 	}
+	defer func() {
+		clear(o.receiveIovecs[:count])
+		clear(o.messageHeaders[:count])
+	}()
 	received, errno := receiveMessageBatch(o.tunFd, o.messageHeaders[:count])
 	if errno != 0 {
 		if errno == unix.EWOULDBLOCK || errno == unix.EINTR {
@@ -318,6 +322,7 @@ func (o *goDarwinIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoC
 			segment = headerCopy
 		}
 		if len(iovecs) == cap(iovecs) {
+			clear(iovecs)
 			return o.writeUnbatchedLocked(frame)
 		}
 		iovecs = append(iovecs, rawfile.IovecFromBytes(segment))

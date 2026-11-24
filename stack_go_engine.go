@@ -147,7 +147,6 @@ type goEngine struct {
 	reassemblyEntries    []goReassemblyEntry
 	udpUserData          goUDPUserData
 	udpNat               *UDPNat
-	transmitFrame        [1][]byte
 	exitSignal           chan struct{}
 	wokeHandlerThisBurst bool
 	tunPending           bool
@@ -200,11 +199,6 @@ type goEngine struct {
 	gsoSegments [goGSOMaxSegments][]byte
 	gsoSizes    [goGSOMaxSegments]int
 	gsoFrame    goFrame
-}
-
-func (e *goEngine) singleFrame(packet []byte) [][]byte {
-	e.transmitFrame[0] = packet
-	return e.transmitFrame[:]
 }
 
 func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine {
@@ -413,7 +407,6 @@ func (e *goEngine) releaseReadBuffers() {
 	e.flushPacketFrames()
 	clear(e.frames)
 	e.udpUserData.packet = nil
-	clear(e.transmitFrame[:])
 	e.packetSlots.sleep()
 	e.gsoSlots.sleep()
 	clear(e.gsoSegments[:])
@@ -648,6 +641,7 @@ func (e *goEngine) processBurst() error {
 			e.processFrame(&e.frames[index])
 		}
 		e.flushPacketUploads()
+		clear(e.frames[:count])
 		if drained || count == 0 {
 			return nil
 		}
@@ -855,7 +849,8 @@ func (e *goEngine) handleLoopbackHairpin(packet []byte, meta ForwardFrameMeta, p
 		ipHdr.SetSourceAddress(ipHdr.DestinationAddress())
 		ipHdr.SetDestinationAddress(source)
 	}
-	err := e.platformIO.writeData(e.singleFrame(packet), meta, nil, 0)
+	frame := [1][]byte{packet}
+	err := e.platformIO.writeData(frame[:], meta, nil, 0)
 	if err == errGoTransmitBlocked {
 		e.droppedHairpinFrames.record(e.stack.logger, "loopback frames")
 	} else if err != nil {

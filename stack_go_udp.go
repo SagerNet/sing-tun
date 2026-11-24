@@ -130,10 +130,12 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		buffer.Reserve(options.RearHeadroom)
 		e.gsoSegments[index] = buffer.FreeBytes()
 	}
+	segments := e.gsoSegments[:count]
 	count, err := GSOSplit(packet, GSOOptions{
 		GSOType: GSOUDPL4, HdrLen: uint16(headerLength), GSOSize: meta.gsoSize,
 		CsumStart: meta.checksumStart, CsumOffset: meta.checksumOffset, NeedsCsum: meta.needsChecksum,
-	}, 0, e.gsoSegments[:count], e.gsoSizes[:count], 0)
+	}, 0, segments, e.gsoSizes[:count], 0)
+	clear(segments)
 	if err != nil {
 		e.stack.logger.Trace(E.Cause(err, "go: split UDP segments"))
 		return
@@ -145,6 +147,7 @@ func (e *goEngine) processUDPSegments(frame *goFrame) {
 		e.gsoFrame = goFrame{buffer: buffer, meta: ForwardFrameMeta{dataValid: meta.needsChecksum || meta.dataValid}}
 		e.processFrame(&e.gsoFrame)
 	}
+	e.gsoFrame = goFrame{}
 	e.flushPacketUploads()
 }
 
@@ -157,7 +160,7 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 		meta.completeChecksum(packet)
 		reply, ok := buildReject(parsed, 0)
 		if ok {
-			err := e.platformIO.writeFrame(e.singleFrame(reply), ForwardFrameMeta{})
+			err := e.platformIO.writePacket(reply, ForwardFrameMeta{})
 			if err != nil {
 				e.stack.logger.Trace(E.Cause(err, "go: write port unreachable"))
 			}
@@ -169,7 +172,7 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 		meta.completeChecksum(packet)
 		reply, ok := BuildICMPError(packet, ICMPErrorNoRoute, netip.Addr{}, 0, 0)
 		if ok {
-			err := e.platformIO.writeFrame(e.singleFrame(reply), ForwardFrameMeta{})
+			err := e.platformIO.writePacket(reply, ForwardFrameMeta{})
 			if err != nil {
 				e.stack.logger.Trace(E.Cause(err, "go: write unreachable"))
 			}
@@ -197,9 +200,11 @@ func (e *goEngine) demuxUDP(packetBuffer *buf.Buffer, meta ForwardFrameMeta, par
 		e.attachUDPSession(conn, userData.created, &parsed.verdict)
 		userData.created = nil
 	})
+	owner := userData.owner
+	*userData = goUDPUserData{}
 	if !ok {
-		if userData.owner != nil {
-			userData.owner.inject(packet, meta)
+		if owner != nil {
+			owner.inject(packet, meta)
 		}
 		return
 	}
