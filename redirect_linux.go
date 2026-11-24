@@ -91,16 +91,15 @@ func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
 		r.interfaceFinder = &networkNamespaceInterfaceFinder{control.NewDefaultInterfaceFinder(), options.TunOptions}
 	}
 	for _, mark := range []struct {
-		field               *uint32
-		defaultValue        uint32
-		androidDefaultValue uint32
+		field        *uint32
+		defaultValue uint32
 	}{
-		{&r.tunOptions.AutoRedirectInputMark, DefaultAutoRedirectInputMark, DefaultAutoRedirectInputMarkAndroid},
-		{&r.tunOptions.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark, DefaultAutoRedirectOutputMarkAndroid},
-		{&r.tunOptions.AutoRedirectResetMark, DefaultAutoRedirectResetMark, DefaultAutoRedirectResetMarkAndroid},
-		{&r.tunOptions.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark, DefaultAutoRedirectTProxyMarkAndroid},
+		{&r.tunOptions.AutoRedirectInputMark, DefaultAutoRedirectInputMark},
+		{&r.tunOptions.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark},
+		{&r.tunOptions.AutoRedirectResetMark, DefaultAutoRedirectResetMark},
+		{&r.tunOptions.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark},
 	} {
-		value := effectiveMark(*mark.field, mark.defaultValue, mark.androidDefaultValue)
+		value := effectiveMark(*mark.field, mark.defaultValue)
 		if *mark.field != 0 && *mark.field != value {
 			r.logger.Warn("configured mark ", iptablesHex(*mark.field), " overlaps the fwmark bits reserved by Android and is replaced by ", iptablesHex(value))
 		}

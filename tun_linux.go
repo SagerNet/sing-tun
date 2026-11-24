@@ -747,10 +747,10 @@ func (t *NativeTun) rules() []*netlink.Rule {
 	priority6 := priority
 
 	if t.options.AutoRedirectMarkMode {
-		inputMark := effectiveMark(t.options.AutoRedirectInputMark, DefaultAutoRedirectInputMark, DefaultAutoRedirectInputMarkAndroid)
-		outputMark := effectiveMark(t.options.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark, DefaultAutoRedirectOutputMarkAndroid)
-		resetMark := effectiveMark(t.options.AutoRedirectResetMark, DefaultAutoRedirectResetMark, DefaultAutoRedirectResetMarkAndroid)
-		tproxyMark := effectiveMark(t.options.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark, DefaultAutoRedirectTProxyMarkAndroid)
+		inputMark := effectiveMark(t.options.AutoRedirectInputMark, DefaultAutoRedirectInputMark)
+		outputMark := effectiveMark(t.options.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark)
+		resetMark := effectiveMark(t.options.AutoRedirectResetMark, DefaultAutoRedirectResetMark)
+		tproxyMark := effectiveMark(t.options.AutoRedirectTProxyMark, DefaultAutoRedirectTProxyMark)
 		markMask := int(inputMark | outputMark | resetMark | tproxyMark)
 		inputMarkMask := markMask
 		if t.options.AutoRedirectInputMarkMask != 0 {
