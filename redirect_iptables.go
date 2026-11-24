@@ -275,6 +275,18 @@ func (r *autoRedirect) iptablesFillLocalChain(chain iptablesLocalChain, addresse
 			}
 		}
 	}
+	excludeAddresses := []string{"169.254.0.0/16", "224.0.0.0/4", "255.255.255.255"}
+	destinationTypes := "LOCAL,BROADCAST,MULTICAST"
+	if chain.family.isIPv6 {
+		excludeAddresses = []string{"fe80::/10", "ff00::/8"}
+		destinationTypes = "LOCAL,MULTICAST"
+	}
+	for _, address := range excludeAddresses {
+		err := iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-d", address, "-j", "RETURN")
+		if err != nil {
+			return err
+		}
+	}
 	for _, prefix := range prefixes {
 		err := iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-d", prefix.String(), "-j", "RETURN")
 		if err != nil {
@@ -282,7 +294,7 @@ func (r *autoRedirect) iptablesFillLocalChain(chain iptablesLocalChain, addresse
 		}
 	}
 	if runtime.GOOS != "android" {
-		err := iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN")
+		err := iptablesRun(chain.family.path, "-t", chain.table, "-A", chain.name, "-m", "addrtype", "--dst-type", destinationTypes, "-j", "RETURN")
 		if err != nil {
 			return err
 		}
@@ -777,25 +789,42 @@ func (r *autoRedirect) setupIPTablesUnreachable() error {
 		return nil
 	}
 	family := &iptablesFamily{path: path, isIPv6: r.enableIPv4}
-	outputName := r.tableName + "-unreachable-output"
-	outputBuilder := r.iptablesChain(family, iptablesTableFilter, outputName)
-	r.iptablesAddExcludeRules(outputBuilder, iptablesHookOutput, iptablesKindFilter, false)
-	outputBuilder.add("-j", "REJECT")
-	if outputBuilder.err != nil {
-		return outputBuilder.err
+	chains := []struct {
+		name string
+		base string
+		hook iptablesHook
+	}{
+		{r.tableName + "-unreachable-output", "OUTPUT", iptablesHookOutput},
+		{r.tableName + "-unreachable-forward", "FORWARD", iptablesHookPrerouting},
 	}
-	forwardName := r.tableName + "-unreachable-forward"
-	forwardBuilder := r.iptablesChain(family, iptablesTableFilter, forwardName)
-	r.iptablesAddExcludeRules(forwardBuilder, iptablesHookPrerouting, iptablesKindFilter, false)
-	forwardBuilder.add("-j", "REJECT")
-	if forwardBuilder.err != nil {
-		return forwardBuilder.err
+	for _, chain := range chains {
+		builder := r.iptablesChain(family, iptablesTableFilter, chain.name)
+		builder.add("-m", "mark", "--mark", iptablesMark(r.tunOptions.AutoRedirectOutputMark, r.effectiveMarkMask()), "-j", "RETURN")
+		if runtime.GOOS == "android" {
+			builder.add("-m", "mark", "--mark", iptablesMark(androidSecureVPNMask, androidSecureVPNMask), "-j", "RETURN")
+		}
+		builder.add("-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN")
+		if family.isIPv6 {
+			for _, icmpType := range []header.ICMPv6Type{
+				header.ICMPv6RouterSolicit, header.ICMPv6RouterAdvert, header.ICMPv6NeighborSolicit, header.ICMPv6NeighborAdvert, header.ICMPv6RedirectMsg,
+				header.ICMPv6MulticastListenerQuery, header.ICMPv6MulticastListenerReport, header.ICMPv6MulticastListenerDone, header.ICMPv6MulticastListenerV2Report,
+			} {
+				builder.add("-p", "icmpv6", "--icmpv6-type", strconv.Itoa(int(icmpType)), "-j", "RETURN")
+			}
+		}
+		r.iptablesAddExcludeRules(builder, chain.hook, iptablesKindFilter, false)
+		builder.add("-j", "REJECT")
+		if builder.err != nil {
+			return builder.err
+		}
 	}
-	err = iptablesRun(path, "-t", iptablesTableFilter, "-I", "OUTPUT", "-j", outputName)
-	if err != nil {
-		return err
+	for _, chain := range chains {
+		err = iptablesRun(path, "-t", iptablesTableFilter, "-I", chain.base, "-j", chain.name)
+		if err != nil {
+			return err
+		}
 	}
-	return iptablesRun(path, "-t", iptablesTableFilter, "-I", "FORWARD", "-j", forwardName)
+	return nil
 }
 
 func findIPTablesBinary(isIPv6 bool) (string, error) {
