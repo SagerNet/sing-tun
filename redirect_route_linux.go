@@ -337,6 +337,7 @@ func (r *autoRedirect) cleanupStaleRouteRules(priority int, mark uint32) {
 				continue
 			}
 			flushRouteTable(staleRule.Table)
+			staleRule.MarkSet = staleRule.Mark != 0
 			_ = netlink.RuleDel(staleRule)
 		}
 	}

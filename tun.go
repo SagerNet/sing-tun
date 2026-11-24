@@ -144,7 +144,7 @@ func (o *Options) DNSModeOrDefault() string {
 }
 
 func (o *Options) AutoRedirectOutputMarkOrDefault() uint32 {
-	return effectiveMark(o.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark, DefaultAutoRedirectOutputMarkAndroid)
+	return effectiveMark(o.AutoRedirectOutputMark, DefaultAutoRedirectOutputMark)
 }
 
 func (o *Options) DNSServerAddress() ([]netip.Addr, error) {
