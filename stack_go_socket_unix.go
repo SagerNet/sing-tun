@@ -101,7 +101,7 @@ func goSocketWouldBlock(errno syscall.Errno) bool {
 }
 
 func goSocketDropped(errno syscall.Errno) bool {
-	return errno == unix.EMSGSIZE || errno == unix.EAFNOSUPPORT || errno == unix.ENOBUFS
+	return errno == unix.EMSGSIZE || errno == unix.EAFNOSUPPORT || errno == unix.ENOBUFS || errno == unix.ENOMEM
 }
 
 func (s *goSocket) readVector(iovecs []unix.Iovec) (int, syscall.Errno) {
