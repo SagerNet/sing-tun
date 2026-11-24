@@ -72,7 +72,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 	nft *nftables.Conn, table *nftables.Table,
 	localAddresses []netip.Prefix, lastAddresses []netip.Prefix,
 ) error {
-	if r.enableIPv4 || !r.fibAddrType {
+	if r.enableIPv4 || !r.fibAddrType || r.tunOptions.StrictRoute {
 		localAddresses4 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is4()
 		})
@@ -91,7 +91,7 @@ func (r *autoRedirect) nftablesCreateLocalAddressSets(
 			}
 		}
 	}
-	if r.enableIPv6 || !r.fibAddrType {
+	if r.enableIPv6 || !r.fibAddrType || r.tunOptions.StrictRoute {
 		localAddresses6 := common.Filter(localAddresses, func(it netip.Prefix) bool {
 			return it.Addr().Is6()
 		})
@@ -673,19 +673,55 @@ func (r *autoRedirect) nftablesCreateExcludeRules(nft *nftables.Conn, table *nft
 		}
 	}
 
-	if r.enableIPv4 || !r.fibAddrType {
+	inet4ExcludeAddress := []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16")}
+	inet6ExcludeAddress := []netip.Prefix{netip.MustParsePrefix("fe80::/10")}
+	if !r.fibAddrType {
+		inet4ExcludeAddress = append(inet4ExcludeAddress, netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32"))
+		inet6ExcludeAddress = append(inet6ExcludeAddress, netip.MustParsePrefix("ff00::/8"))
+	}
+	inet4ExcludeAddressSet, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv4, nil, inet4ExcludeAddress, false, false)
+	if err != nil {
+		return E.Cause(err, "create ipv4 exclude address set")
+	}
+	nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet4ExcludeAddressSet.ID, inet4ExcludeAddressSet.Name, nftables.TableFamilyIPv4, false)
+	inet6ExcludeAddressSet, err := nftablesCreateIPSet(nft, table, 0, "", nftables.TableFamilyIPv6, nil, inet6ExcludeAddress, false, false)
+	if err != nil {
+		return E.Cause(err, "create ipv6 exclude address set")
+	}
+	nftablesCreateExcludeDestinationIPSet(nft, table, chain, inet6ExcludeAddressSet.ID, inet6ExcludeAddressSet.Name, nftables.TableFamilyIPv6, false)
+
+	if r.enableIPv4 || !r.fibAddrType || r.tunOptions.StrictRoute {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 5, "inet4_local_address_set", nftables.TableFamilyIPv4, false)
 	}
-	if r.enableIPv6 || !r.fibAddrType {
+	if r.enableIPv6 || !r.fibAddrType || r.tunOptions.StrictRoute {
 		nftablesCreateExcludeDestinationIPSet(nft, table, chain, 6, "inet6_local_address_set", nftables.TableFamilyIPv6, false)
 	}
 	if r.fibAddrType {
+		addressTypes := &nftables.Set{
+			Table:        table,
+			Anonymous:    true,
+			Constant:     true,
+			KeyType:      nftables.TypeFIBAddr,
+			KeyByteOrder: binaryutil.NativeEndian,
+		}
+		err = nft.AddSet(addressTypes, []nftables.SetElement{
+			{Key: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+			{Key: binaryutil.NativeEndian.PutUint32(unix.RTN_BROADCAST)},
+			{Key: binaryutil.NativeEndian.PutUint32(unix.RTN_MULTICAST)},
+		})
+		if err != nil {
+			return E.Cause(err, "add fib address type set")
+		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
 			Exprs: []expr.Any{
 				&expr.Fib{Register: 1, FlagDADDR: true, ResultADDRTYPE: true},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(unix.RTN_LOCAL)},
+				&expr.Lookup{
+					SourceRegister: 1,
+					SetID:          addressTypes.ID,
+					SetName:        addressTypes.Name,
+				},
 				&expr.Counter{},
 				&expr.Verdict{Kind: expr.VerdictReturn},
 			},
