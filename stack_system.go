@@ -170,7 +170,7 @@ func (s *System) start() error {
 		}
 		s.tcpListener = tcpListener
 		s.tcpPort = M.SocksaddrFromNet(tcpListener.Addr()).Port
-		s.tcpNat4 = NewNat(s.ctx, s.udpTimeout)
+		s.tcpNat4 = NewNat(s.ctx)
 		go s.acceptLoop(tcpListener, s.tcpNat4)
 	}
 	if s.inet6NextAddress.IsValid() {
@@ -186,7 +186,7 @@ func (s *System) start() error {
 		}
 		s.tcpListener6 = tcpListener
 		s.tcpPort6 = M.SocksaddrFromNet(tcpListener.Addr()).Port
-		s.tcpNat6 = NewNat(s.ctx, s.udpTimeout)
+		s.tcpNat6 = NewNat(s.ctx)
 		go s.acceptLoop(tcpListener, s.tcpNat6)
 	}
 	udpNATOptions := s.udpNATOptions
@@ -401,6 +401,9 @@ func (s *System) acceptLoop(listener net.Listener, tcpNat *TCPNat) {
 			s.logger.Trace(E.New("unknown session with port ", connPort))
 			continue
 		}
+		session.Lock()
+		session.established = true
+		session.Unlock()
 		go s.handler.NewConnectionEx(s.ctx, conn, M.SocksaddrFromNetIP(session.Source), M.SocksaddrFromNetIP(session.Destination), nil)
 	}
 }

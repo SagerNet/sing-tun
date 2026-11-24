@@ -10,7 +10,6 @@ import (
 )
 
 type TCPNat struct {
-	timeout    time.Duration
 	portIndex  uint16
 	portAccess sync.RWMutex
 	addrAccess sync.RWMutex
@@ -28,14 +27,14 @@ type TCPSession struct {
 	Source      netip.AddrPort
 	Destination netip.AddrPort
 	LastActive  time.Time
+	established bool
 	finForward  bool
 	finReverse  bool
 	closed      bool
 }
 
-func NewNat(ctx context.Context, timeout time.Duration) *TCPNat {
+func NewNat(ctx context.Context) *TCPNat {
 	natMap := &TCPNat{
-		timeout:   timeout,
 		portIndex: 10000,
 		addrMap:   make(map[tcpNatKey]uint16),
 		portMap:   make(map[uint16]*TCPSession),
@@ -45,7 +44,7 @@ func NewNat(ctx context.Context, timeout time.Duration) *TCPNat {
 }
 
 func (n *TCPNat) loopCheckTimeout(ctx context.Context) {
-	ticker := time.NewTicker(min(n.timeout, flowSweepInterval))
+	ticker := time.NewTicker(flowSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -67,7 +66,7 @@ func (n *TCPNat) checkTimeout() {
 	n.portAccess.RLock()
 	for natPort, session := range n.portMap {
 		session.Lock()
-		timedOut := n.expiredLocked(session, now)
+		timedOut := session.expiredLocked(now)
 		session.Unlock()
 		if timedOut {
 			expired = append(expired, expiredSession{port: natPort, session: session})
@@ -81,7 +80,7 @@ func (n *TCPNat) checkTimeout() {
 	n.portAccess.Lock()
 	for _, e := range expired {
 		e.session.Lock()
-		if n.portMap[e.port] == e.session && n.expiredLocked(e.session, now) {
+		if n.portMap[e.port] == e.session && e.session.expiredLocked(now) {
 			delete(n.addrMap, tcpNatKey{Source: e.session.Source, Destination: e.session.Destination})
 			delete(n.portMap, e.port)
 		}
@@ -91,11 +90,17 @@ func (n *TCPNat) checkTimeout() {
 	n.addrAccess.Unlock()
 }
 
-func (n *TCPNat) expiredLocked(session *TCPSession, now time.Time) bool {
-	if session.closed {
-		return now.Sub(session.LastActive) > tcpClosingTimeout
+func (s *TCPSession) expiredLocked(now time.Time) bool {
+	var timeout time.Duration
+	switch {
+	case s.closed:
+		timeout = tcpClosingTimeout
+	case s.established && !s.finForward && !s.finReverse:
+		timeout = tcpEstablishedTimeout
+	default:
+		timeout = tcpTransitoryTimeout
 	}
-	return now.Sub(session.LastActive) > n.timeout
+	return now.Sub(s.LastActive) > timeout
 }
 
 func (n *TCPNat) LookupBack(port uint16, flags header.TCPFlags) *TCPSession {
@@ -113,6 +118,9 @@ func (s *TCPSession) observe(flags header.TCPFlags, reverse bool) bool {
 	defer s.Unlock()
 	if s.closed && !reverse && flags&header.TCPFlagSyn != 0 && flags&header.TCPFlagAck == 0 {
 		return false
+	}
+	if !reverse && flags&header.TCPFlagSyn == 0 && flags&header.TCPFlagAck != 0 {
+		s.established = true
 	}
 	if flags&header.TCPFlagRst != 0 {
 		s.closed = true
