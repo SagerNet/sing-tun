@@ -368,8 +368,9 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 	mask := r.effectiveMarkMask()
 	maskValue := iptablesHex(mask)
 	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, mask)
+	inputPacketMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, r.packetMarkMask(r.tunOptions.AutoRedirectInputMark))
 	outputMark := iptablesMark(r.tunOptions.AutoRedirectOutputMark, mask)
-	resetMark := iptablesMark(r.tunOptions.AutoRedirectResetMark, mask)
+	resetMark := iptablesMark(r.tunOptions.AutoRedirectResetMark, r.packetMarkMask(r.tunOptions.AutoRedirectResetMark))
 	tunFlowMark := iptablesMark(r.tunFlowMark(), mask)
 	if hook == iptablesHookOutput {
 		if r.androidVPNService {
@@ -379,7 +380,7 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 		if builder.family.isIPv6 {
 			icmpProtocol = "icmpv6"
 		}
-		builder.add("!", "-p", icmpProtocol, "-m", "conntrack", "--ctdir", "REPLY", "-m", "connmark", "--mark", tunFlowMark, "-j", "MARK", "--set-xmark", inputMark)
+		builder.add("!", "-p", icmpProtocol, "-m", "conntrack", "--ctdir", "REPLY", "-m", "connmark", "--mark", tunFlowMark, "-j", "MARK", "--set-xmark", inputPacketMark)
 	} else {
 		builder.add("-i", "lo", "-j", "RETURN")
 		builder.add("-i", options.Name, "-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "CONNMARK", "--set-xmark", tunFlowMark)
@@ -392,12 +393,14 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 		builder.add("-m", "mark", "--mark", tproxyMark, "-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
 		builder.add("-m", "mark", "--mark", tproxyMark, "-j", "RETURN")
 	}
-	for _, mark := range []string{outputMark, inputMark} {
-		builder.add("-m", "mark", "--mark", mark, "-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
-		builder.add("-m", "mark", "--mark", mark, "-j", "RETURN")
-		builder.add("-m", "connmark", "--mark", mark, "-j", "CONNMARK", "--restore-mark", "--nfmask", maskValue, "--ctmask", maskValue)
-		builder.add("-m", "connmark", "--mark", mark, "-j", "RETURN")
-	}
+	builder.add("-m", "mark", "--mark", outputMark, "-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
+	builder.add("-m", "mark", "--mark", outputMark, "-j", "RETURN")
+	builder.add("-m", "connmark", "--mark", outputMark, "-j", "CONNMARK", "--restore-mark", "--nfmask", maskValue, "--ctmask", maskValue)
+	builder.add("-m", "connmark", "--mark", outputMark, "-j", "RETURN")
+	builder.add("-m", "mark", "--mark", inputPacketMark, "-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
+	builder.add("-m", "mark", "--mark", inputPacketMark, "-j", "RETURN")
+	builder.add("-m", "connmark", "--mark", inputMark, "-j", "MARK", "--set-xmark", inputPacketMark)
+	builder.add("-m", "connmark", "--mark", inputMark, "-j", "RETURN")
 	builder.add("-p", "tcp", "-m", "mark", "--mark", resetMark, "-j", "RETURN")
 	builder.add("-p", "tcp", "!", "--tcp-flags", "SYN,ACK", "SYN", "-j", "RETURN")
 	r.iptablesAddExcludeRules(builder, hook, iptablesKindFilter, dnsHijack)
@@ -414,8 +417,7 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 func (r *autoRedirect) iptablesAddMarkRules(builder *iptablesBuilder) {
 	mask := r.effectiveMarkMask()
 	maskValue := iptablesHex(mask)
-	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, mask)
-	builder.add("-j", "MARK", "--set-xmark", inputMark)
+	builder.add("-j", "MARK", "--set-xmark", iptablesMark(r.tunOptions.AutoRedirectInputMark, r.packetMarkMask(r.tunOptions.AutoRedirectInputMark)))
 	builder.add("-m", "connmark", "!", "--mark", iptablesMark(r.tunFlowMark(), mask), "-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
 }
 
@@ -424,9 +426,8 @@ func (r *autoRedirect) iptablesAddLoopbackReroute(builder *iptablesBuilder, hook
 	if builder.family.isIPv6 {
 		loopbackAddresses = r.tunOptions.Inet6LoopbackAddress
 	}
-	mask := r.effectiveMarkMask()
-	maskValue := iptablesHex(mask)
-	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, mask)
+	maskValue := iptablesHex(r.effectiveMarkMask())
+	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, r.packetMarkMask(r.tunOptions.AutoRedirectInputMark))
 	for _, address := range loopbackAddresses {
 		builder.add("-p", "tcp", "-d", address.String(), "-m", "mark", "!", "--mark", inputMark, "-j", "MARK", "--set-xmark", inputMark)
 		if hook == iptablesHookOutput {
@@ -465,8 +466,9 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	mask := r.effectiveMarkMask()
 	maskValue := iptablesHex(mask)
 	inputMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, mask)
+	inputPacketMark := iptablesMark(r.tunOptions.AutoRedirectInputMark, r.packetMarkMask(r.tunOptions.AutoRedirectInputMark))
 	outputMark := iptablesMark(r.tunOptions.AutoRedirectOutputMark, mask)
-	resetMark := iptablesMark(r.tunOptions.AutoRedirectResetMark, mask)
+	resetMark := iptablesMark(r.tunOptions.AutoRedirectResetMark, r.packetMarkMask(r.tunOptions.AutoRedirectResetMark))
 	tproxyMark := iptablesMark(r.tunOptions.AutoRedirectTProxyMark, mask)
 	tunFlowMark := iptablesMark(r.tunFlowMark(), mask)
 	loopbackAddresses := options.Inet4LoopbackAddress
@@ -548,8 +550,8 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	if family.isIPv6 && !family.tproxy {
 		preroutingMarkChain.add("-p", "tcp", "-m", "mark", "--mark", resetMark, "-j", "RETURN")
 	}
-	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "MARK", "--set-xmark", inputMark)
-	preroutingMarkChain.add("-m", "connmark", "--mark", tunFlowMark, "-m", "conntrack", "--ctdir", "REPLY", "-j", "MARK", "--set-xmark", inputMark)
+	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "MARK", "--set-xmark", inputPacketMark)
+	preroutingMarkChain.add("-m", "connmark", "--mark", tunFlowMark, "-m", "conntrack", "--ctdir", "REPLY", "-j", "MARK", "--set-xmark", inputPacketMark)
 	preroutingMarkChain.add("-m", "connmark", "--mark", inputMark, "-j", "RETURN")
 	preroutingMarkChain.add("-m", "connmark", "--mark", tunFlowMark, "-j", "RETURN")
 	preroutingMarkChain.add("-m", "connmark", "--mark", outputMark, "-j", "MARK", "--set-xmark", outputMark)
@@ -558,7 +560,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	r.iptablesAddExcludeRules(include, iptablesHookPrerouting, iptablesKindRoute, dnsHijack)
 	r.iptablesAddMarkRules(include)
 	preroutingMarkChain.absorb(include)
-	preroutingMarkChain.add("-m", "mark", "--mark", inputMark, "-j", "RETURN")
+	preroutingMarkChain.add("-m", "mark", "--mark", inputPacketMark, "-j", "RETURN")
 	preroutingMarkChain.add("-j", "MARK", "--set-xmark", outputMark)
 	preroutingMarkChain.add("-j", "CONNMARK", "--save-mark", "--nfmask", maskValue, "--ctmask", maskValue)
 	if preroutingMarkChain.err != nil {
@@ -659,6 +661,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 		}
 		if !r.shouldSkipOutputChain() {
 			outputTProxy := r.iptablesChain(family, iptablesTableMangle, r.tableName+"-output-tproxy")
+			outputTProxy.add("-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN")
 			// Under VpnService the app's own sockets carry the protectedFromVpn bit instead of
 			// the routing mark, so netd routes them past the tun.
 			outputTProxy.addVPNServiceGate()
@@ -718,7 +721,7 @@ func (r *autoRedirect) setupIPTablesForFamily(family *iptablesFamily) error {
 	// flows marked into the tun need their own accept.
 	if runtime.GOOS == "android" {
 		forward := r.iptablesChain(family, iptablesTableFilter, r.tableName+"-forward")
-		forward.add("-o", options.Name, "-m", "mark", "--mark", inputMark, "-j", "ACCEPT")
+		forward.add("-o", options.Name, "-m", "mark", "--mark", inputPacketMark, "-j", "ACCEPT")
 		forward.add("-i", options.Name, "-m", "connmark", "--mark", inputMark, "-j", "ACCEPT")
 		forward.add("-i", options.Name, "-m", "connmark", "--mark", tunFlowMark, "-j", "ACCEPT")
 		if forward.err != nil {

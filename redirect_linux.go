@@ -311,7 +311,7 @@ func (r *autoRedirect) prepareCustomTransparentListener() error {
 	if err != nil {
 		return E.Cause(err, "set IPV6_TRANSPARENT")
 	}
-	err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, int(r.tunOptions.AutoRedirectOutputMark))
+	err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_MARK, int(r.tunOptions.AutoRedirectOutputMark|androidSecureVPNMask))
 	if err != nil {
 		return E.Cause(err, "set SO_MARK")
 	}
@@ -506,7 +506,7 @@ func (r *autoRedirect) effectiveMarkMask() uint32 {
 }
 
 func (r *autoRedirect) packetMarkMask(mark uint32) uint32 {
-	if r.useNFTables && (mark == r.tunOptions.AutoRedirectInputMark || mark == r.tunOptions.AutoRedirectResetMark) {
+	if (r.useNFTables || runtime.GOOS != "android") && (mark == r.tunOptions.AutoRedirectInputMark || mark == r.tunOptions.AutoRedirectResetMark) {
 		return math.MaxUint32
 	}
 	return r.effectiveMarkMask()
