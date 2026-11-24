@@ -465,6 +465,8 @@ func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 		err = s.processIPv4UDP(ipHdr, ipHdr.Payload())
 	case header.ICMPv4ProtocolNumber:
 		writeBack, err = s.processIPv4ICMP(ipHdr, ipHdr.Payload())
+	default:
+		writeBack = false
 	}
 	if err != nil {
 		writeBack = false
@@ -493,6 +495,8 @@ func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 		err = s.processIPv6UDP(ipHdr, ipHdr.Payload())
 	case header.ICMPv6ProtocolNumber:
 		writeBack, err = s.processIPv6ICMP(ipHdr, ipHdr.Payload())
+	default:
+		writeBack = false
 	}
 	if err != nil {
 		writeBack = false
