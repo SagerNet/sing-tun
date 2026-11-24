@@ -1,6 +1,8 @@
 package tun
 
 import (
+	"net/netip"
+
 	"github.com/sagernet/sing-tun/gtcpip/header"
 )
 
@@ -16,19 +18,10 @@ func buildReject(packet *forwardPacket, headroom int) ([]byte, bool) {
 		}
 		return buildResetIPv6(header.IPv6(packet.network), tcpHdr, headroom), true
 	case uint8(header.UDPProtocolNumber):
-		return buildICMPError(packet, ICMPErrorPortUnreachable, 0, headroom), true
+		return BuildICMPError(packet.network, ICMPErrorPortUnreachable, netip.Addr{}, 0, headroom)
 	default:
-		return buildICMPError(packet, ICMPErrorAddressUnreachable, 0, headroom), true
+		return BuildICMPError(packet.network, ICMPErrorAddressUnreachable, netip.Addr{}, 0, headroom)
 	}
-}
-
-func buildICMPError(packet *forwardPacket, errorType ICMPError, mtu uint32, headroom int) []byte {
-	if packet.ipVersion == 4 {
-		ipHdr := header.IPv4(packet.network)
-		return buildICMPv4Error(ipHdr, errorType, ipHdr.DestinationAddr(), mtu, headroom)
-	}
-	ipHdr := header.IPv6(packet.network)
-	return buildICMPv6Error(ipHdr, errorType, ipHdr.DestinationAddr(), mtu, headroom)
 }
 
 func buildResetIPv4(origIPHdr header.IPv4, origTCPHdr header.TCP, headroom int) []byte {
