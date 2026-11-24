@@ -34,6 +34,10 @@ func (p *goMemoryPoller) wait(timeout time.Duration, events []goSocketEvent) (ui
 	return 0, 0, nil
 }
 
+func (p *goMemoryPoller) setDeviceReadEnabled(enabled bool) error {
+	return nil
+}
+
 func (p *goMemoryPoller) registerSocket(socket *goSocket, token uint32, interest uint8) error {
 	return nil
 }

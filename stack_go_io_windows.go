@@ -138,6 +138,10 @@ func (o *goWindowsIO) armReadWait() (bool, error) {
 	return false, nil
 }
 
+func (o *goWindowsIO) setDeviceReadEnabled(enabled bool) error {
+	return nil
+}
+
 func (o *goWindowsIO) wait(timeout time.Duration, events []goSocketEvent) (bool, int, error) {
 	tunReadable := !o.ringDrained
 	if o.ringDrained {

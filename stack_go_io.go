@@ -41,6 +41,7 @@ var errGoQueueUnavailable = E.New("go: tun queue unavailable")
 type goPlatformIO interface {
 	start() error
 	wait(timeout time.Duration, events []goSocketEvent) (tunReadable bool, count int, err error)
+	setDeviceReadEnabled(enabled bool) error
 	registerSocket(socket *goSocket, token uint32, interest uint8) error
 	updateSocket(socket *goSocket, interest uint8) error
 	unregisterSocket(socket *goSocket)

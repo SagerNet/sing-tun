@@ -17,12 +17,13 @@ const (
 )
 
 type goPoller struct {
-	epollDescriptor int
-	eventDescriptor int
-	registrations   int
-	access          sync.RWMutex
-	closed          bool
-	events          [goSocketEventBatch + 2]unix.EpollEvent
+	epollDescriptor  int
+	eventDescriptor  int
+	deviceDescriptor int
+	registrations    int
+	access           sync.RWMutex
+	closed           bool
+	events           [goSocketEventBatch + 2]unix.EpollEvent
 }
 
 func (p *goPoller) open(deviceDescriptor int) error {
@@ -47,6 +48,27 @@ func (p *goPoller) open(deviceDescriptor int) error {
 	}
 	p.epollDescriptor = epollDescriptor
 	p.eventDescriptor = eventDescriptor
+	p.deviceDescriptor = deviceDescriptor
+	return nil
+}
+
+func (p *goPoller) setDeviceReadEnabled(enabled bool) error {
+	if p.deviceDescriptor < 0 {
+		return nil
+	}
+	if enabled {
+		err := unix.EpollCtl(p.epollDescriptor, unix.EPOLL_CTL_ADD, p.deviceDescriptor, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: goEpollDataDevice})
+		if err != nil {
+			return E.Cause(err, "go: enable device read")
+		}
+		p.registrations++
+		return nil
+	}
+	err := unix.EpollCtl(p.epollDescriptor, unix.EPOLL_CTL_DEL, p.deviceDescriptor, nil)
+	if err != nil {
+		return E.Cause(err, "go: disable device read")
+	}
+	p.registrations--
 	return nil
 }
 
