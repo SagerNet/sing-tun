@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	DefaultAutoRedirectInputMark  = 0x2023
-	DefaultAutoRedirectOutputMark = 0x2024
-	DefaultAutoRedirectResetMark  = 0x2025
+	DefaultAutoRedirectInputMark  = 0x04000000
+	DefaultAutoRedirectOutputMark = 0x08000000
+	DefaultAutoRedirectResetMark  = 0x10000000
 	DefaultAutoRedirectNFQueue    = 100
 )
 

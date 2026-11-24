@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sagernet/nftables"
+	"github.com/sagernet/nftables/binaryutil"
 	"github.com/sagernet/nftables/expr"
 	"github.com/sagernet/sing-tun/gtcpip/header"
 	"github.com/sagernet/sing/common"
@@ -237,6 +238,42 @@ func (r *autoRedirect) setupNFTables() error {
 				},
 			},
 		})
+		unreachableFamily := r.nftablesUnreachableFamily()
+		if unreachableFamily != nftables.TableFamilyUnspecified {
+			exprs := []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{uint8(unreachableFamily)}},
+			}
+			if len(r.tunOptions.ExcludeInterface) > 0 {
+				excludeInterface := &nftables.Set{
+					Table:        table,
+					Anonymous:    true,
+					Constant:     true,
+					KeyType:      nftables.TypeIFName,
+					KeyByteOrder: binaryutil.NativeEndian,
+				}
+				err = nft.AddSet(excludeInterface, common.Map(r.tunOptions.ExcludeInterface, func(it string) nftables.SetElement {
+					return nftables.SetElement{Key: nftablesIfname(it)}
+				}))
+				if err != nil {
+					return E.Cause(err, "add exclude interface set")
+				}
+				exprs = append(exprs,
+					&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+					&expr.Lookup{
+						SourceRegister: 1,
+						SetID:          excludeInterface.ID,
+						SetName:        excludeInterface.Name,
+						Invert:         true,
+					},
+				)
+			}
+			nft.AddRule(&nftables.Rule{
+				Table: table,
+				Chain: chainPreRoutingUDP,
+				Exprs: append(exprs, &expr.Counter{}, &expr.Verdict{Kind: expr.VerdictReturn}),
+			})
+		}
 		nft.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chainPreRoutingUDP,
