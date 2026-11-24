@@ -76,7 +76,7 @@ func (e *goEngine) answerNoFlow(parsed *forwardPacket) {
 	if !ok {
 		return
 	}
-	err := e.platformIO.writeFrame(e.singleFrame(reply), ForwardFrameMeta{})
+	err := e.platformIO.writePacket(reply, ForwardFrameMeta{})
 	if err != nil {
 		e.stack.logger.Trace(E.Cause(err, "go: write reset"))
 	}
