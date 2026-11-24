@@ -283,12 +283,12 @@ func (f *ICMPForwarder) installFlow(key icmpFlowKey, verdict FlowVerdict, pkt *s
 	flow := &icmpFlow{port: port, deadline: now.Add(defaultICMPTimeout)}
 	if verdict.NewTracker != nil {
 		flow.tracker = verdict.NewTracker()
+		if flow.tracker != nil {
+			flow.tracker.AttachFlow(flow)
+		}
 	}
 	f.flows[key] = flow
 	f.flowAccess.Unlock()
-	if flow.tracker != nil {
-		flow.tracker.AttachFlow(flow)
-	}
 	f.writeToPort(flow, pkt)
 	return true
 }
