@@ -159,6 +159,23 @@ func (p *goPoller) unregisterSocket(socket *goSocket) {
 	p.registrations--
 }
 
+func (p *goPoller) setDeviceReadEnabled(enabled bool) error {
+	if p.deviceDescriptor < 0 {
+		return nil
+	}
+	flags := uint16(unix.EV_DISABLE)
+	if enabled {
+		flags = unix.EV_ENABLE
+	}
+	changes := p.changes[:1]
+	changes[0] = unix.Kevent_t{Ident: uint64(p.deviceDescriptor), Filter: unix.EVFILT_READ, Flags: flags}
+	_, err := unix.Kevent(p.kqueueDescriptor, changes, nil, nil)
+	if err != nil {
+		return E.Cause(err, "go: update device read")
+	}
+	return nil
+}
+
 func (p *goPoller) armDeviceWritable() error {
 	p.access.RLock()
 	defer p.access.RUnlock()

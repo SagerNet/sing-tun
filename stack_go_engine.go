@@ -143,6 +143,9 @@ type goEngine struct {
 	resetMessage         goMessage
 	delayedAckTickNode   goWheelNode
 	reassemblyTickNode   goWheelNode
+	readRetryNode        goWheelNode
+	readRetry            ReadRetry
+	readPaused           bool
 	dispatchTickNode     goWheelNode
 	reassemblyEntries    []goReassemblyEntry
 	udpUserData          goUDPUserData
@@ -238,6 +241,7 @@ func newGoEngine(stack *Go, platformIO goPlatformIO, engineCount int) *goEngine 
 	engine.packetReadOptions.Store(new(N.ReadWaitOptions))
 	engine.delayedAckTickNode.expire = func(now int64) { engine.drainAckList(now, false) }
 	engine.reassemblyTickNode.expire = engine.expireReassemblyTick
+	engine.readRetryNode.expire = func(int64) { engine.tunPending = true }
 	engine.dispatchTickNode.expire = func(int64) { engine.dispatchStage.Flush() }
 	engine.refreshCoarseTime()
 	engine.wheel.currentTick = engine.coarseTime.Load() / goWheelTick
@@ -248,7 +252,6 @@ func (e *goEngine) run() {
 	defer close(e.exitSignal)
 	defer e.exit()
 	e.loadWindowStart = e.coarseTime.Load()
-	var readRetry ReadRetry
 	for {
 		parkStart := int64(time.Since(e.epoch))
 		tunReadable, eventCount, err := e.park()
@@ -274,6 +277,14 @@ func (e *goEngine) run() {
 		e.inlineTransmitBudget = goEngineInlineBurst
 		e.platformIO.flush()
 		if tunReadable || e.tunPending {
+			if e.readPaused {
+				err = e.platformIO.setDeviceReadEnabled(true)
+				if err != nil {
+					e.stack.logger.Error(err)
+					return
+				}
+				e.readPaused = false
+			}
 			err = e.processBurst()
 			if err != nil {
 				if e.stack.closed.Load() || E.IsClosedOrCanceled(err) {
@@ -284,9 +295,15 @@ func (e *goEngine) run() {
 					return
 				}
 				e.stack.logger.Debug(E.Cause(err, "go: engine read"))
-				readRetry.Wait()
+				err = e.platformIO.setDeviceReadEnabled(false)
+				if err != nil {
+					e.stack.logger.Error(err)
+					return
+				}
+				e.readPaused = true
+				e.wheel.schedule(&e.readRetryNode, e.coarseTime.Load()+int64(e.readRetry.NextDelay()))
 			} else {
-				readRetry.Reset()
+				e.readRetry.Reset()
 			}
 		}
 		e.dispatchSocketEvents(eventCount)
