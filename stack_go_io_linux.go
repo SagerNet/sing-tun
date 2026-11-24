@@ -220,7 +220,7 @@ func (o *goLinuxIO) writeFrame(frame [][]byte, meta ForwardFrameMeta) error {
 			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
-		case unix.EAGAIN, unix.ENOBUFS:
+		case unix.EAGAIN, unix.ENOBUFS, unix.ENOMEM:
 			o.device.droppedEngineFrames.record(o.device.stack.logger, "engine frames")
 			return errGoFrameDropped
 		default:
@@ -249,7 +249,7 @@ func (o *goLinuxIO) writeData(frame [][]byte, meta ForwardFrameMeta, owner *GoCo
 			if o.device.closing.Load() {
 				return os.ErrClosed
 			}
-		case unix.ENOBUFS:
+		case unix.ENOBUFS, unix.ENOMEM:
 			// Before Linux 6.6, tun_alloc_skb places the whole frame in the skb head unless the
 			// virtio header carries a header length, so a large frame needs a high-order
 			// allocation, which fails with ENOBUFS under memory fragmentation.
@@ -420,7 +420,7 @@ func (o *goLinuxIO) writePacketBatch(frames []goUDPFrame) error {
 				continue
 			}
 		}
-		if errno == unix.EAGAIN || errno == unix.ENOBUFS {
+		if errno == unix.EAGAIN || errno == unix.ENOBUFS || errno == unix.ENOMEM {
 			o.device.droppedEngineFrames.record(o.device.stack.logger, "UDP frames")
 			writeError = E.Errors(writeError, errGoFrameDropped)
 		} else if errno != 0 {
