@@ -122,7 +122,9 @@ func (s *TCPSession) observe(flags header.TCPFlags, reverse bool) bool {
 		} else {
 			s.finForward = true
 		}
-		s.closed = s.finForward && s.finReverse
+		if s.finForward && s.finReverse {
+			s.closed = true
+		}
 	} else if time.Since(s.LastActive) <= time.Second {
 		return true
 	}
