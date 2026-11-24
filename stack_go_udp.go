@@ -251,8 +251,8 @@ func (e *goEngine) attachUDPSession(conn *UDPNatConn, writer *GoPacketConn, verd
 	if verdict.NewTracker != nil {
 		tracker := verdict.NewTracker()
 		if tracker != nil {
-			writer.tracker.Store(&tracker)
 			tracker.AttachFlow(writer)
+			writer.tracker.Store(&tracker)
 		}
 	}
 }
