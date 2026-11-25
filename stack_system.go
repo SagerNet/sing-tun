@@ -145,7 +145,9 @@ func (s *System) Start() error {
 
 func (s *System) start() error {
 	_ = fixWindowsFirewall()
-	var listener net.ListenConfig
+	listener := net.ListenConfig{
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: 2 * time.Hour, Interval: 75 * time.Second, Count: 9},
+	}
 	if s.bindInterface {
 		listener.Control = control.Append(listener.Control, func(network, address string, conn syscall.RawConn) error {
 			bindErr := control.BindToInterface0(s.interfaceFinder, conn, network, address, s.tunName, -1, true)
