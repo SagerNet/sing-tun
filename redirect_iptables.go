@@ -789,6 +789,10 @@ func (r *autoRedirect) setupIPTablesUnreachable() error {
 		return nil
 	}
 	family := &iptablesFamily{path: path, isIPv6: r.enableIPv4}
+	rejectWith := "icmp-net-unreachable"
+	if family.isIPv6 {
+		rejectWith = "icmp6-no-route"
+	}
 	chains := []struct {
 		name string
 		base string
@@ -813,7 +817,7 @@ func (r *autoRedirect) setupIPTablesUnreachable() error {
 			}
 		}
 		r.iptablesAddExcludeRules(builder, chain.hook, iptablesKindFilter, false)
-		builder.add("-j", "REJECT")
+		builder.add("-j", "REJECT", "--reject-with", rejectWith)
 		if builder.err != nil {
 			return builder.err
 		}
