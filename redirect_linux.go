@@ -56,6 +56,7 @@ type autoRedirect struct {
 	redirectRoutesActive    bool
 	dockerFirewallMonitor   *nftables.Monitor
 	dockerFirewallDone      chan struct{}
+	forwardingRestore       []sysctlState
 }
 
 func NewAutoRedirect(options AutoRedirectOptions) (AutoRedirect, error) {
@@ -223,6 +224,7 @@ func (r *autoRedirect) Start() error {
 					return E.Cause(setupErr, "setup redirect routes")
 				}
 			}
+			r.enableForwarding()
 			return nil
 		})
 		if err != nil {
@@ -234,6 +236,7 @@ func (r *autoRedirect) Start() error {
 		if err != nil {
 			return E.Cause(err, "setup iptables")
 		}
+		r.enableForwarding()
 	}
 	return nil
 }
@@ -245,6 +248,7 @@ func (r *autoRedirect) Close() error {
 	}
 	if r.useNFTables {
 		_ = runInNetworkNamespace(r.tunOptions.NetNs, func() error {
+			r.restoreForwarding()
 			r.cleanupNFTables()
 			r.cleanupRedirectRoutes()
 			return nil
@@ -253,6 +257,7 @@ func (r *autoRedirect) Close() error {
 			_ = r.networkMonitor.Close()
 		}
 	} else {
+		r.restoreForwarding()
 		r.cleanupIPTables()
 	}
 	return err
@@ -352,4 +357,91 @@ func (r *autoRedirect) effectiveNFQueue() uint16 {
 
 func (r *autoRedirect) shouldSkipOutputChain() bool {
 	return len(r.tunOptions.IncludeInterface) > 0 && !common.Contains(r.tunOptions.IncludeInterface, "lo") || common.Contains(r.tunOptions.ExcludeInterface, "lo")
+}
+
+type sysctlState struct {
+	path  string
+	value string
+}
+
+func (r *autoRedirect) enableForwarding() {
+	if runtime.GOOS == "android" {
+		return
+	}
+	enable := func(path string, prepare func() []sysctlState) {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			r.logger.Debug(E.Cause(err, "read ", path))
+			return
+		}
+		value := strings.TrimSpace(string(content))
+		if value == "1" {
+			return
+		}
+		var prepared []sysctlState
+		if prepare != nil {
+			prepared = prepare()
+		}
+		err = os.WriteFile(path, []byte("1"), 0o644)
+		if err != nil {
+			r.logger.Warn(E.Cause(err, "enable ", path))
+			restoreSysctl(prepared)
+			return
+		}
+		r.forwardingRestore = append(r.forwardingRestore, sysctlState{path: path, value: value})
+		r.forwardingRestore = append(r.forwardingRestore, prepared...)
+	}
+	if r.enableIPv4 {
+		enable("/proc/sys/net/ipv4/ip_forward", nil)
+	}
+	if r.enableIPv6 {
+		enable("/proc/sys/net/ipv6/conf/all/forwarding", r.overruleAcceptRA)
+	}
+}
+
+// Writing conf/all/forwarding=1 purges RA-learned default routes on every
+// interface whose accept_ra is not 2 (rt6_purge_dflt_routers) and copies
+// forwarding=1 to conf/default and every existing interface
+// (addrconf_fixup_forwarding), after which ipv6_accept_ra() requires
+// accept_ra=2; raise interfaces left at the host default of 1 beforehand so
+// SLAAC default routes survive.
+func (r *autoRedirect) overruleAcceptRA() []sysctlState {
+	entries, err := os.ReadDir("/proc/sys/net/ipv6/conf")
+	if err != nil {
+		r.logger.Debug(E.Cause(err, "read /proc/sys/net/ipv6/conf"))
+		return nil
+	}
+	var restore []sysctlState
+	for _, entry := range entries {
+		if entry.Name() == "all" {
+			continue
+		}
+		path := "/proc/sys/net/ipv6/conf/" + entry.Name() + "/accept_ra"
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(content))
+		if value != "1" {
+			continue
+		}
+		err = os.WriteFile(path, []byte("2"), 0o644)
+		if err != nil {
+			r.logger.Debug(E.Cause(err, "overrule ", path))
+			continue
+		}
+		restore = append(restore, sysctlState{path: path, value: value})
+	}
+	return restore
+}
+
+func (r *autoRedirect) restoreForwarding() {
+	restoreSysctl(r.forwardingRestore)
+	r.forwardingRestore = nil
+}
+
+func restoreSysctl(states []sysctlState) {
+	for _, state := range states {
+		_ = os.WriteFile(state.path, []byte(state.value), 0o644)
+	}
 }
