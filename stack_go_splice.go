@@ -872,6 +872,7 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 			e.packetSpliceClose(w, E.Cause(errno, "go: receive peer batch"))
 		}
 	}()
+	var delivered bool
 	for index := range count {
 		message := e.packetMessages[index]
 		if message.truncated {
@@ -903,12 +904,16 @@ func (e *goEngine) packetSpliceRead(w *GoPacketConn) {
 			if destination.IsIP() && natConn.allowPeer(destination) {
 				goCount(splice.options.WriteCounters, buffer.Len())
 				e.packetSpliceDownload(w, buffer.Bytes(), destination)
+				delivered = true
 			}
 			offset += length
 			if offset == len(message.data) {
 				break
 			}
 		}
+	}
+	if delivered {
+		natConn.service.cache.GetAndRefresh(natConn.key)
 	}
 }
 
