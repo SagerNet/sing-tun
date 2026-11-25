@@ -595,21 +595,15 @@ func (r *autoRedirect) nftablesAddPreMatchRules(nft *nftables.Conn, table *nftab
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-			&expr.Payload{
-				OperationType: expr.PayloadLoad,
-				DestRegister:  1,
-				Base:          expr.PayloadBaseTransportHeader,
-				Offset:        13,
-				Len:           1,
-			},
+			&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
 			&expr.Bitwise{
 				SourceRegister: 1,
 				DestRegister:   1,
-				Len:            1,
-				Mask:           []byte{0x12},
-				Xor:            []byte{0x00},
+				Len:            4,
+				Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW | expr.CtStateBitRELATED),
+				Xor:            make([]byte, 4),
 			},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0x02}},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: make([]byte, 4)},
 			&expr.Verdict{Kind: expr.VerdictReturn},
 		},
 	})
