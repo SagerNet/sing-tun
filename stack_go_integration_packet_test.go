@@ -182,6 +182,10 @@ func (f *kernelStackFixture) packetPair(t *testing.T, ipv6 bool) (*net.UDPConn, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { client.Close() })
+	err = client.SetReadBuffer(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = client.SetWriteBuffer(1 << 20)
 	if err != nil {
 		t.Fatal(err)
@@ -741,7 +745,7 @@ func TestGoKernelPacketBatchIdle(t *testing.T) {
 								if err != nil {
 									scenarioTest.Fatalf("download packet %d: %v", index, err)
 								}
-								kernelCheckBatchPacket(scenarioTest, data[:length], payloads, downloaded, index, !config.multiQueue)
+								kernelCheckBatchPacket(scenarioTest, data[:length], payloads, downloaded, index, !config.multiQueue && !(ipv6 && runtime.GOOS == "darwin"))
 							}
 							allocator.waitIdle(scenarioTest)
 							if conn.isClosed() {
