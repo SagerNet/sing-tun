@@ -160,10 +160,6 @@ func parsePreMatchPacket(packet []byte) (preMatchPacket, bool) {
 			return preMatchPacket{}, false
 		}
 		tcpHdr := header.TCP(transport)
-		flags := tcpHdr.Flags()
-		if !flags.Contains(header.TCPFlagSyn) || flags.Contains(header.TCPFlagAck) {
-			return preMatchPacket{}, false
-		}
 		parsed.source = netip.AddrPortFrom(source, tcpHdr.SourcePort())
 		parsed.destination = netip.AddrPortFrom(destination, tcpHdr.DestinationPort())
 	case uint8(header.UDPProtocolNumber):
