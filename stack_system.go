@@ -461,7 +461,6 @@ func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 	if s.dispatchIPv4(ipHdr, destination) {
 		return false, nil
 	}
-	writeBack = true
 	switch ipHdr.TransportProtocol() {
 	case header.TCPProtocolNumber:
 		writeBack, err = s.processIPv4TCP(ipHdr, ipHdr.Payload())
@@ -491,7 +490,6 @@ func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 	if s.dispatchIPv6(ipHdr, destination) {
 		return false, nil
 	}
-	writeBack = true
 	switch ipHdr.TransportProtocol() {
 	case header.TCPProtocolNumber:
 		writeBack, err = s.processIPv6TCP(ipHdr, ipHdr.Payload())
