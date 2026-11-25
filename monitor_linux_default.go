@@ -4,28 +4,35 @@ package tun
 
 import (
 	"github.com/sagernet/netlink"
+	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 
 	"golang.org/x/sys/unix"
 )
 
 func (m *defaultInterfaceMonitor) checkUpdate() error {
-	var defaultRoute *netlink.Route
+	var linkIndex int
 	err := netlink.RouteListFilteredIter(netlink.FAMILY_ALL, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE, func(route netlink.Route) bool {
-		if route.Dst != nil {
+		if route.Dst != nil || route.Type != unix.RTN_UNICAST {
 			return true
 		}
-		defaultRoute = &route
-		return false
+		if len(route.MultiPath) == 0 {
+			linkIndex = route.LinkIndex
+		} else if nexthop := common.Find(route.MultiPath, func(it *netlink.NexthopInfo) bool {
+			return it.Flags&unix.RTNH_F_DEAD == 0
+		}); nexthop != nil {
+			linkIndex = nexthop.LinkIndex
+		}
+		return linkIndex == 0
 	})
 	if err != nil {
 		return E.Cause(err, "list routes")
 	}
-	if defaultRoute == nil {
+	if linkIndex == 0 {
 		return ErrNoRoute
 	}
 
-	link, err := netlink.LinkByIndex(defaultRoute.LinkIndex)
+	link, err := netlink.LinkByIndex(linkIndex)
 	if err != nil {
 		return E.Cause(err, "find link by index")
 	}
