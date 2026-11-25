@@ -238,7 +238,7 @@ func (f *ICMPForwarder) HandlePacket(id stack.TransportEndpointID, pkt *stack.Pa
 func (f *ICMPForwarder) reject(id stack.TransportEndpointID, pkt *stack.PacketBuffer) {
 	view := stack.PayloadSince(pkt.NetworkHeader())
 	defer view.Release()
-	reply, loaded := BuildUnreachable(view.AsSlice(), netip.Addr{}, 0)
+	reply, loaded := BuildICMPError(view.AsSlice(), ICMPErrorNoRoute, netip.Addr{}, 0, 0)
 	if loaded {
 		f.writeBack(reply, pkt.NetworkProtocolNumber, id.LocalAddress, id.RemoteAddress)
 	}
