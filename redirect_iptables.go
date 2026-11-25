@@ -429,7 +429,7 @@ func (r *autoRedirect) iptablesAddPreMatchRules(builder *iptablesBuilder, hook i
 	builder.add("-m", "connmark", "--mark", inputMark, "-j", "MARK", "--set-xmark", inputPacketMark)
 	builder.add("-m", "connmark", "--mark", inputMark, "-j", "RETURN")
 	builder.add("-p", "tcp", "-m", "mark", "--mark", resetMark, "-j", "RETURN")
-	builder.add("-p", "tcp", "!", "--tcp-flags", "SYN,ACK", "SYN", "-j", "RETURN")
+	builder.add("-p", "tcp", "-m", "conntrack", "!", "--ctstate", "NEW,RELATED", "-j", "RETURN")
 	r.iptablesAddExcludeRules(builder, hook, iptablesKindFilter, dnsHijack)
 	queue := []string{"-j", "NFQUEUE", "--queue-num", strconv.Itoa(int(r.effectiveNFQueue())), "--queue-bypass"}
 	builder.add(slices.Concat([]string{"-p", "tcp"}, queue)...)
