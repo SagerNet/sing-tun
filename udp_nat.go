@@ -483,6 +483,7 @@ var (
 	_ canceler.PacketConn          = (*UDPNatConn)(nil)
 	_ N.PacketBatchReadWaitCreator = (*UDPNatConn)(nil)
 	_ N.PacketBatchWriteCreator    = (*UDPNatConn)(nil)
+	_ N.PacketBatchWriter          = (*udpNatPacketBatchWriter)(nil)
 )
 
 type UDPNatConn struct {
@@ -630,7 +631,11 @@ func (c *UDPNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 		buffer.Release()
 		return nil
 	}
-	return c.writer.WritePacket(buffer, destination)
+	err = c.writer.WritePacket(buffer, destination)
+	if err == nil {
+		c.service.cache.GetAndRefresh(c.key)
+	}
+	return err
 }
 
 func (c *UDPNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
@@ -655,7 +660,11 @@ func (w *udpNatPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destin
 		buf.ReleaseMulti(buffers)
 		return err
 	}
-	return w.writer.WritePacketBatch(buffers, destinations)
+	err = w.writer.WritePacketBatch(buffers, destinations)
+	if err == nil {
+		w.conn.service.cache.GetAndRefresh(w.conn.key)
+	}
+	return err
 }
 
 func (w *udpNatPacketBatchWriter) Upstream() any {
