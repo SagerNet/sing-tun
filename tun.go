@@ -158,7 +158,7 @@ func (o *Options) Inet4DNSAddress() ([]netip.Addr, error) {
 		return []netip.Addr{o.Inet4Address[0].Addr().Next()}, nil
 	}
 	if !(len(o.Inet6Address) > 0 && HasNextAddress(o.Inet6Address[0], 1)) {
-		return nil, E.New("no IPv4 server configured and no usable next address in ", o.Inet6Address[0], " for DNS")
+		return nil, E.New("no IPv4 server configured and no usable next address in ", o.Inet4Address[0], " for DNS")
 	}
 	return nil, nil
 }
