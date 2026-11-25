@@ -4,9 +4,12 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/sagernet/netlink/nl"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/sagernet/sing/common/x/list"
@@ -96,7 +99,7 @@ func (m *networkUpdateMonitor) Start() error {
 func (m *networkUpdateMonitor) loopRead() {
 	buffer := make([]byte, unix.Getpagesize())
 	for {
-		_, err := m.socket.Read(buffer)
+		n, err := m.socket.Read(buffer)
 		if err != nil && !errors.Is(err, unix.ENOBUFS) {
 			select {
 			case <-m.close:
@@ -105,11 +108,43 @@ func (m *networkUpdateMonitor) loopRead() {
 			}
 			return
 		}
+		if err == nil && runtime.GOOS != "android" && !isNetworkUpdate(buffer[:n]) {
+			continue
+		}
 		select {
 		case m.update <- struct{}{}:
 		default:
 		}
 	}
+}
+
+func isNetworkUpdate(buffer []byte) bool {
+	messages, err := syscall.ParseNetlinkMessage(buffer)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(messages, func(message syscall.NetlinkMessage) bool {
+		if message.Header.Type != unix.RTM_NEWROUTE && message.Header.Type != unix.RTM_DELROUTE {
+			return true
+		}
+		if nl.DeserializeRtMsg(message.Data).Dst_len == 0 {
+			return true
+		}
+		attributes, err := syscall.ParseNetlinkRouteAttr(&message)
+		if err != nil {
+			return true
+		}
+		var hasInterface, hasNextHop bool
+		for _, attribute := range attributes {
+			switch attribute.Attr.Type {
+			case unix.RTA_OIF:
+				hasInterface = true
+			case unix.RTA_GATEWAY, unix.RTA_VIA:
+				hasNextHop = true
+			}
+		}
+		return hasInterface && !hasNextHop
+	})
 }
 
 func (m *networkUpdateMonitor) loopUpdate(minDuration time.Duration) {
