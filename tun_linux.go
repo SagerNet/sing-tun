@@ -212,14 +212,8 @@ func (t *NativeTun) enableGSO() error {
 			t.gro.disableTCPGRO()
 			t.gro.disableUDPGRO()
 		}
-	} else {
-		err = setUDPOffload(t.tunFd)
-		if err != nil {
-			if t.options.Logger != nil {
-				t.options.Logger.Warn(E.Cause(err, "enable offload: set udp offload"))
-			}
-			t.gro.disableUDPGRO()
-		}
+	} else if setUDPOffload(t.tunFd) != nil {
+		t.gro.disableUDPGRO()
 	}
 	t.readRawConn, err = t.tunFile.SyscallConn()
 	if err != nil {
