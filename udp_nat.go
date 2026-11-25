@@ -14,6 +14,7 @@ import (
 
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
+	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/canceler"
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/memory"
@@ -481,6 +482,7 @@ var (
 	_ canceler.PacketConn          = (*udpNatConn)(nil)
 	_ N.PacketBatchReadWaitCreator = (*udpNatConn)(nil)
 	_ N.PacketBatchWriteCreator    = (*udpNatConn)(nil)
+	_ N.PacketBatchWriter          = (*udpNatPacketBatchWriter)(nil)
 )
 
 type udpNatConn struct {
@@ -613,20 +615,39 @@ func (c *udpNatConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 		buffer.Release()
 		return nil
 	}
-	return c.writer.WritePacket(buffer, destination)
+	err := c.writer.WritePacket(buffer, destination)
+	if err == nil {
+		c.service.cache.GetAndRefresh(c.key)
+	}
+	return err
 }
 
 func (c *udpNatConn) CreatePacketBatchWriter() (N.PacketBatchWriter, bool) {
 	if c.service.filtering != NATFilteringEndpointIndependent {
 		return nil, false
 	}
-	if creator, isCreator := c.writer.(N.PacketBatchWriteCreator); isCreator {
-		return creator.CreatePacketBatchWriter()
+	writer, created := bufio.CreatePacketBatchWriter(c.writer)
+	if !created {
+		return nil, false
 	}
-	if writer, isWriter := c.writer.(N.PacketBatchWriter); isWriter {
-		return writer, true
+	return &udpNatPacketBatchWriter{conn: c, writer: writer}, true
+}
+
+type udpNatPacketBatchWriter struct {
+	conn   *udpNatConn
+	writer N.PacketBatchWriter
+}
+
+func (w *udpNatPacketBatchWriter) WritePacketBatch(buffers []*buf.Buffer, destinations []M.Socksaddr) error {
+	err := w.writer.WritePacketBatch(buffers, destinations)
+	if err == nil {
+		w.conn.service.cache.GetAndRefresh(w.conn.key)
 	}
-	return nil, false
+	return err
+}
+
+func (w *udpNatPacketBatchWriter) Upstream() any {
+	return w.conn
 }
 
 func (c *udpNatConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
